@@ -15,6 +15,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifndef _I8253_H_
+#define _I8253_H_
+
 /*
  * Emulated i8253 PIT (counter)
  */
@@ -54,3 +57,4 @@ uint8_t vcpu_exit_i8253_misc(struct vm_run_params *);
 void i8253_do_readback(uint32_t);
 void i8253_stop(void);
 void i8253_start(void);
+#endif /* _I8253_H_ */

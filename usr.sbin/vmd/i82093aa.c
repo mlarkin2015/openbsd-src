@@ -1,6 +1,6 @@
-/* $OpenBSD: mc146818.h,v 1.6 2024/05/18 06:45:00 jsg Exp $ */
+/* $OpenBSD */
 /*
- * Copyright (c) 2016 Mike Larkin <mlarkin@openbsd.org>
+ * Copyright (c) 2023 Mike Larkin <mlarkin@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,14 +15,32 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MC146818_H_
-#define _MC146818_H_
+#include <sys/types.h>
 
-void mc146818_init(uint32_t, uint64_t, uint64_t);
-uint8_t vcpu_exit_mc146818(struct vm_run_params *vrp);
-int mc146818_dump(int);
-int mc146818_restore(int, uint32_t);
-void mc146818_stop(void);
-void mc146818_start(void);
-#endif /* _MC146818_H */
+#include "vmd.h"
+#include "i82093aa.h"
+#include "mmiodev.h"
+#include "proc.h"
 
+int
+i82093aa_init(void)
+{
+	log_warnx("%s: ioapic init", __func__);
+
+	return 0;
+}
+
+int
+i82093aa_mmio(uint64_t addr, uint64_t *data, size_t len, int dir)
+{
+	if (dir == MMIO_W)
+		log_warnx("%s: ioapic mmio write, addr=0x%llx, data=0x%llx, "
+		    "len=%zd", __func__, addr, *data, len);
+	else if (dir == MMIO_R)
+		log_warnx("%s: ioapic mmio read, addr=0x%llx, "
+		    "len=%zd", __func__, addr, len);
+	else
+		fatalx("%s: unsupported mmio dir %d", __func__, dir);
+
+	return 0;
+}

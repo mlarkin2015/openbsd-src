@@ -41,7 +41,6 @@ typedef int (*pci_iobar_fn_t)(int dir, uint16_t reg, uint32_t *data, uint8_t *,
     void *, uint8_t);
 typedef int (*pci_mmiobar_fn_t)(int dir, uint32_t ofs, uint32_t *data);
 
-
 struct pci_dev {
 	union {
 		uint32_t pd_cfg_space[PCI_CONFIG_SPACE_SIZE / 4];

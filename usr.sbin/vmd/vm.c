@@ -60,12 +60,13 @@
 #include "i8259.h"
 #include "loadfile.h"
 #include "mc146818.h"
-#include "mmio.h"
+#include "amd64_emul.h"
 #include "ns8250.h"
 #include "pci.h"
 #include "virtio.h"
 #include "vmd.h"
 #include "vmm.h"
+#include "mmiodev.h"
 
 #define MB(x)	(x * 1024UL * 1024UL)
 #define GB(x)	(x * 1024UL * 1024UL * 1024UL)
@@ -1256,6 +1257,9 @@ init_emulated_hw(struct vmop_create_params *vmc, int child_cdrom,
 
 	/* Initialize virtio devices */
 	virtio_init(current_vm, child_cdrom, child_disks, child_taps);
+
+	/* Initialize mmio devices */
+	mmio_init(current_vm);
 
 	/*
 	 * Init QEMU fw_cfg interface. Must be done last for pci hardware

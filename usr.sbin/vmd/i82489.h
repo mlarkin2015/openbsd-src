@@ -1,6 +1,6 @@
-/* $OpenBSD: mc146818.h,v 1.6 2024/05/18 06:45:00 jsg Exp $ */
+/* $OpenBSD */
 /*
- * Copyright (c) 2016 Mike Larkin <mlarkin@openbsd.org>
+ * Copyright (c) 2023 Mike Larkin <mlarkin@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,14 +15,12 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MC146818_H_
-#define _MC146818_H_
+#ifndef _I82489_H_
+#define _I82489_H_
 
-void mc146818_init(uint32_t, uint64_t, uint64_t);
-uint8_t vcpu_exit_mc146818(struct vm_run_params *vrp);
-int mc146818_dump(int);
-int mc146818_restore(int, uint32_t);
-void mc146818_stop(void);
-void mc146818_start(void);
-#endif /* _MC146818_H */
-
+/*
+ * Emulated i82489 local APIC
+ */
+int i82489_init(void);
+int i82489_mmio(uint64_t, uint64_t  *, size_t, int);
+#endif /* _I82489_H_ */

@@ -16,8 +16,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MMIO_H_
-#define _MMIO_H_
+#ifndef _EMUL_H_
+#define _EMUL_H_
 
 #include <sys/types.h>
 #include <machine/vmmvar.h>
@@ -135,4 +135,4 @@ struct x86_insn {
 int	insn_decode(struct vm_exit *, struct x86_insn *);
 int	insn_emulate(struct vm_exit *, struct x86_insn *);
 
-#endif /* _MMIO_H_ */
+#endif /* _EMUL_H_ */

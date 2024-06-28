@@ -15,6 +15,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifndef _NS8250_H_
+#define _NS8250_H_
+
 /*
  * Emulated 8250 UART
  */
@@ -89,3 +92,4 @@ int ns8250_dump(int);
 int ns8250_restore(int, int, uint32_t);
 void ns8250_stop(void);
 void ns8250_start(void);
+#endif /* _NS8250_H_ */

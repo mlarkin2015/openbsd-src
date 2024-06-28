@@ -15,6 +15,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifndef _I8259_H_
+#define _I8259_H_
+
 #include <sys/types.h>
 
 #include <machine/vmmvar.h>
@@ -72,3 +75,4 @@ int i8259_dump(int);
 /* ELCR functions */
 void pic_set_elcr(uint8_t, uint8_t);
 uint8_t vcpu_exit_elcr(struct vm_run_params *);
+#endif /* _I8259_H_ */

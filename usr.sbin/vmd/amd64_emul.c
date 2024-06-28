@@ -1,4 +1,4 @@
-/*	$OpenBSD: mmio.c,v 1.3 2024/02/10 12:31:16 dv Exp $	*/
+/*	$OpenBSD: mmio.c,v 1.2 2022/12/28 21:30:19 jmc Exp $	*/
 
 /*
  * Copyright (c) 2022 Dave Voutila <dv@openbsd.org>
@@ -23,9 +23,10 @@
 #include <machine/specialreg.h>
 
 #include "vmd.h"
-#include "mmio.h"
+#include "amd64_emul.h"
+#include "mmiodev.h"
 
-#define MMIO_DEBUG 0
+#define MMIO_DEBUG 1
 
 extern char* __progname;
 
@@ -85,6 +86,8 @@ const enum x86_opcode_type x86_1byte_opcode_tbl[255] = {
 	[0xA1] = OP_MOV,
 	[0xA2] = OP_MOV,
 	[0xA3] = OP_MOV,
+	[0xC6] = OP_MOV,
+	[0xC7] = OP_MOV,
 
 	/* MOVS */
 	[0xA4] = OP_UNSUPPORTED,
@@ -105,6 +108,7 @@ const enum x86_operand_enc x86_1byte_operand_enc_tbl[255] = {
 	[0xA1] = OP_ENC_FD,
 	[0xA2] = OP_ENC_TD,
 	[0xA3] = OP_ENC_TD,
+	[0xC7] = OP_ENC_MI,
 
 	/* MOVS */
 	[0xA4] = OP_ENC_ZO,
@@ -261,11 +265,14 @@ static void
 dump_insn(struct x86_insn *insn)
 {
 	log_info("instruction { %s, enc=%s, len=%d, mod=0x%02x, ("
-	    "reg=%s, addr=0x%lx) sib=0x%02x }",
+	    "reg=%s, addr=0x%lx) sib=0x%02x disp=0x%llx disp_type=0x%x "
+	    "imm=0x%llx imm_len=0x%x }",
 	    str_opcode(&insn->insn_opcode),
 	    str_operand_enc(&insn->insn_opcode), insn->insn_bytes_len,
 	    insn->insn_modrm, str_reg(insn->insn_reg),
-	    insn->insn_gva, insn->insn_sib);
+	    insn->insn_gva, insn->insn_sib, insn->insn_disp,
+	    insn->insn_disp_type, insn->insn_immediate,
+	    insn->insn_immediate_len);
 }
 #endif /* MMIO_DEBUG */
 
@@ -614,7 +621,21 @@ decode_disp(struct x86_decode_state *state, struct x86_insn *insn)
 	switch (MODRM_MOD(insn->insn_modrm)) {
 	case 0x00:
 		insn->insn_disp_type = DISP_0;
-		res = DECODE_MORE;
+		if (MODRM_RM(insn->insn_modrm) == 0x5) {
+			if (insn->insn_cpu_mode == VMM_CPU_MODE_REAL) {
+				res = next_value(state, 2, &disp);
+				if (res == DECODE_ERROR)
+					return (res);
+				insn->insn_disp_type = DISP_2;
+				insn->insn_disp = disp;
+			} else if (insn->insn_cpu_mode == VMM_CPU_MODE_PROT32) {
+				res = next_value(state, 4, &disp);
+				if (res == DECODE_ERROR)
+					return (res);
+				insn->insn_disp_type = DISP_4;
+				insn->insn_disp = disp;
+			}
+		}
 		break;
 	case 0x01:
 		insn->insn_disp_type = DISP_1;
@@ -667,7 +688,6 @@ decode_opcode(struct x86_decode_state *state, struct x86_insn *insn)
 	case OP_UNSUPPORTED:
 		log_warnx("%s: unsupported opcode", __func__);
 		return (DECODE_ERROR);
-
 	case OP_TWO_BYTE:
 		res = next_byte(state, &byte2);
 		if (res == DECODE_ERROR)
@@ -684,7 +704,6 @@ decode_opcode(struct x86_decode_state *state, struct x86_insn *insn)
 		opcode->op_bytes_len = 2;
 		enc = x86_2byte_operand_enc_table[byte2];
 		break;
-
 	default:
 		/* We've potentially got a known 1-byte opcode. */
 		opcode->op_bytes[0] = byte;
@@ -772,6 +791,8 @@ decode_imm(struct x86_decode_state *state, struct x86_insn *insn)
 
 	res = next_value(state, num_bytes, &value);
 	if (res != DECODE_ERROR) {
+		log_warnx("%s: insn_immediate=0x%llx", __func__, value);
+		log_warnx("%s: insn_immediate_len=%zd", __func__, num_bytes);
 		insn->insn_immediate = value;
 		insn->insn_immediate_len = num_bytes;
 	}
@@ -936,12 +957,23 @@ err:
 static int
 emulate_mov(struct x86_insn *insn, struct vm_exit *exit)
 {
-	/* XXX Only supports read to register for now */
-	if (insn->insn_opcode.op_encoding != OP_ENC_RM)
+	switch (insn->insn_opcode.op_encoding) {
+	case OP_ENC_RM:
+		exit->vrs.vrs_gprs[insn->insn_reg] = 0xFFFFFFFFFFFFFFFF;
+		break;
+	case OP_ENC_MI:
+		switch(insn->insn_opcode.op_bytes[0]) {
+		case 0xC7:
+			return mmio_io(insn->insn_disp,
+			    &insn->insn_immediate, insn->insn_immediate_len,
+			    MMIO_W);
+		}
+		break;
+	default:
+		log_warnx("%s: unsupported mov encoding %d", __func__,
+		    insn->insn_opcode.op_encoding);
 		return (-1);
-
-	/* XXX No device emulation yet. Fill with 0xFFs. */
-	exit->vrs.vrs_gprs[insn->insn_reg] = 0xFFFFFFFFFFFFFFFF;
+	}
 
 	return (0);
 }

@@ -1,6 +1,7 @@
-/* $OpenBSD: mc146818.h,v 1.6 2024/05/18 06:45:00 jsg Exp $ */
+/* $OpenBSD */
+
 /*
- * Copyright (c) 2016 Mike Larkin <mlarkin@openbsd.org>
+ * Copyright (c) 2023 Mike Larkin <mlarkin@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,14 +16,31 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MC146818_H_
-#define _MC146818_H_
+#include <sys/queue.h>
+#include <sys/types.h>
 
-void mc146818_init(uint32_t, uint64_t, uint64_t);
-uint8_t vcpu_exit_mc146818(struct vm_run_params *vrp);
-int mc146818_dump(int);
-int mc146818_restore(int, uint32_t);
-void mc146818_stop(void);
-void mc146818_start(void);
-#endif /* _MC146818_H */
+#ifndef _MMIODEV_H_
+#define _MMIODEV_H_
 
+#define MMIO_DEV_MAX_RANGES	16
+
+#define MMIO_R	0
+#define MMIO_W	1
+
+typedef int (*mmio_fn_t)(uint64_t, uint64_t *, size_t, int);
+typedef int (*mmio_init_fn_t)(void);
+
+struct mmio_dev {
+	size_t		mm_count;
+	uint64_t	mm_start[MMIO_DEV_MAX_RANGES];
+	uint64_t	mm_end[MMIO_DEV_MAX_RANGES];
+	mmio_fn_t	mm_func[MMIO_DEV_MAX_RANGES];
+	mmio_init_fn_t	mm_init;
+
+	SLIST_ENTRY(mmio_dev) dev_next;
+};
+
+int mmio_io(uint64_t, uint64_t *, size_t, int);
+void mmio_init(struct vmd_vm *);
+
+#endif /* _MMIODEV_H_ */
