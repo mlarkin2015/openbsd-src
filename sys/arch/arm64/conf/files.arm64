@@ -66,6 +66,14 @@ include "dev/efi/files.efi"
 attach	efi at fdt
 file	arch/arm64/dev/efi_machdep.c		efi
 
+#
+# VMM
+#
+device vmm {}
+attach vmm at mainbus
+file	dev/vmm/vmm.c				vmm		needs-flag
+file	arch/arm64/arm64/vmm_machdep.c		vmm		needs-flag
+
 device	smbios
 attach	smbios at efi
 file	arch/arm64/dev/smbios.c			smbios

@@ -66,6 +66,7 @@ sdhc*		at acpi?
 ufshci*		at acpi?
 xhci*		at acpi?
 simplebus*	at fdt?
+vmm0		at mainbus0
 
 scsibus*	at scsi?
 sd*		at scsibus?

@@ -31,6 +31,8 @@
 #include <arm64/arm64/arm64var.h>
 #include <arm64/dev/mainbus.h>
 
+#include "vmm.h"
+
 int mainbus_match(struct device *, void *, void *);
 void mainbus_attach(struct device *, struct device *, void *);
 
@@ -42,6 +44,7 @@ int mainbus_match_secondary(struct device *, void *, void *);
 void mainbus_attach_psci(struct device *);
 void mainbus_attach_efi(struct device *);
 void mainbus_attach_apm(struct device *);
+void mainbus_attach_vmm(struct device *);
 void mainbus_attach_framebuffer(struct device *);
 void mainbus_attach_firmware(struct device *);
 void mainbus_attach_resvmem(struct device *);
@@ -165,6 +168,10 @@ mainbus_attach(struct device *parent, struct device *self, void *aux)
 	 * chance to claim it.
 	 */
 	config_mountroot(self, mainbus_attach_framebuffer);
+
+#if NVMM > 0
+	mainbus_attach_vmm(self);
+#endif /* NVMM > 0 */
 
 	thermal_init();
 }
@@ -410,6 +417,17 @@ mainbus_attach_apm(struct device *self)
 
 	memset(&fa, 0, sizeof(fa));
 	fa.fa_name = "apm";
+
+	config_found(self, &fa, NULL);
+}
+
+void
+mainbus_attach_vmm(struct device *self)
+{
+	struct fdt_attach_args fa;
+
+	memset(&fa, 0, sizeof(fa));
+	fa.fa_name = "vmm";
 
 	config_found(self, &fa, NULL);
 }

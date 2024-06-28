@@ -33,6 +33,7 @@
 #include <machine/armreg.h>
 #include <machine/hypervisor.h>
 #include <machine/param.h>
+#include <machine/vmmreg.h>
 
 #define	VIRT_BITS	39
 
@@ -43,6 +44,10 @@
 	.globl drop_to_el1
 drop_to_el1:
 	RETGUARD_SETUP(drop_to_el1, x15)
+	adrp	x5, cpu_vmm_caps
+	add	x5, x5, #:lo12:cpu_vmm_caps
+	str	xzr, [x5]
+
 	mrs	x1, CurrentEL
 	lsr	x1, x1, #2
 	cmp	x1, #0x2
@@ -51,10 +56,21 @@ drop_to_el1:
 	RETGUARD_CHECK(drop_to_el1, x15)
 	ret
 2:
+	/* EL2 is available for vmm(4) */
+	movz	x4, #(VMM_CAP_EL2)
+	str	x4, [x5]
+
 	/* Check for EL2 Host mode */
 	mrs	x2, hcr_el2
-	tbnz	x2, #34, 1b	/* HCR_E2H */
+	tbz	x2, #34, 3f	/* ! HCR_E2H (no VHE) */
 
+	/* VHE is available for vmm(4) */
+	orr	x4, x4, #(VMM_CAP_VHE)
+	str	x4, [x5]
+
+	b	1b
+
+3:
 	/* Configure the Hypervisor */
 	mov	x2, #(HCR_RW)
 	orr	x2, x2, #(HCR_API | HCR_APK)
@@ -101,13 +117,13 @@ drop_to_el1:
 	ubfx	x2, x2, #ID_AA64PFR0_GIC_SHIFT, #ID_AA64PFR0_GIC_BITS
 	/* GIC[3:0] == 0001 - GIC CPU interface via special regs. supported */
 	cmp	x2, #(ID_AA64PFR0_GIC_CPUIF_EN >> ID_AA64PFR0_GIC_SHIFT)
-	b.ne	3f
+	b.ne	4f
 
 	mrs	x2, icc_sre_el2
 	orr	x2, x2, #ICC_SRE_EL2_EN	/* Enable access from insecure EL1 */
 	orr	x2, x2, #ICC_SRE_EL2_SRE	/* Enable system registers */
 	msr	icc_sre_el2, x2
-3:
+4:
 
 	/* Set the address to return to our return address */
 	msr	elr_el2, x30
@@ -394,7 +410,7 @@ sigfillsiz:
 cpu_hatch_secondary_spin:
 	/* Fetch physical address of CPU info */
 	adrp	x0, cpu_hatch_ci
-	ldr	x0, [x0, :lo12:cpu_hatch_ci]	
+	ldr	x0, [x0, :lo12:cpu_hatch_ci]
 
 	.globl cpu_hatch_secondary
 cpu_hatch_secondary:
@@ -410,7 +426,7 @@ cpu_hatch_secondary:
 
 	/* Enable the mmu */
 	adr	x27, .Lpagetable_l0_ttbr0
-	ldr	x27, [x27] 
+	ldr	x27, [x27]
 	sub	x27, x27, x29
 	ldr	x26, [x0, #CI_TTBR1]
 	bl	start_mmu
@@ -431,7 +447,13 @@ cpu_hatch_secondary:
 	.data
 	.align 3
 	.global cpu_hatch_ci
-cpu_hatch_ci:    
+cpu_hatch_ci:
+	.xword   0
+
+	.data
+	.align 3
+	.global cpu_vmm_caps
+cpu_vmm_caps:
 	.xword   0
 
 	.text
@@ -452,7 +474,7 @@ cpu_hatch_primary:
 
 	/* Enable the mmu */
 	adr	x27, .Lpagetable_l0_ttbr0
-	ldr	x27, [x27] 
+	ldr	x27, [x27]
 	sub	x27, x27, x29
 	ldr	x26, [x0, #CI_TTBR1]
 	bl	start_mmu
@@ -475,4 +497,4 @@ cpu_hatch_primary:
 	.align 3
 .Lpagetable_l0_ttbr0:
 	.xword	pagetable_l0_ttbr0
-	
+
