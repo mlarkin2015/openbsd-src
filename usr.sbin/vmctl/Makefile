@@ -1,6 +1,6 @@
 #	$OpenBSD: Makefile,v 1.6 2019/01/18 01:24:07 pd Exp $
 
-.if ${MACHINE} == "amd64"
+.if ${MACHINE} == "amd64" || ${MACHINE} == "riscv64"
 
 .PATH:	${.CURDIR}/../vmd
 

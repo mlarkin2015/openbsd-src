@@ -70,6 +70,14 @@ struct bdevsw	bdevsw[] =
 };
 int	nblkdev = nitems(bdevsw);
 
+#define cdev_vmm_init(c,n) { \
+	dev_init(c,n.open), dev_init(c,n,close), \
+	(dev_type_read((*))) enodev, \
+	(dev_type_write((*))) enodev, \
+	 dev_init(c,n,ioctl), \
+	(dev_type_stop((*))) enodev, 0, \
+	(dev_type_mmap((*))) enodev, 0, 0, seltrue_kqfilter }
+
 #define	mmread	mmrw
 #define	mmwrite	mmrw
 cdev_decl(mm);
@@ -130,7 +138,7 @@ struct cdevsw	cdevsw[] =
 	cdev_log_init(1,log),		/* 7: /dev/klog */
 	cdev_tty_init(NCOM,com),	/* 8: serial port */
 	cdev_notdef(),			/* 9: was floppy disk */
-	cdev_notdef(),			/* 10 */
+	cdev_vmm_init(),		/* 10: vmm */
 	cdev_notdef(),			/* 11: Sony CD-ROM */
 	cdev_wsdisplay_init(NWSDISPLAY,	/* 12: frame buffers, etc. */
 	    wsdisplay),

@@ -38,6 +38,9 @@
 #define	mmwrite	mmrw
 cdev_decl(mm);
 
+#include "vmm.h"
+cdev_decl(vmm);
+
 /* open, close, ioctl */
 #define cdev_openprom_init(c,n) { \
 	dev_init(c,n,open), dev_init(c,n,close), (dev_type_read((*))) enodev, \
