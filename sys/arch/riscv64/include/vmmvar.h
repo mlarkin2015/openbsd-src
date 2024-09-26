@@ -56,9 +56,8 @@ struct vcpu_reg_state {
 
 enum {
 	VMM_MODE_UNKNOWN,
-	VMM_MODE_EL2,
-	VMM_MODE_VHE,
-	VMM_MODE_GUNYAH,
+	VMM_MODE_LEGACY,
+	VMM_MODE_HMODE
 };
 
 /*

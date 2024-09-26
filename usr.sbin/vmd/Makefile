@@ -1,6 +1,6 @@
 #	$OpenBSD: Makefile,v 1.31 2024/09/11 15:42:52 bluhm Exp $
 
-.if ${MACHINE} == "amd64" || ${MACHINE} == "arm64"
+.if ${MACHINE} == "amd64" || ${MACHINE} == "arm64" || ${MACHINE} == "riscv64"
 
 PROG=		vmd
 SRCS=		vmd.c control.c log.c priv.c proc.c config.c vmm.c vm.c
@@ -16,6 +16,9 @@ SRCS+=		psp.c sev.c
 .if ${MACHINE} == "arm64"
 SRCS+=		arm64_vm.c
 .endif # arm64
+.if ${MACHINE} == "riscv64"
+SRCS+=		riscv64_vm.c
+.endif # riscv64
 
 CFLAGS+=	-Wall -I${.CURDIR}
 CFLAGS+=	-Wstrict-prototypes -Wmissing-prototypes
@@ -32,7 +35,7 @@ YFLAGS=
 
 NOPROG= yes
 
-.endif # amd64 or arm64
+.endif # amd64 or arm64 or riscv64
 
 MAN=		vmd.8 vm.conf.5
 
