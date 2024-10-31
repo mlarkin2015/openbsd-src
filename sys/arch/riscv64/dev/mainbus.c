@@ -29,6 +29,8 @@
 #include <machine/riscv64var.h>
 #include <riscv64/dev/mainbus.h>
 
+#include "vmm.h"
+
 int mainbus_match(struct device *, void *, void *);
 void mainbus_attach(struct device *, struct device *, void *);
 
@@ -38,6 +40,7 @@ void mainbus_attach_cpus(struct device *, cfmatch_t);
 int mainbus_match_primary(struct device *, void *, void *);
 int mainbus_match_secondary(struct device *, void *, void *);
 void mainbus_attach_framebuffer(struct device *);
+void mainbus_attach_vmm(struct device *);
 
 struct mainbus_softc {
 	struct device		 sc_dev;
@@ -143,6 +146,10 @@ mainbus_attach(struct device *parent, struct device *self, void *aux)
 		mainbus_attach_node(self, node, NULL);
 
 	mainbus_attach_framebuffer(self);
+
+#if NVMM > 0
+	mainbus_attach_vmm(self);
+#endif /* NVMM > 0 */
 }
 
 int
@@ -362,4 +369,15 @@ mainbus_attach_framebuffer(struct device *self)
 
 	for (node = OF_child(node); node != 0; node = OF_peer(node))
 		mainbus_attach_node(self, node, NULL);
+}
+
+void
+mainbus_attach_vmm(struct device *self)
+{
+	struct fdt_attach_args fa;
+
+	memset(&fa, 0, sizeof(fa));
+	fa.fa_name = "vmm";
+
+	config_found(self, &fa, NULL);
 }
