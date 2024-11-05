@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_pdaemon.c,v 1.117 2024/10/02 10:36:33 mpi Exp $	*/
+/*	$OpenBSD: uvm_pdaemon.c,v 1.120 2024/11/05 15:29:00 mpi Exp $	*/
 /*	$NetBSD: uvm_pdaemon.c,v 1.23 2000/08/20 10:24:14 bjh21 Exp $	*/
 
 /*
@@ -102,8 +102,9 @@ extern unsigned long drmbackoff(long);
  */
 
 struct rwlock	*uvmpd_trylockowner(struct vm_page *);
-void		uvmpd_scan(struct uvm_pmalloc *, struct uvm_constraint_range *);
-int		uvmpd_scan_inactive(struct uvm_pmalloc *,
+void		uvmpd_scan(struct uvm_pmalloc *, int, int,
+		    struct uvm_constraint_range *);
+int		uvmpd_scan_inactive(struct uvm_pmalloc *, int,
 		    struct uvm_constraint_range *);
 void		uvmpd_tune(void);
 void		uvmpd_drop(struct pglist *);
@@ -205,7 +206,7 @@ uvm_pageout(void *arg)
 {
 	struct uvm_constraint_range constraint;
 	struct uvm_pmalloc *pma;
-	int free;
+	int shortage, inactive_shortage;
 
 	/* ensure correct priority and set paging parameters... */
 	uvm.pagedaemon_proc = curproc;
@@ -236,7 +237,7 @@ uvm_pageout(void *arg)
 			} else
 				constraint = no_constraint;
 		}
-		free = uvmexp.free - BUFPAGES_DEFICIT;
+		shortage = uvmexp.freetarg - uvmexp.free + BUFPAGES_DEFICIT;
 		uvm_unlock_fpageq();
 
 		/*
@@ -253,8 +254,8 @@ uvm_pageout(void *arg)
 		size = 0;
 		if (pma != NULL)
 			size += pma->pm_size >> PAGE_SHIFT;
-		if (free < uvmexp.freetarg)
-			size += uvmexp.freetarg - free;
+		if (shortage > 0)
+			size += shortage;
 		if (size == 0)
 			size = 16; /* XXX */
 
@@ -268,10 +269,12 @@ uvm_pageout(void *arg)
 		 * scan if needed
 		 */
 		uvm_lock_pageq();
-		free = uvmexp.free - BUFPAGES_DEFICIT;
-		if (pma != NULL || (free < uvmexp.freetarg) ||
-		    ((uvmexp.inactive + BUFPAGES_INACT) < uvmexp.inactarg)) {
-			uvmpd_scan(pma, &constraint);
+		shortage = uvmexp.freetarg - uvmexp.free + BUFPAGES_DEFICIT;
+		inactive_shortage =
+			uvmexp.inactarg - uvmexp.inactive - BUFPAGES_INACT;
+		if (pma != NULL || (shortage > 0) || (inactive_shortage > 0)) {
+			uvmpd_scan(pma, shortage, inactive_shortage,
+			    &constraint);
 		}
 
 		/*
@@ -419,11 +422,11 @@ uvmpd_dropswap(struct vm_page *pg)
  * => we return TRUE if we are exiting because we met our target
  */
 int
-uvmpd_scan_inactive(struct uvm_pmalloc *pma,
+uvmpd_scan_inactive(struct uvm_pmalloc *pma, int shortage,
     struct uvm_constraint_range *constraint)
 {
 	struct pglist *pglst = &uvm.page_inactive;
-	int free, result, freed = 0;
+	int result, freed = 0;
 	struct vm_page *p, *nextpg;
 	struct uvm_object *uobj;
 	struct vm_page *pps[SWCLUSTPAGES], **ppsp;
@@ -467,9 +470,8 @@ uvmpd_scan_inactive(struct uvm_pmalloc *pma,
 			/*
 			 * see if we've met our target
 			 */
-			free = uvmexp.free - BUFPAGES_DEFICIT;
 			if (((pma == NULL || (pma->pm_flags & UVM_PMA_FREED)) &&
-			    (free + uvmexp.paging >= uvmexp.freetarg)) ||
+			    (uvmexp.paging >= (shortage - freed))) ||
 			    dirtyreacts == UVMPD_NUMDIRTYREACTS) {
 				if (swslot == 0) {
 					/* exit now if no swap-i/o pending */
@@ -566,7 +568,7 @@ uvmpd_scan_inactive(struct uvm_pmalloc *pma,
 			 * free target when all the current pageouts complete.
 			 */
 			if ((pma == NULL || (pma->pm_flags & UVM_PMA_FREED)) &&
-			    (free + uvmexp.paging > uvmexp.freetarg)) {
+			    (uvmexp.paging > (shortage - freed))) {
 				rw_exit(slock);
 				continue;
 			}
@@ -858,9 +860,10 @@ uvmpd_scan_inactive(struct uvm_pmalloc *pma,
  */
 
 void
-uvmpd_scan(struct uvm_pmalloc *pma, struct uvm_constraint_range *constraint)
+uvmpd_scan(struct uvm_pmalloc *pma, int shortage, int inactive_shortage,
+    struct uvm_constraint_range *constraint)
 {
-	int free, inactive_shortage, swap_shortage, pages_freed;
+	int swap_shortage, pages_freed;
 	struct vm_page *p, *nextpg;
 	struct rwlock *slock;
 	paddr_t paddr;
@@ -869,20 +872,16 @@ uvmpd_scan(struct uvm_pmalloc *pma, struct uvm_constraint_range *constraint)
 
 	uvmexp.pdrevs++;		/* counter */
 
-	/*
-	 * get current "free" page count
-	 */
-	free = uvmexp.free - BUFPAGES_DEFICIT;
 
 #ifdef __HAVE_PMAP_COLLECT
 	/*
 	 * swap out some processes if we are below our free target.
 	 * we need to unlock the page queues for this.
 	 */
-	if (free < uvmexp.freetarg) {
+	if (shortage > 0) {
 		uvmexp.pdswout++;
 		uvm_unlock_pageq();
-		uvm_swapout_threads();
+		shortage -= uvm_swapout_threads();
 		uvm_lock_pageq();
 	}
 #endif
@@ -893,24 +892,21 @@ uvmpd_scan(struct uvm_pmalloc *pma, struct uvm_constraint_range *constraint)
 	 * we work on meeting our inactive target by converting active pages
 	 * to inactive ones.
 	 */
-	pages_freed = uvmpd_scan_inactive(pma, constraint);
+	pages_freed = uvmpd_scan_inactive(pma, shortage, constraint);
 	uvmexp.pdfreed += pages_freed;
+	shortage -= pages_freed;
 
 	/*
 	 * we have done the scan to get free pages.   now we work on meeting
 	 * our inactive target.
-	 */
-	inactive_shortage = uvmexp.inactarg - uvmexp.inactive - BUFPAGES_INACT;
-
-	/*
+	 *
 	 * detect if we're not going to be able to page anything out
 	 * until we free some swap resources from active pages.
 	 */
-	free = uvmexp.free - BUFPAGES_DEFICIT;
 	swap_shortage = 0;
-	if (free < uvmexp.freetarg && uvm_swapisfilled() && !uvm_swapisfull() &&
+	if ((shortage > 0) && uvm_swapisfilled() && !uvm_swapisfull() &&
 	    pages_freed == 0) {
-		swap_shortage = uvmexp.freetarg - free;
+		swap_shortage = shortage;
 	}
 
 	for (p = TAILQ_FIRST(&uvm.page_active);

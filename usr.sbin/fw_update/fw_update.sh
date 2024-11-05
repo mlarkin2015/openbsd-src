@@ -1,5 +1,5 @@
 #!/bin/ksh
-#	$OpenBSD: fw_update.sh,v 1.57 2024/10/12 23:56:23 afresh1 Exp $
+#	$OpenBSD: fw_update.sh,v 1.59 2024/11/04 01:24:00 afresh1 Exp $
 #
 # Copyright (c) 2021,2023 Andrew Hewus Fresh <afresh1@openbsd.org>
 #
@@ -51,6 +51,7 @@ unset FTPPID
 unset LOCKPID
 unset FWPKGTMP
 REMOVE_LOCALSRC=false
+DROP_PRIVS=true
 
 status() { echo -n "$*" >&"$STATUS_FD"; }
 warn()   { echo    "$*" >&"$WARN_FD"; }
@@ -121,7 +122,9 @@ fetch() {
 		  2) _flags=-Vm ;;
 	esac
 
-	if [ -x /usr/bin/su ]; then
+	if ! "$DROP_PRIVS"; then
+		/usr/bin/ftp -N error -D 'Get/Verify' $_flags -o- "$_src" > "$_dst"
+	elif [ -x /usr/bin/su ]; then
 		exec /usr/bin/su -s /bin/ksh "$_user" -c \
 		    "/usr/bin/ftp -N error -D 'Get/Verify' $_flags -o- '$_src'" > "$_dst"
 	else
@@ -492,15 +495,15 @@ usage() {
 }
 
 ALL=false
-OPT_F=
+DOWNLOAD_ONLY=false
 while getopts :adFnp:v name
 do
 	case "$name" in
 	a) ALL=true ;;
 	d) DELETE=true ;;
-	F) OPT_F=true ;;
+	F) DOWNLOAD_ONLY=true ;;
 	n) DRYRUN=true ;;
-	p) LOCALSRC="$OPTARG" ;;
+	p) FWURL="$OPTARG" ;;
 	v) ((++VERBOSE)) ;;
 	:)
 	    warn "${0##*/}: option requires an argument -- -$OPTARG"
@@ -517,40 +520,31 @@ shift $((OPTIND - 1))
 # Progress bars, not spinner When VERBOSE > 1
 ((VERBOSE > 1)) && ENABLE_SPINNER=false
 
-if [ "$LOCALSRC" ]; then
-	if [[ $LOCALSRC = @(ftp|http?(s))://* ]]; then
-		FWURL="${LOCALSRC}"
-		LOCALSRC=
-	else
-		LOCALSRC="${LOCALSRC#file:}"
-		! [ -d "$LOCALSRC" ] &&
-		    warn "The path must be a URL or an existing directory" &&
-		    exit 1
-	fi
+if [[ $FWURL != @(ftp|http?(s))://* ]]; then
+	FWURL="${FWURL#file:}"
+	! [ -d "$FWURL" ] &&
+	    warn "The path must be a URL or an existing directory" &&
+	    exit 1
+	FWURL="file:$FWURL"
 fi
 
 # "Download only" means local dir and don't install
-if [ "$OPT_F" ]; then
+if "$DOWNLOAD_ONLY"; then
 	INSTALL=false
 	LOCALSRC="${LOCALSRC:-.}"
-
-	# Always check for latest CFILE and so latest firmware
-	if [ -e "$LOCALSRC/$CFILE" ]; then
-		mv "$LOCALSRC/$CFILE" "$LOCALSRC/$CFILE-OLD"
-		if check_cfile; then
-			rm -f "$LOCALSRC/$CFILE-OLD"
-		else
-			mv "$LOCALSRC/$CFILE-OLD" "$LOCALSRC/$CFILE"
-			warn "Using existing $CFILE"
-		fi
-	fi
 elif [ "$LOCALSRC" ]; then
 	DOWNLOAD=false
 fi
 
 if [ -x /usr/bin/id ] && [ "$(/usr/bin/id -u)" != 0 ]; then
-	warn "need root privileges"
-	exit 1
+	if "$DOWNLOAD_ONLY"; then
+		# When we aren't in the installer,
+		# allow downloading as the current user.
+		DROP_PRIVS=false
+	else
+		warn "need root privileges"
+		exit 1
+	fi
 fi
 
 set -sA devices -- "$@"
@@ -570,7 +564,7 @@ WARN_FD=4
 status "${0##*/}:"
 
 if "$DELETE"; then
-	[ "$OPT_F" ] && warn "Cannot use -F and -d" && usage
+	"$DOWNLOAD_ONLY" && warn "Cannot use -F and -d" && usage
 	lock_db
 
 	# Show the "Uninstall" message when just deleting not upgrading

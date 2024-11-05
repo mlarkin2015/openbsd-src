@@ -1,4 +1,4 @@
-/* $OpenBSD: ecp_smpl.c,v 1.56 2023/08/03 18:53:56 tb Exp $ */
+/* $OpenBSD: ecp_smpl.c,v 1.61 2024/11/05 08:56:57 tb Exp $ */
 /* Includes code written by Lenka Fibikova <fibikova@exp-math.uni-essen.de>
  * for the OpenSSL project.
  * Includes code written by Bodo Moeller for the OpenSSL project.
@@ -62,7 +62,12 @@
  * and contributed to the OpenSSL project.
  */
 
+#include <stdlib.h>
+
+#include <openssl/bn.h>
+#include <openssl/ec.h>
 #include <openssl/err.h>
+#include <openssl/objects.h>
 
 #include "bn_local.h"
 #include "ec_local.h"
@@ -389,11 +394,6 @@ ec_GFp_simple_point_get_affine_coordinates(const EC_GROUP *group,
 	BIGNUM *z, *Z, *Z_1, *Z_2, *Z_3;
 	int ret = 0;
 
-	if (EC_POINT_is_at_infinity(group, point) > 0) {
-		ECerror(EC_R_POINT_AT_INFINITY);
-		return 0;
-	}
-
 	BN_CTX_start(ctx);
 
 	if ((z = BN_CTX_get(ctx)) == NULL)
@@ -469,6 +469,104 @@ ec_GFp_simple_point_get_affine_coordinates(const EC_GROUP *group,
 }
 
 int
+ec_GFp_simple_set_compressed_coordinates(const EC_GROUP *group,
+    EC_POINT *point, const BIGNUM *in_x, int y_bit, BN_CTX *ctx)
+{
+	const BIGNUM *p = &group->field, *a = &group->a, *b = &group->b;
+	BIGNUM *w, *x, *y;
+	int ret = 0;
+
+	y_bit = (y_bit != 0);
+
+	BN_CTX_start(ctx);
+
+	if ((w = BN_CTX_get(ctx)) == NULL)
+		goto err;
+	if ((x = BN_CTX_get(ctx)) == NULL)
+		goto err;
+	if ((y = BN_CTX_get(ctx)) == NULL)
+		goto err;
+
+	/*
+	 * Weierstrass equation: y^2 = x^3 + ax + b, so y is one of the
+	 * square roots of x^3 + ax + b. The y-bit indicates which one.
+	 */
+
+	/* XXX - should we not insist on 0 <= x < p instead? */
+	if (!BN_nnmod(x, in_x, p, ctx))
+		goto err;
+
+	if (group->meth->field_encode != NULL) {
+		if (!group->meth->field_encode(group, x, x, ctx))
+			goto err;
+	}
+
+	/* y = x^3 */
+	if (!group->meth->field_sqr(group, y, x, ctx))
+		goto err;
+	if (!group->meth->field_mul(group, y, y, x, ctx))
+		goto err;
+
+	/* y += ax */
+	if (group->a_is_minus3) {
+		if (!BN_mod_lshift1_quick(w, x, p))
+			goto err;
+		if (!BN_mod_add_quick(w, w, x, p))
+			goto err;
+		if (!BN_mod_sub_quick(y, y, w, p))
+			goto err;
+	} else {
+		if (!group->meth->field_mul(group, w, a, x, ctx))
+			goto err;
+		if (!BN_mod_add_quick(y, y, w, p))
+			goto err;
+	}
+
+	/* y += b */
+	if (!BN_mod_add_quick(y, y, b, p))
+		goto err;
+
+	if (group->meth->field_decode != NULL) {
+		if (!group->meth->field_decode(group, x, x, ctx))
+			goto err;
+		if (!group->meth->field_decode(group, y, y, ctx))
+			goto err;
+	}
+
+	if (!BN_mod_sqrt(y, y, p, ctx)) {
+		ECerror(EC_R_INVALID_COMPRESSED_POINT);
+		goto err;
+	}
+
+	if (y_bit == BN_is_odd(y))
+		goto done;
+
+	if (BN_is_zero(y)) {
+		ECerror(EC_R_INVALID_COMPRESSION_BIT);
+		goto err;
+	}
+	if (!BN_usub(y, &group->field, y))
+		goto err;
+
+	if (y_bit != BN_is_odd(y)) {
+		/* Can only happen if p is even and should not be reachable. */
+		ECerror(ERR_R_INTERNAL_ERROR);
+		goto err;
+	}
+
+ done:
+	if (!EC_POINT_set_affine_coordinates(group, point, x, y, ctx))
+		goto err;
+
+	ret = 1;
+
+ err:
+	BN_CTX_end(ctx);
+
+	return ret;
+}
+
+int
 ec_GFp_simple_add(const EC_GROUP *group, EC_POINT *r, const EC_POINT *a, const EC_POINT *b, BN_CTX *ctx)
 {
 	int (*field_mul) (const EC_GROUP *, BIGNUM *, const BIGNUM *, const BIGNUM *, BN_CTX *);
@@ -479,9 +577,9 @@ ec_GFp_simple_add(const EC_GROUP *group, EC_POINT *r, const EC_POINT *a, const E
 
 	if (a == b)
 		return EC_POINT_dbl(group, r, a, ctx);
-	if (EC_POINT_is_at_infinity(group, a) > 0)
+	if (EC_POINT_is_at_infinity(group, a))
 		return EC_POINT_copy(r, b);
-	if (EC_POINT_is_at_infinity(group, b) > 0)
+	if (EC_POINT_is_at_infinity(group, b))
 		return EC_POINT_copy(r, a);
 
 	field_mul = group->meth->field_mul;
@@ -659,7 +757,7 @@ ec_GFp_simple_dbl(const EC_GROUP *group, EC_POINT *r, const EC_POINT *a, BN_CTX 
 	BIGNUM *n0, *n1, *n2, *n3;
 	int ret = 0;
 
-	if (EC_POINT_is_at_infinity(group, a) > 0)
+	if (EC_POINT_is_at_infinity(group, a))
 		return EC_POINT_set_to_infinity(group, r);
 
 	field_mul = group->meth->field_mul;
@@ -787,7 +885,7 @@ ec_GFp_simple_dbl(const EC_GROUP *group, EC_POINT *r, const EC_POINT *a, BN_CTX 
 int
 ec_GFp_simple_invert(const EC_GROUP *group, EC_POINT *point, BN_CTX *ctx)
 {
-	if (EC_POINT_is_at_infinity(group, point) > 0 || BN_is_zero(&point->Y))
+	if (EC_POINT_is_at_infinity(group, point) || BN_is_zero(&point->Y))
 		/* point is its own inverse */
 		return 1;
 
@@ -809,7 +907,7 @@ ec_GFp_simple_is_on_curve(const EC_GROUP *group, const EC_POINT *point, BN_CTX *
 	BIGNUM *rh, *tmp, *Z4, *Z6;
 	int ret = -1;
 
-	if (EC_POINT_is_at_infinity(group, point) > 0)
+	if (EC_POINT_is_at_infinity(group, point))
 		return 1;
 
 	field_mul = group->meth->field_mul;
@@ -911,10 +1009,10 @@ ec_GFp_simple_cmp(const EC_GROUP *group, const EC_POINT *a, const EC_POINT *b, B
 	const BIGNUM *tmp1_, *tmp2_;
 	int ret = -1;
 
-	if (EC_POINT_is_at_infinity(group, a) > 0)
-		return EC_POINT_is_at_infinity(group, b) > 0 ? 0 : 1;
+	if (EC_POINT_is_at_infinity(group, a))
+		return !EC_POINT_is_at_infinity(group, b);
 
-	if (EC_POINT_is_at_infinity(group, b) > 0)
+	if (EC_POINT_is_at_infinity(group, b))
 		return 1;
 
 	if (a->Z_is_one && b->Z_is_one)
@@ -999,7 +1097,7 @@ ec_GFp_simple_make_affine(const EC_GROUP *group, EC_POINT *point, BN_CTX *ctx)
 	BIGNUM *x, *y;
 	int ret = 0;
 
-	if (point->Z_is_one || EC_POINT_is_at_infinity(group, point) > 0)
+	if (point->Z_is_one || EC_POINT_is_at_infinity(group, point))
 		return 1;
 
 	BN_CTX_start(ctx);
@@ -1534,8 +1632,6 @@ static const EC_METHOD ec_GFp_simple_method = {
 	    ec_GFp_simple_point_get_affine_coordinates,
 	.point_set_compressed_coordinates =
 	    ec_GFp_simple_set_compressed_coordinates,
-	.point2oct = ec_GFp_simple_point2oct,
-	.oct2point = ec_GFp_simple_oct2point,
 	.add = ec_GFp_simple_add,
 	.dbl = ec_GFp_simple_dbl,
 	.invert = ec_GFp_simple_invert,

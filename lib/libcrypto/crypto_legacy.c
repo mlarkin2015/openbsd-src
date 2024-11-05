@@ -1,4 +1,4 @@
-/* $OpenBSD: cryptlib.c,v 1.57 2024/10/19 13:06:11 jsing Exp $ */
+/* $OpenBSD: crypto_legacy.c,v 1.5 2024/11/05 11:14:04 tb Exp $ */
 /* ====================================================================
  * Copyright (c) 1998-2006 The OpenSSL Project.  All rights reserved.
  *
@@ -123,8 +123,8 @@
 
 #include <openssl/opensslconf.h>
 #include <openssl/crypto.h>
+#include <openssl/err.h>
 
-#include "cryptlib.h"
 #include "crypto_internal.h"
 #include "crypto_local.h"
 #include "x86_arch.h"
@@ -211,7 +211,8 @@ CRYPTO_get_dynlock_value(int i)
 }
 LCRYPTO_ALIAS(CRYPTO_get_dynlock_value);
 
-int CRYPTO_get_new_dynlockid(void)
+int
+CRYPTO_get_new_dynlockid(void)
 {
 	return 0;
 }
@@ -305,31 +306,6 @@ void
 }
 LCRYPTO_ALIAS(CRYPTO_get_dynlock_destroy_callback);
 
-void
-CRYPTO_THREADID_current(CRYPTO_THREADID *id)
-{
-	memset(id, 0, sizeof(*id));
-	id->val = (unsigned long)pthread_self();
-}
-
-int
-CRYPTO_THREADID_cmp(const CRYPTO_THREADID *a, const CRYPTO_THREADID *b)
-{
-	return memcmp(a, b, sizeof(*a));
-}
-
-void
-CRYPTO_THREADID_cpy(CRYPTO_THREADID *dest, const CRYPTO_THREADID *src)
-{
-	memcpy(dest, src, sizeof(*src));
-}
-
-unsigned long
-CRYPTO_THREADID_hash(const CRYPTO_THREADID *id)
-{
-	return id->val;
-}
-
 #if !defined(OPENSSL_CPUID_SETUP) && !defined(OPENSSL_CPUID_OBJ)
 void
 OPENSSL_cpuid_setup(void)
@@ -381,6 +357,20 @@ OpenSSLDie(const char *file, int line, const char *assertion)
 }
 LCRYPTO_ALIAS(OpenSSLDie);
 
+void
+OPENSSL_cleanse(void *ptr, size_t len)
+{
+	explicit_bzero(ptr, len);
+}
+LCRYPTO_ALIAS(OPENSSL_cleanse);
+
+int
+CRYPTO_mem_ctrl(int mode)
+{
+	return CRYPTO_MEM_CHECK_OFF;
+}
+LCRYPTO_ALIAS(CRYPTO_mem_ctrl);
+
 int
 CRYPTO_memcmp(const void *in_a, const void *in_b, size_t len)
 {
@@ -395,3 +385,74 @@ CRYPTO_memcmp(const void *in_a, const void *in_b, size_t len)
 	return x;
 }
 LCRYPTO_ALIAS(CRYPTO_memcmp);
+
+int
+FIPS_mode(void)
+{
+	return 0;
+}
+LCRYPTO_ALIAS(FIPS_mode);
+
+int
+FIPS_mode_set(int r)
+{
+	if (r == 0)
+		return 1;
+	CRYPTOerror(CRYPTO_R_FIPS_MODE_NOT_SUPPORTED);
+	return 0;
+}
+LCRYPTO_ALIAS(FIPS_mode_set);
+
+const char *
+SSLeay_version(int t)
+{
+	switch (t) {
+	case SSLEAY_VERSION:
+		return OPENSSL_VERSION_TEXT;
+	case SSLEAY_BUILT_ON:
+		return "built on: date not available";
+	case SSLEAY_CFLAGS:
+		return "compiler: information not available";
+	case SSLEAY_PLATFORM:
+		return "platform: information not available";
+	case SSLEAY_DIR:
+		return "OPENSSLDIR: \"" OPENSSLDIR "\"";
+	}
+	return "not available";
+}
+LCRYPTO_ALIAS(SSLeay_version);
+
+unsigned long
+SSLeay(void)
+{
+	return SSLEAY_VERSION_NUMBER;
+}
+LCRYPTO_ALIAS(SSLeay);
+
+const char *
+OpenSSL_version(int t)
+{
+	switch (t) {
+	case OPENSSL_VERSION:
+		return OPENSSL_VERSION_TEXT;
+	case OPENSSL_BUILT_ON:
+		return "built on: date not available";
+	case OPENSSL_CFLAGS:
+		return "compiler: information not available";
+	case OPENSSL_PLATFORM:
+		return "platform: information not available";
+	case OPENSSL_DIR:
+		return "OPENSSLDIR: \"" OPENSSLDIR "\"";
+	case OPENSSL_ENGINES_DIR:
+		return "ENGINESDIR: N/A";
+	}
+	return "not available";
+}
+LCRYPTO_ALIAS(OpenSSL_version);
+
+unsigned long
+OpenSSL_version_num(void)
+{
+	return SSLeay();
+}
+LCRYPTO_ALIAS(OpenSSL_version_num);

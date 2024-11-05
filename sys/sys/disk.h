@@ -1,4 +1,4 @@
-/*	$OpenBSD: disk.h,v 1.39 2024/10/26 05:39:03 jsg Exp $	*/
+/*	$OpenBSD: disk.h,v 1.41 2024/10/30 15:00:12 deraadt Exp $	*/
 /*	$NetBSD: disk.h,v 1.11 1996/04/28 20:22:50 thorpej Exp $	*/
 
 /*

@@ -1,4 +1,4 @@
-/* $OpenBSD: ec_asn1_test.c,v 1.19 2024/10/28 18:44:12 tb Exp $ */
+/* $OpenBSD: ec_asn1_test.c,v 1.28 2024/11/05 09:14:25 tb Exp $ */
 /*
  * Copyright (c) 2017, 2021 Joel Sing <jsing@openbsd.org>
  * Copyright (c) 2024 Theo Buehler <tb@openbsd.org>
@@ -26,8 +26,6 @@
 
 /* set to 0 if/when we are going to enforce 0 <= a,b < p. */
 #define NEGATIVE_CURVE_COEFFICIENTS_ALLOWED	1
-/* unifdef once private key padding in i2d_ECPrivateKey() is fixed. */
-#define CORRECT_PRIV_KEY_PADDING		1
 
 static const uint8_t ec_secp256r1_pkparameters_named_curve[] = {
 	0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03,
@@ -186,7 +184,7 @@ ec_group_pkparameters_test(const char *label, int nid, int asn1_flag,
 	if ((bio_mem = BIO_new(BIO_s_mem())) == NULL)
                 errx(1, "BIO_new failed for BIO_s_mem");
 
-	if ((len = i2d_ECPKParameters_bio(bio_mem, group_a)) < 0) {
+	if (i2d_ECPKParameters_bio(bio_mem, group_a) < 0) {
 		fprintf(stderr, "FAIL: i2d_ECPKParameters_bio failed\n");
 		goto done;
 	}
@@ -214,7 +212,7 @@ ec_group_pkparameters_test(const char *label, int nid, int asn1_flag,
 	EC_GROUP_free(group_b);
 	free(out);
 
-	return (failure);
+	return failure;
 }
 
 static int
@@ -244,12 +242,72 @@ ec_group_pkparameters_correct_padding_test(void)
 	    sizeof(ec_secp256k1_pkparameters_parameters));
 }
 
+static EC_GROUP *
+ec_group_simple_from_builtin(const EC_GROUP *group, int nid, BN_CTX *ctx)
+{
+	EC_GROUP *simple_group;
+	BIGNUM *p, *a, *b, *x, *y, *order, *cofactor;
+	const EC_POINT *generator;
+	EC_POINT *simple_generator = NULL;
+
+	BN_CTX_start(ctx);
+
+	if ((p = BN_CTX_get(ctx)) == NULL)
+		errx(1, "BN_CTX_get");
+	if ((a = BN_CTX_get(ctx)) == NULL)
+		errx(1, "BN_CTX_get");
+	if ((b = BN_CTX_get(ctx)) == NULL)
+		errx(1, "BN_CTX_get");
+
+	if ((x = BN_CTX_get(ctx)) == NULL)
+		errx(1, "BN_CTX_get");
+	if ((y = BN_CTX_get(ctx)) == NULL)
+		errx(1, "BN_CTX_get");
+
+	if ((order = BN_CTX_get(ctx)) == NULL)
+		errx(1, "BN_CTX_get");
+	if ((cofactor = BN_CTX_get(ctx)) == NULL)
+		errx(1, "BN_CTX_get");
+
+	if (!EC_GROUP_get_curve(group, p, a, b, ctx))
+		errx(1, "EC_GROUP_get_curve");
+	if (!EC_GROUP_get_order(group, order, ctx))
+		errx(1, "EC_GROUP_get_order");
+	if (!EC_GROUP_get_cofactor(group, cofactor, ctx))
+		errx(1, "EC_GROUP_get_cofactor");
+	if ((generator = EC_GROUP_get0_generator(group)) == NULL)
+		errx(1, "EC_GROUP_get0_generator");
+	if (!EC_POINT_get_affine_coordinates(group, generator, x, y, ctx))
+		errx(1, "EC_POINT_get_affine_coordinates");
+
+	if ((simple_group = EC_GROUP_new(EC_GFp_simple_method())) == NULL)
+		errx(1, "EC_GROUP_new");
+	if (!EC_GROUP_set_curve(simple_group, p, a, b, ctx))
+		errx(1, "EC_GROUP_set_curve");
+	EC_GROUP_set_curve_name(simple_group, nid);
+
+	if ((simple_generator = EC_POINT_new(simple_group)) == NULL)
+		errx(1, "EC_POINT_new");
+	if (!EC_POINT_set_compressed_coordinates(simple_group, simple_generator,
+	    x, BN_is_odd(y), ctx))
+		errx(1, "EC_POINT_set_affine_coordinates");
+	if (!EC_GROUP_set_generator(simple_group, simple_generator, order,
+	    cofactor))
+		errx(1, "EC_GROUP_set_generator");
+
+	BN_CTX_end(ctx);
+
+	EC_POINT_free(simple_generator);
+
+	return simple_group;
+}
+
 static int
 ec_group_roundtrip_curve(const EC_GROUP *group, const char *descr, int nid)
 {
 	EC_GROUP *new_group = NULL;
-	unsigned char *der = NULL;
-	int der_len;
+	unsigned char *der = NULL, *new_der = NULL;
+	int der_len = 0, new_der_len = 0;
 	const unsigned char *p;
 	int failed = 1;
 
@@ -261,9 +319,20 @@ ec_group_roundtrip_curve(const EC_GROUP *group, const char *descr, int nid)
 	if ((new_group = d2i_ECPKParameters(NULL, &p, der_len)) == NULL)
 		errx(1, "failed to deserialize %s %d", descr, nid);
 
-	if (EC_GROUP_cmp(group, new_group, NULL) != 0) {
-		fprintf(stderr, "FAIL: %s %d groups mismatch\n", descr, nid);
+	new_der = NULL;
+	if ((new_der_len = i2d_ECPKParameters(new_group, &new_der)) <= 0)
+		errx(1, "failed to serialize new %s %d", descr, nid);
+
+	if (compare_data(__func__, der, der_len, new_der, new_der_len) == -1) {
+		fprintf(stderr, "FAIL: new and old der for %s %d\n", descr, nid);
 		goto err;
+	}
+
+	if (EC_GROUP_method_of(group) == EC_GFp_mont_method()) {
+		if (EC_GROUP_cmp(group, new_group, NULL) != 0) {
+			fprintf(stderr, "FAIL: %s %d groups mismatch\n", descr, nid);
+			goto err;
+		}
 	}
 	if (EC_GROUP_get_asn1_flag(group) != EC_GROUP_get_asn1_flag(new_group)) {
 		fprintf(stderr, "FAIL: %s %d asn1_flag %x != %x\n", descr, nid,
@@ -283,16 +352,50 @@ ec_group_roundtrip_curve(const EC_GROUP *group, const char *descr, int nid)
 
  err:
 	EC_GROUP_free(new_group);
-	free(der);
+	freezero(der, der_len);
+	freezero(new_der, new_der_len);
 
 	return failed;
 }
 
 static int
-ec_group_roundtrip_builtin_curve(const EC_builtin_curve *curve)
+ec_group_roundtrip_group(EC_GROUP *group, int nid)
 {
-	EC_GROUP *group = NULL;
 	int failed = 1;
+
+	if (EC_GROUP_get_asn1_flag(group) != OPENSSL_EC_NAMED_CURVE) {
+		fprintf(stderr, "FAIL: ASN.1 flag not set for %d\n", nid);
+		goto err;
+	}
+	if (EC_GROUP_get_point_conversion_form(group) !=
+	    POINT_CONVERSION_UNCOMPRESSED) {
+		fprintf(stderr, "FAIL: %d has point conversion form %02x\n",
+		    nid, EC_GROUP_get_point_conversion_form(group));
+		goto err;
+	}
+
+	failed = 0;
+
+	failed |= ec_group_roundtrip_curve(group, "named", nid);
+
+	EC_GROUP_set_asn1_flag(group, 0);
+	failed |= ec_group_roundtrip_curve(group, "explicit", nid);
+
+	EC_GROUP_set_point_conversion_form(group, POINT_CONVERSION_COMPRESSED);
+	failed |= ec_group_roundtrip_curve(group, "compressed", nid);
+
+	EC_GROUP_set_point_conversion_form(group, POINT_CONVERSION_HYBRID);
+	failed |= ec_group_roundtrip_curve(group, "hybrid", nid);
+
+ err:
+	return failed;
+}
+
+static int
+ec_group_roundtrip_builtin_curve(const EC_builtin_curve *curve, BN_CTX *ctx)
+{
+	EC_GROUP *group = NULL, *simple_group = NULL;
+	int failed = 0;
 
 	if ((group = EC_GROUP_new_by_curve_name(curve->nid)) == NULL)
 		errx(1, "failed to instantiate curve %d", curve->nid);
@@ -302,32 +405,21 @@ ec_group_roundtrip_builtin_curve(const EC_builtin_curve *curve)
 		goto err;
 	}
 
-	if (EC_GROUP_get_asn1_flag(group) != OPENSSL_EC_NAMED_CURVE) {
-		fprintf(stderr, "FAIL: ASN.1 flag not set for %d\n", curve->nid);
+	if ((simple_group = ec_group_simple_from_builtin(group, curve->nid,
+	    ctx)) == NULL)
+		errx(1, "failed to instantiate simple group %d", curve->nid);
+
+	if (!EC_GROUP_check(group, NULL)) {
+		fprintf(stderr, "FAIL: EC_GROUP_check(%d) failed\n", curve->nid);
 		goto err;
 	}
-	if (EC_GROUP_get_point_conversion_form(group) !=
-	    POINT_CONVERSION_UNCOMPRESSED) {
-		fprintf(stderr, "FAIL: %d has point conversion form %02x\n",
-		    curve->nid, EC_GROUP_get_point_conversion_form(group));
-		goto err;
-	}
 
-	failed = 0;
-
-	failed |= ec_group_roundtrip_curve(group, "named", curve->nid);
-
-	EC_GROUP_set_asn1_flag(group, 0);
-	failed |= ec_group_roundtrip_curve(group, "explicit", curve->nid);
-
-	EC_GROUP_set_point_conversion_form(group, POINT_CONVERSION_COMPRESSED);
-	failed |= ec_group_roundtrip_curve(group, "compressed", curve->nid);
-
-	EC_GROUP_set_point_conversion_form(group, POINT_CONVERSION_HYBRID);
-	failed |= ec_group_roundtrip_curve(group, "hybrid", curve->nid);
+	failed |= ec_group_roundtrip_group(group, curve->nid);
+	failed |= ec_group_roundtrip_group(simple_group, curve->nid);
 
  err:
 	EC_GROUP_free(group);
+	EC_GROUP_free(simple_group);
 
 	return failed;
 }
@@ -335,9 +427,13 @@ ec_group_roundtrip_builtin_curve(const EC_builtin_curve *curve)
 static int
 ec_group_roundtrip_builtin_curves(void)
 {
+	BN_CTX *ctx = NULL;
 	EC_builtin_curve *all_curves = NULL;
 	size_t curve_id, ncurves;
 	int failed = 0;
+
+	if ((ctx = BN_CTX_new()) == NULL)
+		errx(1, "BN_CTX_new");
 
 	ncurves = EC_get_builtin_curves(NULL, 0);
 	if ((all_curves = calloc(ncurves, sizeof(*all_curves))) == NULL)
@@ -345,9 +441,10 @@ ec_group_roundtrip_builtin_curves(void)
 	EC_get_builtin_curves(all_curves, ncurves);
 
 	for (curve_id = 0; curve_id < ncurves; curve_id++)
-		failed |= ec_group_roundtrip_builtin_curve(&all_curves[curve_id]);
+		failed |= ec_group_roundtrip_builtin_curve(&all_curves[curve_id], ctx);
 
 	free(all_curves);
+	BN_CTX_free(ctx);
 
 	return failed;
 }
@@ -787,9 +884,10 @@ ec_group_non_builtin_curve(const struct curve *curve, const EC_METHOD *method,
 	EC_GROUP *group = NULL, *new_group = NULL;
 	const unsigned char *pder;
 	unsigned char *der = NULL;
+#ifndef OPENSSL_SUPPRESS_DEPRECATED
 	long error;
+#endif
 	int der_len = 0;
-	int nid;
 	int failed = 1;
 
 	ERR_clear_error();
@@ -798,7 +896,7 @@ ec_group_non_builtin_curve(const struct curve *curve, const EC_METHOD *method,
 	if ((group = ec_group_new(curve, method, ctx)) == NULL)
 		goto err;
 
-	if ((nid = EC_GROUP_get_curve_name(group)) == NID_undef) {
+	if (EC_GROUP_get_curve_name(group) == NID_undef) {
 		fprintf(stderr, "FAIL: no curve name set for %s\n", curve->descr);
 		goto err;
 	}
@@ -856,7 +954,7 @@ ec_group_non_builtin_curve(const struct curve *curve, const EC_METHOD *method,
 	}
 	EC_GROUP_free(new_group);
 	new_group = NULL;
-
+#ifndef OPENSSL_SUPPRESS_DEPRECATED
 	error = ERR_get_error();
 	if (!curve->known_named_curve &&
 	    ERR_GET_REASON(error) != EC_R_UNKNOWN_GROUP) {
@@ -864,6 +962,7 @@ ec_group_non_builtin_curve(const struct curve *curve, const EC_METHOD *method,
 		    curve->descr, EC_R_UNKNOWN_GROUP, ERR_GET_REASON(error));
 		goto err;
 	}
+#endif
 
 	ERR_clear_error();
 
@@ -875,12 +974,14 @@ ec_group_non_builtin_curve(const struct curve *curve, const EC_METHOD *method,
 		goto err;
 	}
 
+#ifndef OPENSSL_SUPPRESS_DEPRECATED
 	error = ERR_peek_last_error();
 	if (ERR_GET_REASON(error) != EC_R_PKPARAMETERS2GROUP_FAILURE) {
 		fprintf(stderr, "FAIL: %s unexpected error: want %d, got %d\n",
 		    curve->descr, EC_R_UNKNOWN_GROUP, ERR_GET_REASON(error));
 		goto err;
 	}
+#endif
 
 	failed = 0;
 
@@ -1040,7 +1141,6 @@ static const struct ec_private_key {
 			0xe2,
 		},
 	},
-#if CORRECT_PRIV_KEY_PADDING
 	{
 		.name = "secp160k1",
 		.der_len = 83,
@@ -1137,7 +1237,6 @@ static const struct ec_private_key {
 			0x63,
 		},
 	},
-#endif
 	{
 		.name = "secp192k1",
 		.der_len = 94,
@@ -1173,7 +1272,6 @@ static const struct ec_private_key {
 			0xdc,
 		},
 	},
-#if CORRECT_PRIV_KEY_PADDING
 	{
 		.name = "secp224k1",
 		.der_len = 107,
@@ -1213,7 +1311,6 @@ static const struct ec_private_key {
 			0x0b,
 		},
 	},
-#endif
 	{
 		.name = "secp224r1",
 		.der_len = 106,
@@ -1718,7 +1815,6 @@ static const struct ec_private_key {
 			0xfe, 0x7a, 0xb1, 0xa2, 0x74,
 		},
 	},
-#if CORRECT_PRIV_KEY_PADDING
 	{
 		.name = "wap-wsg-idm-ecid-wtls7",
 		.der_len = 83,
@@ -1809,7 +1905,6 @@ static const struct ec_private_key {
 			0x3c,
 		},
 	},
-#endif
 	{
 		.name = "wap-wsg-idm-ecid-wtls12",
 		.der_len = 106,
@@ -2552,22 +2647,15 @@ static const struct ec_private_key {
 
 #define N_EC_PRIVATE_KEYS (sizeof(ec_private_keys) / sizeof(ec_private_keys[0]))
 
-static int
-ec_group_check_private_key(const struct ec_private_key *key)
+static EC_KEY *
+ec_key_check_sanity(const struct ec_private_key *key)
 {
-	EC_KEY *ec_key = NULL, *ec_pub_key = NULL;
-	const EC_GROUP *group;
-	const EC_POINT *ec_public_point;
-	EC_POINT *point = NULL;
-	BIGNUM *hex_bn = NULL, *point_bn = NULL;
+	EC_KEY *ec_key;
 	const unsigned char *p;
+	unsigned char *der = NULL;
+	int der_len = 0;
 	unsigned int flags;
-	unsigned char *der = NULL, *ostr = NULL;
-	char *hex = NULL;
-	int der_len = 0, hex_len = 0, ostr_len = 0;
 	uint8_t form;
-	int rv;
-	int failed = 1;
 
 	p = key->der;
 	if ((ec_key = d2i_ECPrivateKey(NULL, &p, key->der_len)) == NULL) {
@@ -2590,6 +2678,7 @@ ec_group_check_private_key(const struct ec_private_key *key)
 	if (!EC_KEY_check_key(ec_key)) {
 		fprintf(stderr, "FAIL: EC_KEY_check_key() for %s\n", key->name);
 		ERR_print_errors_fp(stderr);
+		goto err;
 	}
 
 	der = NULL;
@@ -2605,9 +2694,24 @@ ec_group_check_private_key(const struct ec_private_key *key)
 	freezero(der, der_len);
 	der = NULL;
 
-	/*
-	 * Check the outputs of EC_POINT_point2hex() and i2o_ECPublicKey().
-	 */
+	return ec_key;
+
+ err:
+	EC_KEY_free(ec_key);
+	freezero(der, der_len);
+
+	return NULL;
+}
+
+static int
+ec_key_test_point_encoding(const struct ec_private_key *key, const EC_KEY *ec_key)
+{
+	const EC_GROUP *group;
+	const EC_POINT *ec_public_point;
+	char *hex = NULL;
+	unsigned char *ostr = NULL;
+	int hex_len = 0, ostr_len = 0;
+	int failed = 1;
 
 	if ((group = EC_KEY_get0_group(ec_key)) == NULL) {
 		fprintf(stderr, "FAIL: EC_KEY_get0_group() for %s\n", key->name);
@@ -2630,8 +2734,12 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
-	freezero(ostr, ostr_len);
-	ostr = NULL;
+	if (compare_data(key->name, hex, hex_len, key->hex, hex_len) == -1) {
+		fprintf(stderr, "FAIL: EC_POINT_point2hex() comparison for %s\n",
+		    key->name);
+		goto err;
+	}
+
 	if ((ostr_len = i2o_ECPublicKey(ec_key, &ostr)) <= 0) {
 		fprintf(stderr, "FAIL: i2o_ECPublicKey for %s\n", key->name);
 		goto err;
@@ -2643,9 +2751,36 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
+	failed = 0;
+
+ err:
+	free(hex);
+	freezero(ostr, ostr_len);
+
+	return failed;
+}
+
+static int
+ec_key_test_point_versus_bn(const struct ec_private_key *key, const EC_KEY *ec_key)
+{
+	const EC_GROUP *group;
+	const EC_POINT *ec_public_point;
+	EC_POINT *point = NULL;
+	BIGNUM *hex_bn = NULL, *point_bn = NULL;
+	int rv;
+	int failed = 1;
+
+	if ((group = EC_KEY_get0_group(ec_key)) == NULL) {
+		fprintf(stderr, "FAIL: EC_KEY_get0_group() for %s\n", key->name);
+		goto err;
+	}
+	if ((ec_public_point = EC_KEY_get0_public_key(ec_key)) == NULL) {
+		fprintf(stderr, "FAIL: EC_KEY_get0_public_key() for %s\n", key->name);
+		goto err;
+	}
+
 	/*
-	 * Now compare the octet string placed into a bignum with what we got
-	 * from point2hex (what a wonderful idea).
+	 * Check that point2bn matches hex2bn.
 	 */
 
 	if ((point_bn = BN_new()) == NULL)
@@ -2656,7 +2791,7 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
-	if ((BN_hex2bn(&hex_bn, hex)) != hex_len) {
+	if ((BN_hex2bn(&hex_bn, key->hex)) == 0) {
 		fprintf(stderr, "FAIL: BN_hex2bn() for %s\n", key->name);
 		goto err;
 	}
@@ -2668,12 +2803,10 @@ ec_group_check_private_key(const struct ec_private_key *key)
 	}
 
 	/*
-	 * And translate back to a point on the curve.
+	 * Translate back to a point on the curve.
 	 */
 
-	EC_POINT_free(point);
-	point = NULL;
-	if ((point = EC_POINT_hex2point(group, hex, NULL, NULL)) == NULL) {
+	if ((point = EC_POINT_hex2point(group, key->hex, NULL, NULL)) == NULL) {
 		fprintf(stderr, "FAIL: EC_POINT_hex2point() failed for %s\n",
 		    key->name);
 		goto err;
@@ -2718,8 +2851,8 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
-	if (EC_POINT_hex2point(group, hex, point, NULL) == NULL) {
-		fprintf(stderr, "FAIL: EC_POINT_hex2point() failed for %s\n",
+	if (EC_POINT_hex2point(group, key->hex, point, NULL) == NULL) {
+		fprintf(stderr, "FAIL: EC_POINT_hex2point() 2 failed for %s\n",
 		    key->name);
 		goto err;
 	}
@@ -2731,15 +2864,31 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
-	free(hex);
-	hex = NULL;
+	failed = 0;
 
-	freezero(ostr, ostr_len);
-	ostr = NULL;
+ err:
+	BN_free(hex_bn);
+	BN_free(point_bn);
+	EC_POINT_free(point);
 
-	/*
-	 * Round trip the public key through i2o and o2i in compressed form.
-	 */
+	return failed;
+}
+
+static int
+ec_key_test_i2o_and_o2i(const struct ec_private_key *key, const EC_KEY *ec_key_orig)
+{
+	EC_KEY *ec_key = NULL, *ec_pub_key = NULL;
+	const unsigned char *p;
+	unsigned char *ostr = NULL;
+	int ostr_len = 0;
+	uint8_t form;
+	int rv;
+	int failed = 1;
+
+	if ((ec_key = EC_KEY_dup(ec_key_orig)) == NULL) {
+		fprintf(stderr, "FAIL: EC_KEY_dup failed for %s", key->name);
+		goto err;
+	}
 
 	EC_KEY_set_conv_form(ec_key, POINT_CONVERSION_COMPRESSED);
 
@@ -2784,6 +2933,37 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
+	failed = 0;
+
+ err:
+	EC_KEY_free(ec_key);
+	EC_KEY_free(ec_pub_key);
+	freezero(ostr, ostr_len);
+
+	return failed;
+}
+
+static int
+ec_key_test_hybrid_roundtrip(const struct ec_private_key *key,
+    const EC_KEY *ec_key_orig)
+{
+	EC_KEY *ec_key = NULL, *ec_pub_key = NULL;
+	const unsigned char *p;
+	unsigned char *der = NULL;
+	int der_len = 0;
+	unsigned int flags;
+	int rv;
+	uint8_t form;
+	int failed = 1;
+
+	if ((ec_key = EC_KEY_new()) == NULL)
+		errx(1, "EC_KEY_new()");
+
+	if (EC_KEY_copy(ec_key, ec_key_orig) == NULL) {
+		fprintf(stderr, "FAIL: failed to kopy EC_KEY for %s\n", key->name);
+		goto err;
+	}
+
 	EC_KEY_set_conv_form(ec_key, POINT_CONVERSION_HYBRID);
 	EC_KEY_set_enc_flags(ec_key, EC_PKEY_NO_PARAMETERS | EC_PKEY_NO_PUBKEY);
 
@@ -2793,14 +2973,20 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
+	if ((ec_pub_key = EC_KEY_new()) == NULL)
+		errx(1, "EC_KEY_new");
+	if (!EC_KEY_set_group(ec_pub_key, EC_KEY_get0_group(ec_key))) {
+		fprintf(stderr, "FAIL: EC_KEY_set_group() for %s\n", key->name);
+		goto err;
+	}
+	/* Change away from the default to see if it changed below. */
+	EC_KEY_set_conv_form(ec_pub_key, POINT_CONVERSION_COMPRESSED);
+
 	if ((flags = EC_KEY_get_enc_flags(ec_pub_key)) != 0) {
 		fprintf(stderr, "FAIL: EC_KEY_get_enc_flags() returned %x for %s\n",
 		    flags, key->name);
 		goto err;
 	}
-
-	/* Clear the public key - this returns failure, but works. */
-	(void)EC_KEY_set_public_key(ec_pub_key, NULL);
 
 	p = der;
 	if (d2i_ECPrivateKey(&ec_pub_key, &p, der_len) == NULL) {
@@ -2830,12 +3016,26 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
-	/*
-	 * Also tickle the ECParameters API a little bit.
-	 */
+	failed = 0;
 
+ err:
+	EC_KEY_free(ec_key);
+	EC_KEY_free(ec_pub_key);
 	freezero(der, der_len);
-	der = NULL;
+
+	return failed;
+}
+
+static int
+ec_key_test_parameter_roundtrip(const struct ec_private_key *key,
+    EC_KEY *ec_key)
+{
+	EC_KEY *ec_pub_key = NULL;
+	const unsigned char *p;
+	unsigned char *der = NULL;
+	int der_len = 0;
+	int rv;
+	int failed = 1;
 
 	if ((der_len = i2d_ECParameters(ec_key, &der)) <= 0) {
 		fprintf(stderr, "FAIL: i2d_ECParameters returned %d for %s\n",
@@ -2843,7 +3043,10 @@ ec_group_check_private_key(const struct ec_private_key *key)
 		goto err;
 	}
 
-	/* Deliberately don't free ec_pub_key to see if we don't leak. */
+	/* See if we leak on reuse, whether the curve is right or not. */
+	if ((ec_pub_key = EC_KEY_new_by_curve_name(NID_secp256k1)) == NULL)
+		errx(1, "EC_KEY_new_by_curve_name");
+
 	p = der;
 	if (d2i_ECParameters(&ec_pub_key, &p, der_len) == NULL) {
 		fprintf(stderr, "FAIL: d2i_ECParameters for %s\n", key->name);
@@ -2860,17 +3063,32 @@ ec_group_check_private_key(const struct ec_private_key *key)
 	failed = 0;
 
  err:
-	EC_KEY_free(ec_key);
 	EC_KEY_free(ec_pub_key);
-
 	freezero(der, der_len);
-	freezero(ostr, ostr_len);
-	free(hex);
 
-	BN_free(hex_bn);
-	BN_free(point_bn);
+	return failed;
+}
 
-	EC_POINT_free(point);
+static int
+ec_group_check_private_key(const struct ec_private_key *key)
+{
+	EC_KEY *ec_key = NULL;
+	int failed = 0;
+
+	if ((ec_key = ec_key_check_sanity(key)) == NULL) {
+		fprintf(stderr, "FAIL: ec_key_check_sanity() for %s\n", key->name);
+		failed = 1;
+		goto err;
+	}
+
+	failed |= ec_key_test_point_encoding(key, ec_key);
+	failed |= ec_key_test_point_versus_bn(key, ec_key);
+	failed |= ec_key_test_i2o_and_o2i(key, ec_key);
+	failed |= ec_key_test_hybrid_roundtrip(key, ec_key);
+	failed |= ec_key_test_parameter_roundtrip(key, ec_key);
+
+ err:
+	EC_KEY_free(ec_key);
 
 	return failed;
 }
@@ -2899,5 +3117,5 @@ main(int argc, char **argv)
 	failed |= ec_group_non_builtin_curves();
 	failed |= ec_group_check_private_keys();
 
-	return (failed);
+	return failed;
 }

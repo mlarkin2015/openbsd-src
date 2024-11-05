@@ -1,4 +1,4 @@
-/*	$OpenBSD: psp.c,v 1.6 2024/10/24 18:52:59 bluhm Exp $ */
+/*	$OpenBSD: psp.c,v 1.10 2024/11/05 13:28:35 bluhm Exp $ */
 
 /*
  * Copyright (c) 2023, 2024 Hans-Joerg Hoexer <hshoexer@genua.de>
@@ -19,6 +19,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/device.h>
+#include <sys/malloc.h>
 #include <sys/pledge.h>
 #include <sys/rwlock.h>
 
@@ -55,12 +56,22 @@ struct psp_softc {
 	caddr_t			sc_tmr_kva;
 
 	struct rwlock		sc_lock;
+
+	uint32_t		sc_flags;
+#define PSPF_INITIALIZED	0x1
+#define PSPF_UCODELOADED	0x2
+#define PSPF_NOUCODE		0x4
+
+	u_char			*sc_ucodebuf;
+	size_t			sc_ucodelen;
 };
 
 int	psp_get_pstatus(struct psp_softc *, struct psp_platform_status *);
 int	psp_init(struct psp_softc *, struct psp_init *);
+int	psp_reinit(struct psp_softc *);
 int	psp_match(struct device *, void *, void *);
 void	psp_attach(struct device *, struct device *, void *);
+void	psp_load_ucode(struct psp_softc *);
 
 struct cfdriver psp_cd = {
 	NULL, "psp", DV_DULL
@@ -102,7 +113,6 @@ psp_attach(struct device *parent, struct device *self, void *aux)
 	struct psp_softc		*sc = (struct psp_softc *)self;
 	struct psp_attach_args		*arg = aux;
 	struct psp_platform_status	pst;
-	struct psp_init			init;
 	size_t				size;
 	int				nsegs;
 
@@ -155,61 +165,16 @@ psp_attach(struct device *parent, struct device *self, void *aux)
 		printf(" uninitialized state");
 		goto fail_3;
 	}
-	printf(" api %u.%u, build %u,",
+	printf(" api %u.%u, build %u, SEV, SEV-ES",
 	    pst.api_major, pst.api_minor, pst.cfges_build >> 24);
 
-	/*
-         * create and map Trusted Memory Region (TMR); size 1 Mbyte,
-         * needs to be aligned to 1 Mbyte.
-	 */
-	sc->sc_tmr_size = size = PSP_TMR_SIZE;
-	if (bus_dmamap_create(sc->sc_dmat, size, 1, size, 0,
-	    BUS_DMA_WAITOK | BUS_DMA_ALLOCNOW | BUS_DMA_64BIT,
-	    &sc->sc_tmr_map) != 0)
-		goto fail_3;
-
-	if (bus_dmamem_alloc(sc->sc_dmat, size, size, 0, &sc->sc_tmr_seg, 1,
-	    &nsegs, BUS_DMA_WAITOK | BUS_DMA_ZERO) != 0)
-		goto fail_4;
-
-	if (bus_dmamem_map(sc->sc_dmat, &sc->sc_tmr_seg, nsegs, size,
-	    &sc->sc_tmr_kva, BUS_DMA_WAITOK) != 0)
-		goto fail_5;
-
-	if (bus_dmamap_load(sc->sc_dmat, sc->sc_tmr_map, sc->sc_tmr_kva,
-	    size, NULL, BUS_DMA_WAITOK) != 0)
-		goto fail_6;
-
-	memset(&init, 0, sizeof(init));
-	init.enable_es = 1;
-	init.tmr_length = PSP_TMR_SIZE;
-	init.tmr_paddr = sc->sc_tmr_map->dm_segs[0].ds_addr;
-	if (psp_init(sc, &init)) {
-		printf(" init");
-		goto fail_7;
-	}
-
-	printf(" SEV");
-
-	psp_get_pstatus(sc, &pst);
-	if ((pst.state == PSP_PSTATE_INIT) && (pst.cfges_build & 0x1))
-		printf(", SEV-ES");
-
-        /* enable interrupts */
-        bus_space_write_4(sc->sc_iot, sc->sc_ioh, sc->sc_reg_inten, -1);
+	/* enable interrupts */
+	bus_space_write_4(sc->sc_iot, sc->sc_ioh, sc->sc_reg_inten, -1);
 
 	printf("\n");
 
 	return;
 
-fail_7:
-	bus_dmamap_unload(sc->sc_dmat, sc->sc_tmr_map);
-fail_6:
-	bus_dmamem_unmap(sc->sc_dmat, sc->sc_tmr_kva, size);
-fail_5:
-	bus_dmamem_free(sc->sc_dmat, &sc->sc_tmr_seg, 1);
-fail_4:
-	bus_dmamap_destroy(sc->sc_dmat, sc->sc_tmr_map);
 fail_3:
 	bus_dmamap_unload(sc->sc_dmat, sc->sc_cmd_map);
 fail_2:
@@ -299,6 +264,95 @@ psp_init(struct psp_softc *sc, struct psp_init *uinit)
 		return (EIO);
 
 	wbinvd_on_all_cpus();
+
+	sc->sc_flags |= PSPF_INITIALIZED;
+
+	return (0);
+}
+
+int
+psp_reinit(struct psp_softc *sc)
+{
+	struct psp_init	init;
+	size_t		size;
+	int		nsegs;
+
+	if (sc->sc_flags & PSPF_INITIALIZED) {
+		printf("%s: invalid flags 0x%x\n", __func__, sc->sc_flags);
+		return (EINVAL);
+	}
+
+	if (sc->sc_tmr_map != NULL)
+		return (EINVAL);
+
+	/*
+	 * create and map Trusted Memory Region (TMR); size 1 Mbyte,
+	 * needs to be aligend to 1 Mbyte.
+	 */
+	sc->sc_tmr_size = size = PSP_TMR_SIZE;
+	if (bus_dmamap_create(sc->sc_dmat, size, 1, size, 0,
+	    BUS_DMA_WAITOK | BUS_DMA_ALLOCNOW | BUS_DMA_64BIT,
+	    &sc->sc_tmr_map) != 0)
+		return (ENOMEM);
+
+	if (bus_dmamem_alloc(sc->sc_dmat, size, size, 0, &sc->sc_tmr_seg, 1,
+	    &nsegs, BUS_DMA_WAITOK | BUS_DMA_ZERO) != 0)
+		goto fail_0;
+
+	if (bus_dmamem_map(sc->sc_dmat, &sc->sc_tmr_seg, nsegs, size,
+	    &sc->sc_tmr_kva, BUS_DMA_WAITOK) != 0)
+		goto fail_1;
+
+	if (bus_dmamap_load(sc->sc_dmat, sc->sc_tmr_map, sc->sc_tmr_kva,
+	    size, NULL, BUS_DMA_WAITOK) != 0)
+		goto fail_2;
+
+	memset(&init, 0, sizeof(init));
+	init.enable_es = 1;
+	init.tmr_length = PSP_TMR_SIZE;
+	init.tmr_paddr = sc->sc_tmr_map->dm_segs[0].ds_addr;
+	if (psp_init(sc, &init))
+		goto fail_3;
+
+	return (0);
+
+fail_3:
+	bus_dmamap_unload(sc->sc_dmat, sc->sc_tmr_map);
+fail_2:
+	bus_dmamem_unmap(sc->sc_dmat, sc->sc_tmr_kva, size);
+fail_1:
+	bus_dmamem_free(sc->sc_dmat, &sc->sc_tmr_seg, 1);
+fail_0:
+	bus_dmamap_destroy(sc->sc_dmat, sc->sc_tmr_map);
+
+	return (ENOMEM);
+}
+
+int
+psp_shutdown(struct psp_softc *sc)
+{
+	int ret;
+
+	if (sc->sc_tmr_map == NULL)
+		return (EINVAL);
+
+	ret = ccp_docmd(sc, PSP_CMD_SHUTDOWN, 0x0);
+
+	if (ret != 0)
+		return (EIO);
+
+	/* wbinvd right after SHUTDOWN */
+	wbinvd_on_all_cpus();
+
+	/* release TMR */
+	bus_dmamap_unload(sc->sc_dmat, sc->sc_tmr_map);
+	bus_dmamem_unmap(sc->sc_dmat, sc->sc_tmr_kva, sc->sc_tmr_size);
+	bus_dmamem_free(sc->sc_dmat, &sc->sc_tmr_seg, 1);
+	bus_dmamap_destroy(sc->sc_dmat, sc->sc_tmr_map);
+	sc->sc_tmr_map = NULL;
+
+	/* reset flags */
+	sc->sc_flags = 0;
 
 	return (0);
 }
@@ -586,6 +640,55 @@ psp_deactivate(struct psp_softc *sc, struct psp_deactivate *udeact)
 }
 
 int
+psp_downloadfirmware(struct psp_softc *sc, struct psp_downloadfirmware *udlfw)
+{
+	struct psp_downloadfirmware *dlfw;
+	bus_dmamap_t		 map;
+	bus_dma_segment_t	 seg;
+	caddr_t			 kva;
+	int			 nsegs;
+	int			 ret;
+
+	dlfw = (struct psp_downloadfirmware *)sc->sc_cmd_kva;
+	bzero(dlfw, sizeof(*dlfw));
+
+	ret = ENOMEM;
+	if (bus_dmamap_create(sc->sc_dmat, udlfw->fw_len, 1, udlfw->fw_len, 0,
+	    BUS_DMA_WAITOK | BUS_DMA_ALLOCNOW | BUS_DMA_64BIT, &map) != 0)
+		return (ret);
+	if (bus_dmamem_alloc(sc->sc_dmat, udlfw->fw_len, 0, 0, &seg, 1,
+	    &nsegs, BUS_DMA_WAITOK | BUS_DMA_ZERO) != 0 || nsegs != 1)
+		goto fail_0;
+	if (bus_dmamem_map(sc->sc_dmat, &seg, nsegs, udlfw->fw_len, &kva,
+	    BUS_DMA_WAITOK) != 0)
+		goto fail_1;
+	if (bus_dmamap_load(sc->sc_dmat, map, kva, udlfw->fw_len, NULL,
+	    BUS_DMA_WAITOK) != 0)
+		goto fail_2;
+
+	bcopy((void *)udlfw->fw_paddr, kva, udlfw->fw_len);
+
+	dlfw->fw_paddr = map->dm_segs[0].ds_addr;
+	dlfw->fw_len = map->dm_segs[0].ds_len;
+
+	ret = ccp_docmd(sc, PSP_CMD_DOWNLOADFIRMWARE,
+	    sc->sc_cmd_map->dm_segs[0].ds_addr);
+
+	if (ret != 0)
+		ret = EIO;
+
+	bus_dmamap_unload(sc->sc_dmat, map);
+fail_2:
+	bus_dmamem_unmap(sc->sc_dmat, kva, udlfw->fw_len);
+fail_1:
+	bus_dmamem_free(sc->sc_dmat, &seg, 1);
+fail_0:
+	bus_dmamap_destroy(sc->sc_dmat, map);
+
+	return (ret);
+}
+
+int
 psp_guest_shutdown(struct psp_softc *sc, struct psp_guest_shutdown *ugshutdown)
 {
 	struct psp_deactivate	deact;
@@ -638,6 +741,11 @@ pspopen(dev_t dev, int flag, int mode, struct proc *p)
 	if (sc == NULL)
 		return (ENXIO);
 
+	psp_load_ucode(sc);
+
+	if (!(sc->sc_flags & PSPF_INITIALIZED))
+		return (psp_reinit(sc));
+
 	return (0);
 }
 
@@ -666,6 +774,12 @@ pspioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
 	rw_enter_write(&sc->sc_lock);
 
 	switch (cmd) {
+	case PSP_IOC_INIT:
+		ret = psp_reinit(sc);
+		break;
+	case PSP_IOC_SHUTDOWN:
+		ret = psp_shutdown(sc);
+		break;
 	case PSP_IOC_GET_PSTATUS:
 		ret = psp_get_pstatus(sc, (struct psp_platform_status *)data);
 		break;
@@ -751,4 +865,71 @@ pspsubmatch(struct device *parent, void *match, void *aux)
 	if (!(arg->capabilities & PSP_CAP_SEV))
 		return (0);
 	return ((*cf->cf_attach->ca_match)(parent, cf, aux));
+}
+
+struct ucode {
+	uint8_t		 family;
+	uint8_t		 model;
+	const char	*uname;
+} const psp_ucode_table[] = {
+	{ 0x17, 0x0, "amdsev/amd_sev_fam17h_model0xh.sbin" },
+	{ 0x17, 0x3, "amdsev/amd_sev_fam17h_model3xh.sbin" },
+	{ 0x19, 0x0, "amdsev/amd_sev_fam19h_model0xh.sbin" },
+	{ 0x19, 0x1, "amdsev/amd_sev_fam19h_model1xh.sbin" },
+	{ 0, 0, NULL }
+};
+
+void
+psp_load_ucode(struct psp_softc *sc)
+{
+	struct psp_downloadfirmware dlfw;
+	struct cpu_info		*ci = &cpu_info_primary;
+	const struct ucode	*uc;
+	uint8_t			 family, model;
+	int			 error;
+
+	if ((sc->sc_flags & PSPF_UCODELOADED) ||
+	    (sc->sc_flags & PSPF_NOUCODE) ||
+	    (sc->sc_flags & PSPF_INITIALIZED))
+		return;
+
+	family = ci->ci_family;
+	model = (ci->ci_model & 0xf0) >> 4;
+
+	for (uc = psp_ucode_table; uc->uname; uc++) {
+		if ((uc->family == family) && (uc->model == model))
+			break;
+	}
+
+	if (uc->uname == NULL) {
+		printf("%s: no firmware found, CPU family 0x%x model 0x%x\n",
+		    sc->sc_dev.dv_xname, family, model);
+		sc->sc_flags |= PSPF_NOUCODE;
+		return;
+	}
+
+	error = loadfirmware(uc->uname, &sc->sc_ucodebuf, &sc->sc_ucodelen);
+	if (error) {
+		if (error != ENOENT) {
+			printf("%s: error %d, could not read firmware %s\n",
+			    sc->sc_dev.dv_xname, error, uc->uname);
+		}
+		sc->sc_flags |= PSPF_NOUCODE;
+		return;
+	}
+
+	bzero(&dlfw, sizeof(dlfw));
+	dlfw.fw_len = sc->sc_ucodelen;
+	dlfw.fw_paddr = (uint64_t)sc->sc_ucodebuf;
+
+	if (psp_downloadfirmware(sc, &dlfw) < 0)
+		goto out;
+
+	sc->sc_flags |= PSPF_UCODELOADED;
+out:
+	if (sc->sc_ucodebuf) {
+		free(sc->sc_ucodebuf, M_DEVBUF, sc->sc_ucodelen);
+		sc->sc_ucodebuf = NULL;
+		sc->sc_ucodelen = 0;
+	}
 }

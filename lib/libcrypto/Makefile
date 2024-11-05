@@ -1,4 +1,4 @@
-# $OpenBSD: Makefile,v 1.214 2024/10/19 08:26:03 tb Exp $
+# $OpenBSD: Makefile,v 1.224 2024/11/05 11:21:15 tb Exp $
 
 LIB=	crypto
 LIBREBUILD=y
@@ -56,16 +56,12 @@ VERSION_SCRIPT=	Symbols.map
 SYMBOL_LIST=	${.CURDIR}/Symbols.list
 
 # crypto/
-SRCS+= cpt_err.c
-SRCS+= cryptlib.c
+SRCS+= crypto_err.c
 SRCS+= crypto_ex_data.c
 SRCS+= crypto_init.c
+SRCS+= crypto_legacy.c
 SRCS+= crypto_lock.c
-SRCS+= cversion.c
 SRCS+= malloc-wrapper.c
-SRCS+= mem_clr.c
-SRCS+= mem_dbg.c
-SRCS+= o_fips.c
 
 # aes/
 SRCS+= aes.c
@@ -281,18 +277,16 @@ SRCS+= dsa_prn.c
 # ec/
 SRCS+= ec_ameth.c
 SRCS+= ec_asn1.c
+SRCS+= ec_convert.c
 SRCS+= ec_curve.c
 SRCS+= ec_err.c
 SRCS+= ec_key.c
 SRCS+= ec_kmeth.c
 SRCS+= ec_lib.c
 SRCS+= ec_mult.c
-SRCS+= ec_oct.c
 SRCS+= ec_pmeth.c
-SRCS+= ec_print.c
 SRCS+= eck_prn.c
 SRCS+= ecp_mont.c
-SRCS+= ecp_oct.c
 SRCS+= ecp_smpl.c
 SRCS+= ecx_methods.c
 

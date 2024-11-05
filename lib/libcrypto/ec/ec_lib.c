@@ -1,4 +1,4 @@
-/* $OpenBSD: ec_lib.c,v 1.74 2024/10/25 00:37:51 tb Exp $ */
+/* $OpenBSD: ec_lib.c,v 1.79 2024/11/05 08:56:57 tb Exp $ */
 /*
  * Originally written by Bodo Moeller for the OpenSSL project.
  */
@@ -61,11 +61,15 @@
  * SUN MICROSYSTEMS, INC., and contributed to the OpenSSL project.
  */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include <openssl/opensslconf.h>
 
+#include <openssl/bn.h>
+#include <openssl/ec.h>
 #include <openssl/err.h>
+#include <openssl/objects.h>
 #include <openssl/opensslv.h>
 
 #include "bn_local.h"
@@ -646,7 +650,7 @@ EC_GROUP_check(const EC_GROUP *group, BN_CTX *ctx_in)
 	}
 	if (!EC_POINT_mul(group, point, order, NULL, NULL, ctx))
 		goto err;
-	if (EC_POINT_is_at_infinity(group, point) <= 0) {
+	if (!EC_POINT_is_at_infinity(group, point)) {
 		ECerror(EC_R_INVALID_GROUP_ORDER);
 		goto err;
 	}
@@ -758,28 +762,33 @@ ec_point_blind_coordinates(const EC_GROUP *group, EC_POINT *p, BN_CTX *ctx)
 EC_POINT *
 EC_POINT_new(const EC_GROUP *group)
 {
-	EC_POINT *ret;
+	EC_POINT *point = NULL;
 
 	if (group == NULL) {
 		ECerror(ERR_R_PASSED_NULL_PARAMETER);
-		return NULL;
+		goto err;
 	}
 	if (group->meth->point_init == NULL) {
 		ECerror(ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED);
-		return NULL;
+		goto err;
 	}
-	ret = malloc(sizeof *ret);
-	if (ret == NULL) {
-		ECerror(ERR_R_MALLOC_FAILURE);
-		return NULL;
-	}
-	ret->meth = group->meth;
 
-	if (!ret->meth->point_init(ret)) {
-		free(ret);
-		return NULL;
+	if ((point = calloc(1, sizeof(*point))) == NULL) {
+		ECerror(ERR_R_MALLOC_FAILURE);
+		goto err;
 	}
-	return ret;
+
+	point->meth = group->meth;
+
+	if (!point->meth->point_init(point))
+		goto err;
+
+	return point;
+
+ err:
+	EC_POINT_free(point);
+
+	return NULL;
 }
 LCRYPTO_ALIAS(EC_POINT_new);
 
@@ -821,23 +830,25 @@ EC_POINT_copy(EC_POINT *dest, const EC_POINT *src)
 LCRYPTO_ALIAS(EC_POINT_copy);
 
 EC_POINT *
-EC_POINT_dup(const EC_POINT *a, const EC_GROUP *group)
+EC_POINT_dup(const EC_POINT *in_point, const EC_GROUP *group)
 {
-	EC_POINT *t;
-	int r;
+	EC_POINT *point = NULL;
 
-	if (a == NULL)
-		return NULL;
+	if (in_point == NULL)
+		goto err;
 
-	t = EC_POINT_new(group);
-	if (t == NULL)
-		return (NULL);
-	r = EC_POINT_copy(t, a);
-	if (!r) {
-		EC_POINT_free(t);
-		return NULL;
-	} else
-		return t;
+	if ((point = EC_POINT_new(group)) == NULL)
+		goto err;
+
+	if (!EC_POINT_copy(point, in_point))
+		goto err;
+
+	return point;
+
+ err:
+	EC_POINT_free(point);
+
+	return NULL;
 }
 LCRYPTO_ALIAS(EC_POINT_dup);
 
@@ -997,8 +1008,13 @@ int
 EC_POINT_get_affine_coordinates(const EC_GROUP *group, const EC_POINT *point,
     BIGNUM *x, BIGNUM *y, BN_CTX *ctx_in)
 {
-	BN_CTX *ctx;
+	BN_CTX *ctx = NULL;
 	int ret = 0;
+
+	if (EC_POINT_is_at_infinity(group, point) > 0) {
+		ECerror(EC_R_POINT_AT_INFINITY);
+		goto err;
+	}
 
 	if ((ctx = ctx_in) == NULL)
 		ctx = BN_CTX_new();
@@ -1030,6 +1046,45 @@ EC_POINT_get_affine_coordinates_GFp(const EC_GROUP *group, const EC_POINT *point
 	return EC_POINT_get_affine_coordinates(group, point, x, y, ctx);
 }
 LCRYPTO_ALIAS(EC_POINT_get_affine_coordinates_GFp);
+
+int
+EC_POINT_set_compressed_coordinates(const EC_GROUP *group, EC_POINT *point,
+    const BIGNUM *x, int y_bit, BN_CTX *ctx_in)
+{
+	BN_CTX *ctx;
+	int ret = 0;
+
+	if ((ctx = ctx_in) == NULL)
+		ctx = BN_CTX_new();
+	if (ctx == NULL)
+		goto err;
+
+	if (group->meth->point_set_compressed_coordinates == NULL) {
+		ECerror(ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED);
+		goto err;
+	}
+	if (group->meth != point->meth) {
+		ECerror(EC_R_INCOMPATIBLE_OBJECTS);
+		goto err;
+	}
+	ret = group->meth->point_set_compressed_coordinates(group, point,
+	    x, y_bit, ctx);
+
+ err:
+	if (ctx != ctx_in)
+		BN_CTX_free(ctx);
+
+	return ret;
+}
+LCRYPTO_ALIAS(EC_POINT_set_compressed_coordinates);
+
+int
+EC_POINT_set_compressed_coordinates_GFp(const EC_GROUP *group, EC_POINT *point,
+    const BIGNUM *x, int y_bit, BN_CTX *ctx)
+{
+	return EC_POINT_set_compressed_coordinates(group, point, x, y_bit, ctx);
+}
+LCRYPTO_ALIAS(EC_POINT_set_compressed_coordinates_GFp);
 
 int
 EC_POINT_add(const EC_GROUP *group, EC_POINT *r, const EC_POINT *a,

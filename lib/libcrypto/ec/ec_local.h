@@ -1,4 +1,4 @@
-/* $OpenBSD: ec_local.h,v 1.32 2024/10/28 18:01:26 tb Exp $ */
+/* $OpenBSD: ec_local.h,v 1.36 2024/11/01 05:10:40 tb Exp $ */
 /*
  * Originally written by Bodo Moeller for the OpenSSL project.
  */
@@ -117,12 +117,6 @@ struct ec_method_st {
 	int (*point_set_compressed_coordinates)(const EC_GROUP *, EC_POINT *,
 	    const BIGNUM *x, int y_bit, BN_CTX *);
 
-	size_t (*point2oct)(const EC_GROUP *, const EC_POINT *,
-	    point_conversion_form_t form, unsigned char *buf, size_t len,
-	    BN_CTX *);
-	int (*oct2point)(const EC_GROUP *, EC_POINT *, const unsigned char *buf,
-	    size_t len, BN_CTX *);
-
 	int (*add)(const EC_GROUP *, EC_POINT *r, const EC_POINT *a,
 	    const EC_POINT *b, BN_CTX *);
 	int (*dbl)(const EC_GROUP *, EC_POINT *r, const EC_POINT *a, BN_CTX *);
@@ -158,8 +152,6 @@ struct ec_method_st {
 	    const BIGNUM *b, BN_CTX *);
 	int (*field_sqr)(const EC_GROUP *, BIGNUM *r, const BIGNUM *a,
 	    BN_CTX *);
-	int (*field_div)(const EC_GROUP *, BIGNUM *r, const BIGNUM *a,
-	    const BIGNUM *b, BN_CTX *);
 
 	/* Encode to and decode from other forms (e.g. Montgomery). */
 	int (*field_encode)(const EC_GROUP *, BIGNUM *r, const BIGNUM *a,
@@ -282,10 +274,6 @@ int ec_GFp_simple_point_get_affine_coordinates(const EC_GROUP *, const EC_POINT 
 	BIGNUM *x, BIGNUM *y, BN_CTX *);
 int ec_GFp_simple_set_compressed_coordinates(const EC_GROUP *, EC_POINT *,
 	const BIGNUM *x, int y_bit, BN_CTX *);
-size_t ec_GFp_simple_point2oct(const EC_GROUP *, const EC_POINT *, point_conversion_form_t form,
-	unsigned char *buf, size_t len, BN_CTX *);
-int ec_GFp_simple_oct2point(const EC_GROUP *, EC_POINT *,
-	const unsigned char *buf, size_t len, BN_CTX *);
 int ec_GFp_simple_add(const EC_GROUP *, EC_POINT *r, const EC_POINT *a, const EC_POINT *b, BN_CTX *);
 int ec_GFp_simple_dbl(const EC_GROUP *, EC_POINT *r, const EC_POINT *a, BN_CTX *);
 int ec_GFp_simple_invert(const EC_GROUP *, EC_POINT *, BN_CTX *);
@@ -358,6 +346,14 @@ int EC_POINT_get_Jprojective_coordinates(const EC_GROUP *group,
 
 int ec_group_is_builtin_curve(const EC_GROUP *group);
 int ec_group_get_field_type(const EC_GROUP *group);
+
+/*
+ * Wrappers around the unergonomic EC_POINT_{oct2point,point2oct}().
+ */
+int ec_point_from_octets(const EC_GROUP *group, const unsigned char *buf,
+    size_t buf_len, EC_POINT **out_point, uint8_t *out_form, BN_CTX *ctx_in);
+int ec_point_to_octets(const EC_GROUP *group, const EC_POINT *point, int form,
+    unsigned char **out_buf, size_t *len, BN_CTX *ctx_in);
 
 /* Public API in OpenSSL */
 const BIGNUM *EC_GROUP_get0_cofactor(const EC_GROUP *group);
