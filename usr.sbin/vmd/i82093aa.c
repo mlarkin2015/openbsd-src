@@ -1,4 +1,4 @@
-/*	$OpenBSD: mmio.h,v 1.2 2024/07/09 09:31:37 dv Exp $	*/
+/*	$OpenBSD */
 
 /*
  * Copyright (c) 2024 Mike Larkin <mlarkin@openbsd.org>
@@ -16,26 +16,24 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MMIO_H_
-#define _MMIO_H_
+#include <machine/i82093reg.h>
 
-#include <sys/types.h>
-#include <sys/queue.h>
+#include "i82093aa.h"
+#include "mmio.h"
+#include "vmd.h"
 
-typedef int (*mmio_dev_fn_t)(int dir, uint64_t *addr, uint64_t *data);
+int
+i82093aa_mmio(int dir, paddr_t addr, uint64_t data)
+{
+	log_debug("%s: dir=%d addr=0x%lx data=0x%llx", __func__, dir, addr,
+	    data);
 
-struct mmio_dev {
-	paddr_t start;
-	paddr_t end;
+	return 0;
+}
 
-	mmio_dev_fn_t fn;
-
-	SLIST_ENTRY(mmio_dev) dev_next;
-};
-
-
-void mmio_init(void);
-mmio_dev_fn_t mmio_find_dev(paddr_t);
-int mmio_dev_add(paddr_t, paddr_t, mmio_dev_fn_t);
-
-#endif /* _MMIO_H_ */
+void
+i82093aa_init(void)
+{
+	mmio_dev_add(IOAPIC_BASE_DEFAULT, IOAPIC_BASE_DEFAULT + 0xFFFF,
+	    (mmio_dev_fn_t)i82093aa_mmio);
+}
