@@ -39,6 +39,8 @@
 #include <dev/ofw/ofw_thermal.h>
 #include <dev/ofw/fdt.h>
 
+#include "vmm.h"
+
 /* CPU Identification */
 #define CPU_VENDOR_MIPS		0x029
 #define CPU_VENDOR_ANDES	0x31e
@@ -164,6 +166,7 @@ void	thead_dcache_wb_range(vaddr_t, vsize_t);
 void
 cpu_identify(struct cpu_info *ci)
 {
+	char isa[32], isa_extensions[128];
 	uint64_t marchid, mimpid;
 	uint32_t mvendorid;
 	const char *vendor_name = NULL;
@@ -175,6 +178,11 @@ cpu_identify(struct cpu_info *ci)
 	char *name;
 	char *end;
 	int i, len;
+
+#if NVMM > 0
+	int hmode = 0;
+	extern int vmm_hmode;
+#endif /* NVMM > 0 */
 
 	mvendorid = sbi_get_mvendorid();
 	marchid = sbi_get_marchid();
@@ -293,6 +301,39 @@ cpu_identify(struct cpu_info *ci)
 			    ci->ci_dev->dv_xname, riscv_vlenb, vlenb);
 			riscv_hwcap &= ~HWCAP_ISA_V;
 		}
+
+#if NVMM > 0
+	len = OF_getprop(ci->ci_node, "riscv,isa-extensions",
+	    isa_extensions, sizeof(isa_extensions));
+
+	if (len != -1) {
+		i = 0;
+		while (i <= len) {
+			if (strncmp("h", &isa_extensions[i], 1) == 0)
+				hmode = 1;
+
+			i += strlen(&isa_extensions[i]) + 1;
+		}
+	}
+
+	if (hmode)
+		printf(", hmode");
+
+	/* support hmode if all CPUs have h-extension */
+	vmm_hmode &= hmode;
+#endif /* NVMM > 0 */
+
+	printf("\n");
+
+	/* Handle errata. */
+	if (mvendorid == CPU_VENDOR_SIFIVE && marchid == CPU_ARCH_U7)
+		cpu_errata_sifive_cip_1200 = 1;
+	if (mvendorid == CPU_VENDOR_THEAD && marchid == 0 && mimpid == 0) {
+		cpu_dcache_wbinv_range = thead_dcache_wbinv_range;
+		cpu_dcache_inv_range = thead_dcache_inv_range;
+		cpu_dcache_wb_range = thead_dcache_wb_range;
+		thead_dcache_line_size =
+		    OF_getpropint(ci->ci_node, "d-cache-block-size", 64);
 	}
 }
 
@@ -451,7 +492,7 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 		}
 
 		printf("%s:", dev->dv_xname);
-		
+
 		if (OF_getproplen(node, "cache-unified") == 0) {
 			printf(" %d%s %db/line %d-way L%d cache",
 			    isize, unit, iline, iways, level);
@@ -1005,7 +1046,7 @@ cpu_opp_get_cooling_level(void *cookie, uint32_t *cells)
 {
 	struct cpu_info *ci = cookie;
 	struct opp_table *ot = ci->ci_opp_table;
-	
+
 	return ot->ot_nopp - ci->ci_opp_max - 1;
 }
 
