@@ -340,6 +340,8 @@ struct vm_exit_inout {
 	uint16_t		vei_port;	/* port */
 	uint32_t		vei_data;	/* data */
 	uint8_t			vei_insn_len;	/* Count of instruction bytes */
+	uint8_t			vei_addr_size;	/* INS/OUTS address size */
+	uint8_t			vei_segment;	/* OUTS segment register */
 };
 
 /*
