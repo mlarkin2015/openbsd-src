@@ -17,6 +17,7 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/param.h>
 
 #include <dev/ic/i8253reg.h>
 #include <dev/isa/isareg.h>
@@ -43,6 +44,7 @@
 #include "virtio.h"
 #include "mmio.h"
 #include "x86_mmio.h"
+#include "x86_vm.h"
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 0x1000
@@ -60,6 +62,7 @@ typedef uint8_t (*io_fn_t)(struct vm_run_params *);
 io_fn_t	ioports_map[MAX_PORTS];
 
 int	 translate_gva(struct vm_exit*, uint64_t, uint64_t *, int);
+void	 create_memory_map(struct vm_create_params *);
 
 static int	loadfile_bios(gzFile, off_t, struct vcpu_reg_state *);
 static int	vcpu_exit_eptviolation(struct vm_run_params *);
