@@ -1353,16 +1353,26 @@ write_vmem(struct vm_run_params *vrp, uint8_t segment, uint64_t gva, void *buf,
 }
 
 int
-intr_pending(struct vmd_vm *vm)
+intr_pending(int vcpu_id)
 {
-	/* XXX select active interrupt controller */
+	int vec;
+
+	vec = i82489dx_is_pending(vcpu_id);
+	if (vec != -1)
+		return vec;
+
 	return i8259_is_pending();
 }
 
 int
-intr_ack(struct vmd_vm *vm)
+intr_ack(int vcpu_id)
 {
-	/* XXX select active interrupt controller */
+	int vec;
+
+	vec = i82489dx_is_pending(vcpu_id);
+	if (vec != -1)
+		return vec;
+
 	return i8259_ack();
 }
 

@@ -528,8 +528,8 @@ struct vm_mem_range *
 	 find_gpa_range(struct vmop_create_params *, paddr_t, size_t);
 int	 write_mem(paddr_t, const void *, size_t);
 int	 read_mem(paddr_t, void *, size_t);
-int	 intr_ack(struct vmd_vm *);
-int	 intr_pending(struct vmd_vm *);
+int	 intr_ack(int);
+int	 intr_pending(int);
 void	 intr_toggle_el(struct vmd_vm *, int, int);
 void	 vcpu_assert_irq(uint32_t, uint32_t, int);
 void	 vcpu_deassert_irq(uint32_t, uint32_t, int);
