@@ -21,7 +21,76 @@
 
 #include <sys/types.h>
 
-void i82093aa_init(void);
+#define I82093AA_NUM_PINS		24
+#define I82093AA_VERSION		0x000011
+#define I82093AA_REDIR_SHIFT		56
+#define I82093AA_REDLO_DEL		3
+#define I82093AA_REDLO_DELMODE_MASK	0x300
+#define I82093AA_REDLO_DESTMODE		(1 << 11)
+#define I82093AA_REDLO_DELIVS		(1 << 12)
+#define I82093AA_REDLO_POLARITY		(1 << 13)
+#define I82093AA_REDLO_RIRR		(1 << 14)
+#define I82093AA_REDLO_TYPE		(1 << 15)
+#define I82093AA_REDLO_MASKED		(1 << 16)
+
+#define I82093AA_REDTBL0_LO		0x10
+#define I82093AA_REDTBL0_HI		0x11
+#define I82093AA_REDTBL1_LO		0x12
+#define I82093AA_REDTBL1_HI		0x13
+#define I82093AA_REDTBL2_LO		0x14
+#define I82093AA_REDTBL2_HI		0x15
+#define I82093AA_REDTBL3_LO		0x16
+#define I82093AA_REDTBL3_HI		0x17
+#define I82093AA_REDTBL4_LO		0x18
+#define I82093AA_REDTBL4_HI		0x19
+#define I82093AA_REDTBL5_LO		0x1A
+#define I82093AA_REDTBL5_HI		0x1B
+#define I82093AA_REDTBL6_LO		0x1C
+#define I82093AA_REDTBL6_HI		0x1D
+#define I82093AA_REDTBL7_LO		0x1E
+#define I82093AA_REDTBL7_HI		0x1F
+#define I82093AA_REDTBL8_LO		0x20
+#define I82093AA_REDTBL8_HI		0x21
+#define I82093AA_REDTBL9_LO		0x22
+#define I82093AA_REDTBL9_HI		0x23
+#define I82093AA_REDTBL10_LO		0x24
+#define I82093AA_REDTBL10_HI		0x25
+#define I82093AA_REDTBL11_LO		0x26
+#define I82093AA_REDTBL11_HI		0x27
+#define I82093AA_REDTBL12_LO		0x28
+#define I82093AA_REDTBL12_HI		0x29
+#define I82093AA_REDTBL13_LO		0x2A
+#define I82093AA_REDTBL13_HI		0x2B
+#define I82093AA_REDTBL14_LO		0x2C
+#define I82093AA_REDTBL14_HI		0x2D
+#define I82093AA_REDTBL15_LO		0x2E
+#define I82093AA_REDTBL15_HI		0x2F
+#define I82093AA_REDTBL16_LO		0x30
+#define I82093AA_REDTBL16_HI		0x31
+#define I82093AA_REDTBL17_LO		0x32
+#define I82093AA_REDTBL17_HI		0x33
+#define I82093AA_REDTBL18_LO		0x34
+#define I82093AA_REDTBL18_HI		0x35
+#define I82093AA_REDTBL19_LO		0x36
+#define I82093AA_REDTBL19_HI		0x37
+#define I82093AA_REDTBL20_LO		0x38
+#define I82093AA_REDTBL20_HI		0x39
+#define I82093AA_REDTBL21_LO		0x3A
+#define I82093AA_REDTBL21_HI		0x3B
+#define I82093AA_REDTBL22_LO		0x3C
+#define I82093AA_REDTBL22_HI		0x3D
+#define I82093AA_REDTBL23_LO		0x3E
+#define I82093AA_REDTBL23_HI		0x3F
+
+void i82093aa_decode_redent(uint32_t);
+void i82093aa_winop(int, uint64_t *);
+void i82093aa_regsel(int, uint64_t *);
 int i82093aa_mmio(int, paddr_t, uint64_t *);
+void i82093aa_init(void);
+void i82093aa_assert_pin(uint8_t);
+void i82093aa_deassert_pin(uint8_t);
+void i82093aa_evaluate_pin(uint8_t);
+void i82093aa_deliver(uint8_t, int, uint8_t, int);
+void i82093aa_eoi(uint8_t);
 
 #endif /* !_I82093AA_H_ */
