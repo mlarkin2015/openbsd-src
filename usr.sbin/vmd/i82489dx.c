@@ -126,3 +126,13 @@ i82489dx_init(void)
 	mmio_dev_add(LAPIC_BASE, LAPIC_BASE + 0xFFF,
 	    (mmio_dev_fn_t)i82489dx_mmio);
 }
+
+void
+i82489dx_vector_irq(int apic_id, int destmode, uint8_t vector, int level)
+{
+}
+
+int
+i82489dx_is_pending(int vcpu_id)
+{
+}
