@@ -1358,7 +1358,7 @@ intr_pending(int vcpu_id)
 	int vec;
 
 	vec = i82489dx_is_pending(vcpu_id);
-	if (vec != -1)
+	if (vec)
 		return vec;
 
 	return i8259_is_pending();
@@ -1369,8 +1369,8 @@ intr_ack(int vcpu_id)
 {
 	int vec;
 
-	vec = i82489dx_is_pending(vcpu_id);
-	if (vec != -1)
+	vec = i82489dx_ack(vcpu_id);
+	if (vec != 0xFFFF)
 		return vec;
 
 	return i8259_ack();
@@ -1379,6 +1379,5 @@ intr_ack(int vcpu_id)
 void
 intr_toggle_el(struct vmd_vm *vm, int irq, int val)
 {
-	/* XXX select active interrupt controller */
 	pic_set_elcr(irq, val);
 }

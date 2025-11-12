@@ -16,9 +16,12 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <strings.h>
+
 #include <machine/i82489reg.h>
 
 #include "i82489dx.h"
+#include "i82093aa.h"
 #include "mmio.h"
 #include "vmd.h"
 
@@ -26,6 +29,11 @@ struct i82489dx {
 	uint64_t	base;
 	uint32_t	ver;
 	uint32_t	tpr;
+
+	uint32_t	isr[8];
+	uint32_t	irr[8];
+
+	uint32_t	curvec;
 };
 
 /* XXX will need one per cpu, which entails a per-vcpu init loop in x86_vm.c
@@ -130,9 +138,90 @@ i82489dx_init(void)
 void
 i82489dx_vector_irq(int apic_id, int destmode, uint8_t vector, int level)
 {
+	log_warnx("%s: received irq from ioapic: vec=%d",
+	    __func__, vector);
 }
 
+/* return highest prio vector, 0xFFFF if nothing pending */
+int
+i82489dx_get_highest_irr(void)
+{
+	int vector = 0xFFFF, i, base, j;
+
+	for (i = 7; i >=0; i--) {
+		base = 32 * i;
+		j = ffsl(lapic.irr[i]);
+		if (j) {
+			vector = (j - 1) + base;
+			log_warnx("%s: found highest IRR=%d", __func__, vector);
+			return vector;
+		}
+	}
+	log_warnx("%s: no bits set in IRR", __func__);
+
+	return vector;
+}
+
+/* return highest isr, 0xFFFF if nothing inservice */
+int
+i82489dx_get_highest_isr(void)
+{
+	int vector = 0xFFFF, i, base, j;
+
+	for (i = 7; i >=0; i--) {
+		base = 32 * i;
+		j = ffsl(lapic.isr[i]);
+		if (j) {
+			vector = (j - 1) + base;
+			log_warnx("%s: found highest ISR=%d", __func__, vector);
+			return vector;
+		}
+	}
+	log_warnx("%s: no bits set in ISR", __func__);
+
+	return vector;
+}
+
+/* return 1 if anything pending, 0 otherwise */
 int
 i82489dx_is_pending(int vcpu_id)
 {
+	return (i82489dx_get_highest_irr() != 0xFFFF);
+}
+
+void
+i82489dx_clear_isr(int vector)
+{
+	int base, ofs;
+
+	base = vector / 32;
+	ofs = vector % 32;
+
+	log_warnx("%s: clearing ISR vector %d (base=%d bit=%d)",
+	    __func__, vector, base, ofs);
+
+	lapic.isr[base] &= ~(1ULL << ofs);
+}
+
+void
+i82489dx_eoi(void)
+{
+	int vector;
+
+	log_warnx("%s: finding highest ISR", __func__);
+
+	vector = i82489dx_get_highest_isr();
+	if (vector == 0xFFFF) {
+		log_warnx("%s: EOI without any active ISR?", __func__);
+		return;
+	}
+
+	i82489dx_clear_isr(vector);
+	i82093aa_eoi(vector);
+}
+
+int
+i82489dx_ack(int vcpu_id)
+{
+	return 0xFFFF;
 }

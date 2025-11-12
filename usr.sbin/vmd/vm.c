@@ -886,7 +886,7 @@ vcpu_run_loop(void *arg)
 		}
 
 		if (vrp->vrp_irqready && intr_pending(n)) {
-			vrp->vrp_inject.vie_vector = intr_ack(current_vm);
+			vrp->vrp_inject.vie_vector = intr_ack(n);
 			vrp->vrp_inject.vie_type = VCPU_INJECT_INTR;
 		} else
 			vrp->vrp_inject.vie_type = VCPU_INJECT_NONE;

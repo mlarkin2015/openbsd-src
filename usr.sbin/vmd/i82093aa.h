@@ -91,6 +91,6 @@ void i82093aa_assert_pin(uint8_t);
 void i82093aa_deassert_pin(uint8_t);
 void i82093aa_evaluate_pin(uint8_t);
 void i82093aa_deliver(uint8_t, int, uint8_t, int);
-void i82093aa_eoi(uint8_t);
+void i82093aa_eoi(int);
 
 #endif /* !_I82093AA_H_ */

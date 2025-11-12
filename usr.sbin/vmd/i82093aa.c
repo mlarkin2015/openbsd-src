@@ -276,7 +276,7 @@ i82093aa_deliver(uint8_t dest, int destmode, uint8_t vector, int level)
 }
 
 void
-i82093aa_eoi(uint8_t vector)
+i82093aa_eoi(int vector)
 {
 	uint8_t pin;
 	uint64_t ent;
