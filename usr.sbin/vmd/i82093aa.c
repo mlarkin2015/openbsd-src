@@ -217,19 +217,21 @@ i82093aa_init(void)
 void
 i82093aa_assert_pin(uint8_t pin)
 {
-    pthread_mutex_lock(&ioapic.mtx);
-    ioapic.pin_level[pin] = 1;
-    i82093aa_evaluate_pin(pin);
-    pthread_mutex_unlock(&ioapic.mtx);
+	log_warnx("%s: asserting pin %d", __func__, pin);
+	pthread_mutex_lock(&ioapic.mtx);
+	ioapic.pin_level[pin] = 1;
+	i82093aa_evaluate_pin(pin);
+	pthread_mutex_unlock(&ioapic.mtx);
 }
 
 void
 i82093aa_deassert_pin(uint8_t pin)
 {
-    pthread_mutex_lock(&ioapic.mtx);
-    ioapic.pin_level[pin] = 0;
-    i82093aa_evaluate_pin(pin);
-    pthread_mutex_unlock(&ioapic.mtx);
+	log_warnx("%s: deasserting pin %d", __func__, pin);
+	pthread_mutex_lock(&ioapic.mtx);
+	ioapic.pin_level[pin] = 0;
+	i82093aa_evaluate_pin(pin);
+	pthread_mutex_unlock(&ioapic.mtx);
 }
 
 void
@@ -252,19 +254,25 @@ i82093aa_evaluate_pin(uint8_t pin)
 
 	ioapic.last_level[pin] = active;
 
-	if (masked)
+	if (masked) {
+		log_warnx("%s: pin %d masked; no action taken", __func__, pin);
 		return;
+	}
 
 	if (level) {
 		if (active && !(ent & I82093AA_REDLO_RIRR)) {
+			log_warnx("%s: delivering vector %d to ioapic (level"
+			    "  mode)", __func__, pin);
 			i82093aa_deliver(dest, delivery_mode, vector, 1);
 			ioapic.redtbl[pin] |= I82093AA_REDLO_RIRR;
 		}
 	} else {
 		if (rising) {
+			log_warnx("%s: delivering vector %d to ioapic (edge"
+			    "  mode)", __func__, pin);
 			i82093aa_deliver(dest, delivery_mode, vector, 0);
-        }
-    }
+		}
+	}
 }
 
 void
@@ -281,6 +289,7 @@ i82093aa_eoi(int vector)
 	uint8_t pin;
 	uint64_t ent;
 
+	log_warnx("%s: EOI for vector %d", __func__, vector);
 	pthread_mutex_lock(&ioapic.mtx);
 
 	for (pin = 0; pin < I82093AA_NUM_PINS; pin++) {

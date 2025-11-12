@@ -30,5 +30,9 @@ int i82489dx_ack(int);
 int i82489dx_get_highest_irr(void);
 int i82489dx_get_highest_isr(void);
 void i82489dx_clear_isr(int);
+void i82489dx_clear_irr(int);
+void i82489dx_set_irr(int);
+void i82489dx_set_isr(int);
+int i82489dx_enabled(void);
 
 #endif /* !_I82489DX_H_ */
