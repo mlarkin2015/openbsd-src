@@ -29,6 +29,7 @@ struct i82489dx {
 	uint64_t	base;
 	uint32_t	ver;
 	uint32_t	tpr;
+	uint32_t	svr;
 
 	uint32_t	isr[8];
 	uint32_t	irr[8];
@@ -42,12 +43,12 @@ struct i82489dx {
  */
 struct i82489dx		lapic;
 
-uint32_t i82489_get_version(void);
-uint32_t i82489_get_tpr(void);
-void i82489_set_tpr(uint32_t);
+uint32_t i82489dx_get_version(void);
+uint32_t i82489dx_get_tpr(void);
+void i82489dx_set_tpr(uint32_t);
 
 uint32_t
-i82489_get_version(void)
+i82489dx_get_version(void)
 {
 	log_warnx("%s: returning 0x%x", __func__, lapic.ver);
 
@@ -55,7 +56,7 @@ i82489_get_version(void)
 }
 
 uint32_t
-i82489_get_tpr(void)
+i82489dx_get_tpr(void)
 {
 	log_warnx("%s: returning 0x%x", __func__, lapic.tpr);
 
@@ -63,7 +64,7 @@ i82489_get_tpr(void)
 }
 
 void
-i82489_set_tpr(uint32_t tpr)
+i82489dx_set_tpr(uint32_t tpr)
 {
 	log_warnx("%s: setting tpr=0x%x", __func__, tpr);
 
@@ -89,7 +90,7 @@ i82489dx_mmio(int dir, paddr_t addr, uint64_t *data)
 	case LAPIC_VERS:
 		if (dir == MMIO_DIR_READ) {
 			*data &= 0xFFFFFFFF00000000;
-			*data |= i82489_get_version();
+			*data |= i82489dx_get_version();
 			log_warnx("%s: read LAPIC_VERS: return 0x%llx",
 			    __func__, *data);
 		} else {
@@ -100,7 +101,7 @@ i82489dx_mmio(int dir, paddr_t addr, uint64_t *data)
 	case LAPIC_TPRI:
 		if (dir == MMIO_DIR_READ) {
 			*data &= 0xFFFFFFFF00000000;
-			*data |= i82489_get_tpr();
+			*data |= i82489dx_get_tpr();
 			log_warnx("%s: read LAPIC_TPR: return 0x%llx",
 			    __func__, *data);
 		} else {
@@ -108,9 +109,22 @@ i82489dx_mmio(int dir, paddr_t addr, uint64_t *data)
 
 			log_warnx("%s: setting LAPIC_TPR=0x%x",
 			    __func__, d);
-			i82489_set_tpr(d);
+			i82489dx_set_tpr(d);
 		}
 		break;
+	case LAPIC_SVR:
+		if (dir == MMIO_DIR_READ) {
+			*data &= 0xFFFFFFFF00000000;
+			*data |= lapic.svr;
+			log_warnx("%s: read LAPIC_SVR: return 0x%llx",
+			    __func__, *data);
+		} else {
+			d = (uint32_t)(*data);
+
+			log_warnx("%s: setting LAPIC_SVR=0x%x",
+			    __func__, d);
+			lapic.svr = d;
+		}
 	default:
 		if (dir == MMIO_DIR_READ) {
 			log_warnx("%s: unsupported i/o on i82489 reg 0x%x. "
@@ -135,11 +149,24 @@ i82489dx_init(void)
 	    (mmio_dev_fn_t)i82489dx_mmio);
 }
 
+int
+i82489dx_enabled(void)
+{
+	return (lapic.svr & LAPIC_SVR_ENABLE) != 0;
+}
+
 void
 i82489dx_vector_irq(int apic_id, int destmode, uint8_t vector, int level)
 {
+	if (!i82489dx_enabled()) {
+		log_warnx("%s: vector irq %d but lapic is disabled",
+		    __func__, vector);
+		return;
+	}
+
 	log_warnx("%s: received irq from ioapic: vec=%d",
 	    __func__, vector);
+	i82489dx_set_irr(vector);
 }
 
 /* return highest prio vector, 0xFFFF if nothing pending */
@@ -186,6 +213,11 @@ i82489dx_get_highest_isr(void)
 int
 i82489dx_is_pending(int vcpu_id)
 {
+	if (!i82489dx_enabled()) {
+		log_warnx("%s: lapic disabled", __func__);
+		return 0;
+	}
+
 	return (i82489dx_get_highest_irr() != 0xFFFF);
 }
 
@@ -204,9 +236,56 @@ i82489dx_clear_isr(int vector)
 }
 
 void
+i82489dx_set_isr(int vector)
+{
+	int base, ofs;
+
+	base = vector / 32;
+	ofs = vector % 32;
+
+	log_warnx("%s: setting ISR vector %d (base=%d bit=%d)",
+	    __func__, vector, base, ofs);
+
+	lapic.isr[base] |= ~(1ULL << ofs);
+}
+
+void
+i82489dx_set_irr(int vector)
+{
+	int base, ofs;
+
+	base = vector / 32;
+	ofs = vector % 32;
+
+	log_warnx("%s: setting IRR vector %d (base=%d bit=%d)",
+	    __func__, vector, base, ofs);
+
+	lapic.irr[base] |= ~(1ULL << ofs);
+}
+
+void
+i82489dx_clear_irr(int vector)
+{
+	int base, ofs;
+
+	base = vector / 32;
+	ofs = vector % 32;
+
+	log_warnx("%s: clearing IRR vector %d (base=%d bit=%d)",
+	    __func__, vector, base, ofs);
+
+	lapic.irr[base] &= ~(1ULL << ofs);
+}
+
+void
 i82489dx_eoi(void)
 {
 	int vector;
+
+	if (!i82489dx_enabled()) {
+		log_warnx("%s: eoi but lapic disabled", __func__);
+		return;
+	}
 
 	log_warnx("%s: finding highest ISR", __func__);
 
@@ -223,5 +302,18 @@ i82489dx_eoi(void)
 int
 i82489dx_ack(int vcpu_id)
 {
-	return 0xFFFF;
+	int vector;
+
+	log_warnx("%s: irq ack but lapic disabled", __func__);
+
+	vector = i82489dx_get_highest_irr();
+	if (vector == 0xFFFF) {
+		log_warnx("%s: ack called but no IRR bits set?", __func__);
+		return vector;
+	}
+
+	i82489dx_set_isr(vector);
+	i82489dx_clear_irr(vector);
+
+	return vector;
 }

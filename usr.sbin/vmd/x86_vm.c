@@ -981,9 +981,10 @@ void
 vcpu_assert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 {
 	i8259_assert_irq(irq);
+	i82093aa_assert_pin(irq);
 
-	if (i8259_is_pending()) {
-		if (vcpu_intr(vmm_id, vcpu_id, 1))
+	if (i8259_is_pending() || i82489dx_is_pending(vcpu_id)) {
+		if (vcpu_intr(vm_id, vcpu_id, 1))
 			fatalx("%s: can't assert INTR", __func__);
 
 		vcpu_unhalt(vcpu_id);
@@ -1005,11 +1006,12 @@ void
 vcpu_deassert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 {
 	i8259_deassert_irq(irq);
+	i82093aa_deassert_pin(irq);
 
-	if (!i8259_is_pending()) {
-		if (vcpu_intr(vmm_id, vcpu_id, 0))
-			fatalx("%s: can't deassert INTR for vmm_id %d, "
-			    "vcpu_id %d", __func__, vmm_id, vcpu_id);
+	if (!i8259_is_pending() && !i82489dx_is_pending(vcpu_id)) {
+		if (vcpu_intr(vm_id, vcpu_id, 0))
+			fatalx("%s: can't deassert INTR for vm_id %d, "
+			    "vcpu_id %d", __func__, vm_id, vcpu_id);
 	}
 }
 
