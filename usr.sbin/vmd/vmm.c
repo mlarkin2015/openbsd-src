@@ -83,7 +83,7 @@ vmm_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 	 * sendfd - for sending send/recv fds to vm proc.
 	 * recvfd - for disks, interfaces and other fds.
 	 */
-	if (pledge("stdio vmm sendfd recvfd proc exec", NULL) == -1)
+	if (pledge("stdio vmm sendfd recvfd proc exec inet", NULL) == -1)
 		fatal("pledge");
 
 	signal_del(&ps->ps_evsigchld);

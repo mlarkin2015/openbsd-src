@@ -19,6 +19,7 @@
 #include <sys/types.h>
 
 #include <dev/pv/virtioreg.h>
+#include <dev/pv/viogpu.h>
 #include <dev/pci/virtio_pcireg.h>
 #include <net/if_tun.h>
 
@@ -26,6 +27,7 @@
 
 #include "vmd.h"
 #include "pci.h"
+#include "viogpu.h"
 
 #ifndef _VIRTIO_H_
 #define _VIRTIO_H_
@@ -79,6 +81,7 @@
 #define VIOBLK_QUEUE_SIZE_DEFAULT	128
 #define VIOSCSI_QUEUE_SIZE_DEFAULT	128
 #define VIONET_QUEUE_SIZE_DEFAULT	256
+#define VIOGPU_QUEUE_SIZE_DEFAULT	128
 
 #define VIOBLK_SEG_MAX_DEFAULT		(VIOBLK_QUEUE_SIZE_DEFAULT - 2)
 
@@ -99,6 +102,7 @@
 #define VIRTIO_BLK_QUEUES	1
 #define VIRTIO_NET_QUEUES	2
 #define VIRTIO_SCSI_QUEUES	3
+#define VIRTIO_GPU_QUEUES	2
 #define VIRTIO_VMMCI_QUEUES	0
 #define VIRTIO_MAX_QUEUES	3
 
@@ -326,6 +330,7 @@ struct vmmci_dev {
 	struct vm_dev_pipe dev_pipe;
 };
 
+
 /* XXX to be removed once vioscsi is adapted to vectorized io. */
 struct ioinfo {
 	uint8_t *buf;
@@ -343,6 +348,7 @@ struct virtio_dev {
 		/* In-process only. */
 		struct vmmci_dev vmmci;
 		struct vioscsi_dev vioscsi;
+		struct viogpu_dev viogpu;
 	};
 
 	struct virtio_io_cfg		cfg;		/* Virtio 0.9 */
@@ -415,6 +421,8 @@ ssize_t dhcp_request(struct virtio_dev *, char *, size_t, char **);
 /* vioscsi.c */
 int vioscsi_io(int, uint16_t, uint32_t *, uint8_t *, void *, uint8_t);
 int vioscsi_notifyq(struct virtio_dev *, uint16_t);
+int viogpu_io(int, uint16_t, uint32_t *, uint8_t *, void *, uint8_t);
+int viogpu_notifyq(struct virtio_dev *, uint16_t);
 
 /* imsg handling */
 void	viodev_msg_read(struct imsg *, struct viodev_msg *);

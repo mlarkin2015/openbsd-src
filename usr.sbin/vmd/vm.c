@@ -105,7 +105,7 @@ vm_main(int fd, int fd_vmm)
 	 * vmm - for the vmm ioctls and operations.
 	 * proc exec - fork/exec for launching devices.
 	 */
-	if (pledge("stdio vmm proc exec", NULL) == -1)
+	if (pledge("stdio vmm proc exec inet", NULL) == -1)
 		fatal("pledge");
 
 	/* Receive our vm configuration. */
@@ -278,7 +278,7 @@ start_vm(struct vmd_vm *vm, int fd)
 	}
 
 	/* Drop privleges further before starting the vcpu run loop(s). */
-	if (pledge("stdio vmm", NULL) == -1)
+	if (pledge("stdio vmm inet", NULL) == -1)
 		fatal("pledge");
 
 	/*

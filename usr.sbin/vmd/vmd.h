@@ -74,6 +74,12 @@
 #define NR_BACKLOG		5
 #define VMD_SWITCH_TYPE		"bridge"
 #define VM_DEFAULT_MEMORY	512 * 1024 * 1024	/* 512 MiB */
+#define VM_DEFAULT_DISPLAY_WIDTH	1024
+#define VM_DEFAULT_DISPLAY_HEIGHT	768
+#define VM_MIN_DISPLAY_WIDTH	64
+#define VM_MIN_DISPLAY_HEIGHT	64
+#define VM_MAX_DISPLAY_WIDTH	4096
+#define VM_MAX_DISPLAY_HEIGHT	4096
 
 #define VMD_DEFAULT_STAGGERED_START_DELAY 30
 
@@ -220,6 +226,7 @@ struct vmop_create_params {
 #define VMOP_CREATE_DISK	0x10
 #define VMOP_CREATE_CDROM	0x20
 #define VMOP_CREATE_INSTANCE	0x40
+#define VMOP_CREATE_DISPLAY	0x80
 	/* same flags as vmc_flags; check for access to these resources */
 	unsigned int		 vmc_checkaccess;
 
@@ -235,6 +242,10 @@ struct vmop_create_params {
 	/* guest memory */
 	size_t			 vmc_nmemranges;
 	struct vm_mem_range	 vmc_memranges[VMM_MAX_MEM_RANGES];
+
+	/* display configuration */
+	uint32_t		 vmc_gfx_width;
+	uint32_t		 vmc_gfx_height;
 
 	/* Boot device and firmware */
 	int			 vmc_kernel;

@@ -782,7 +782,7 @@ vmd_configure(void)
 	 * flock - locking disk files
 	 */
 	if (pledge("stdio rpath wpath proc tty recvfd sendfd getpw"
-	    " chown fattr flock", NULL) == -1)
+	    " chown fattr flock inet", NULL) == -1)
 		fatal("pledge");
 
 	if ((env->vmd_ptmfd = getptmfd()) == -1)
@@ -1167,6 +1167,10 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 		vmc->vmc_ncpus = 1;
 	if (vmc->vmc_memranges[0].vmr_size == 0)
 		vmc->vmc_memranges[0].vmr_size = VM_DEFAULT_MEMORY;
+	if (vmc->vmc_gfx_width == 0)
+		vmc->vmc_gfx_width = VM_DEFAULT_DISPLAY_WIDTH;
+	if (vmc->vmc_gfx_height == 0)
+		vmc->vmc_gfx_height = VM_DEFAULT_DISPLAY_HEIGHT;
 	if (vmc->vmc_ncpus > VMM_MAX_VCPUS_PER_VM) {
 		log_warnx("invalid number of CPUs");
 		goto fail;
@@ -1310,6 +1314,18 @@ vm_instance(struct privsep *ps, struct vmd_vm **vm_parent,
 	    vmc->vmc_memranges[0].vmr_size !=
 	    vmc_parent->vmc_memranges[0].vmr_size) {
 		log_warnx("vm \"%s\" no permission to set memory", name);
+		return (EPERM);
+	}
+
+	/* display */
+	if (vmc->vmc_gfx_width == 0)
+		vmc->vmc_gfx_width = vmc_parent->vmc_gfx_width;
+	if (vmc->vmc_gfx_height == 0)
+		vmc->vmc_gfx_height = vmc_parent->vmc_gfx_height;
+	if (vm_checkinsflag(vmc_parent, VMOP_CREATE_DISPLAY, uid) != 0 &&
+	    (vmc->vmc_gfx_width != vmc_parent->vmc_gfx_width ||
+	    vmc->vmc_gfx_height != vmc_parent->vmc_gfx_height)) {
+		log_warnx("vm \"%s\" no permission to set display", name);
 		return (EPERM);
 	}
 

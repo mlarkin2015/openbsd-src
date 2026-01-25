@@ -119,7 +119,7 @@ typedef struct {
 
 %token	INCLUDE ERROR
 %token	ADD AGENTX ALLOW BOOT CDROM CONTEXT DEVICE DISABLE DISK DOWN ENABLE
-%token	FORMAT GROUP
+%token	DISPLAY FORMAT GROUP
 %token	INET6 INSTANCE INTERFACE LLADDR LOCAL LOCKED MEMORY NET NIFS OWNER
 %token	PATH PREFIX RDOMAIN SIZE SOCKET SWITCH UP VM VMID STAGGERED START
 %token  PARALLEL DELAY SEV SEVES
@@ -138,6 +138,7 @@ typedef struct {
 %type	<v.string>	vm_instance
 %type	<v.number>	sev;
 %type	<v.number>	seves;
+%type	<v.string>	dispres;
 
 %%
 
@@ -321,6 +322,8 @@ vm		: VM string vm_instance		{
 
 			memset(&vmc, 0, sizeof(vmc));
 			vmc.vmc_kernel = -1;
+			vmc.vmc_gfx_width = 0;
+			vmc.vmc_gfx_height = 0;
 
 			vmc_disable = 0;
 			vmc_nnics = 0;
@@ -542,6 +545,10 @@ vm_opts		: disable			{
 			vmc.vmc_memranges[0].vmr_size = (size_t)res;
 			vmc.vmc_flags |= VMOP_CREATE_MEMORY;
 		}
+		| DISPLAY dispres		{
+			vmc.vmc_flags |= VMOP_CREATE_DISPLAY;
+			free($2);
+		}
 		| OWNER owner_id		{
 			vmc.vmc_owner.uid = $2.uid;
 			vmc.vmc_owner.gid = $2.gid;
@@ -559,6 +566,7 @@ instance_l	: instance_flags optcommanl instance_l
 
 instance_flags	: BOOT		{ vmc.vmc_insflags |= VMOP_CREATE_KERNEL; }
 		| MEMORY	{ vmc.vmc_insflags |= VMOP_CREATE_MEMORY; }
+		| DISPLAY	{ vmc.vmc_insflags |= VMOP_CREATE_DISPLAY; }
 		| INTERFACE	{ vmc.vmc_insflags |= VMOP_CREATE_NETWORK; }
 		| DISK		{ vmc.vmc_insflags |= VMOP_CREATE_DISK; }
 		| CDROM		{ vmc.vmc_insflags |= VMOP_CREATE_CDROM; }
@@ -611,6 +619,49 @@ owner_id	: NUMBER		{
 			free($1);
 		}
 		;
+
+dispres		: STRING		{
+			char	*sep;
+			const char	*errstr = NULL;
+			long long width;
+			long long height;
+
+			sep = strchr($1, 'x');
+			if (sep == NULL) {
+				sep = strchr($1, 'X');
+				if (sep == NULL) {
+					yyerror("invalid display format: %s", $1);
+					free($1);
+					YYERROR;
+				}
+			}
+			*sep = '\0';
+			width = strtonum($1, 1, INT_MAX, &errstr);
+			if (errstr != NULL) {
+				yyerror("invalid display width: %s", $1);
+				free($1);
+				YYERROR;
+			}
+			height = strtonum(sep + 1, 1, INT_MAX, &errstr);
+			if (errstr != NULL) {
+				yyerror("invalid display height: %s", sep + 1);
+				free($1);
+				YYERROR;
+			}
+
+			if (width < VM_MIN_DISPLAY_WIDTH || width > VM_MAX_DISPLAY_WIDTH ||
+			    height < VM_MIN_DISPLAY_HEIGHT ||
+			    height > VM_MAX_DISPLAY_HEIGHT) {
+				yyerror("display resolution out of range: %lldx%lld", width,
+				    height);
+				free($1);
+				YYERROR;
+			}
+
+			vmc.vmc_gfx_width = (uint32_t)width;
+			vmc.vmc_gfx_height = (uint32_t)height;
+			$$ = $1;
+		}
 
 agentxopt	: CONTEXT STRING {
 			if (strlcpy(env->vmd_cfg.cfg_agentx.ax_context, $2,
@@ -826,6 +877,7 @@ lookup(char *s)
 		{ "boot",		BOOT },
 		{ "cdrom",		CDROM },
 		{ "context",		CONTEXT},
+		{ "display",		DISPLAY },
 		{ "delay",		DELAY },
 		{ "device",		DEVICE },
 		{ "disable",		DISABLE },
@@ -1084,6 +1136,21 @@ top:
 				return (findeol());
 			}
 		} while ((c = lgetc(0)) != EOF && isdigit(c));
+		if (c == 'x' || c == 'X') {
+			*p++ = c;
+			while ((c = lgetc(0)) != EOF && isdigit(c)) {
+				*p++ = c;
+				if ((size_t)(p-buf) >= sizeof(buf)) {
+					yyerror("string too long");
+					return (findeol());
+				}
+			}
+			lungetc(c);
+			*p = '\0';
+			if ((yylval.v.string = strdup(buf)) == NULL)
+				fatal("yylex: strdup");
+			return (STRING);
+		}
 		lungetc(c);
 		if (p == buf + 1 && buf[0] == '-')
 			goto nodigits;

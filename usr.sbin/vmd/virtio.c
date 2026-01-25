@@ -57,6 +57,7 @@ extern struct vmd *env;
 
 struct virtio_dev viornd;
 struct virtio_dev *vioscsi = NULL;
+struct virtio_dev *viogpu = NULL;
 struct virtio_dev vmmci;
 
 /* Devices emulated in subprocesses are inserted into this list. */
@@ -334,6 +335,8 @@ virtio_io_dispatch(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 	case VIO1_DEV_BAR_OFFSET:
 		if (dev->device_id == PCI_PRODUCT_VIRTIO_SCSI)
 			return vioscsi_io(dir, actual, data, intr, arg, sz);
+		else if (dev->device_id == PCI_PRODUCT_VIRTIO_GPU)
+			return viogpu_io(dir, actual, data, intr, arg, sz);
 		else if (dir == VEI_DIR_IN) {
 			log_debug("%s: no device specific handler", __func__);
 			*data = (uint32_t)(-1);
@@ -411,31 +414,33 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 		case VIO1_PCI_NUM_QUEUES:
 			log_warnx("illegal write to num queues register");
 			break;
-		case VIO1_PCI_DEVICE_STATUS:
-			if (sz != 1) {
-				log_warnx("%s: unaligned write to device "
-				    "status register (sz=%u)", __func__, sz);
-				break;
-			}
-			dev->status = data;
-			if (dev->status == 0) {
-				/* Reset device and virtqueues (if any). */
-				dev->driver_feature = 0;
-				dev->isr = 0;
+	case VIO1_PCI_DEVICE_STATUS:
+		if (sz != 1) {
+			log_warnx("%s: unaligned write to device "
+			    "status register (sz=%u)", __func__, sz);
+			break;
+		}
+		dev->status = data;
+		if (dev->status == 0) {
+			/* Reset device and virtqueues (if any). */
+			dev->driver_feature = 0;
+			dev->isr = 0;
 
 				pci_cfg->queue_select = 0;
 				virtio_update_qs(dev);
 
-				if (dev->num_queues > 0) {
-					/*
-					 * Reset virtqueues to initial state and
-					 * set to disabled status. Clear PCI
-					 * configuration registers.
-					 */
-					for (i = 0; i < dev->num_queues; i++)
-						virtio_vq_init(dev, i);
-				}
+			if (dev->num_queues > 0) {
+				/*
+				 * Reset virtqueues to initial state and
+				 * set to disabled status. Clear PCI
+				 * configuration registers.
+				 */
+				for (i = 0; i < dev->num_queues; i++)
+					virtio_vq_init(dev, i);
 			}
+			if (dev->device_id == PCI_PRODUCT_VIRTIO_GPU)
+				viogpu_reset(dev);
+		}
 
 			DPRINTF("%s: dev %u status [%s%s%s%s%s%s]", __func__,
 			    dev->pci_id,
@@ -474,10 +479,10 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 		case VIO1_PCI_QUEUE_MSIX_VECTOR:
 			/* Ignore until we support MSI-X. */
 			break;
-		case VIO1_PCI_QUEUE_ENABLE:
-			pci_cfg->queue_enable = data;
-			virtio_update_qa(dev);
-			break;
+	case VIO1_PCI_QUEUE_ENABLE:
+		pci_cfg->queue_enable = data;
+		virtio_update_qa(dev);
+		break;
 		case VIO1_PCI_QUEUE_NOTIFY_OFF:
 			log_warnx("illegal write to queue notify offset "
 			    "register");
@@ -579,9 +584,9 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 		case VIO1_PCI_NUM_QUEUES:
 			res = dev->num_queues;
 			break;
-		case VIO1_PCI_DEVICE_STATUS:
-			res = dev->status;
-			break;
+	case VIO1_PCI_DEVICE_STATUS:
+		res = dev->status;
+		break;
 		case VIO1_PCI_CONFIG_GENERATION:
 			res = pci_cfg->config_generation;
 			break;
@@ -615,12 +620,12 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 		case VIO1_PCI_QUEUE_USED:
 			res = (uint32_t)(0xFFFFFFFF & pci_cfg->queue_used);
 			break;
-		case VIO1_PCI_QUEUE_USED + 4:
-			res = (uint32_t)(pci_cfg->queue_used >> 32);
-			break;
-		default:
-			log_warnx("%s: invalid register 0x%04x", __func__, reg);
-		}
+	case VIO1_PCI_QUEUE_USED + 4:
+		res = (uint32_t)(pci_cfg->queue_used >> 32);
+		break;
+	default:
+		log_warnx("%s: invalid register 0x%04x", __func__, reg);
+	}
 	}
 
 	DPRINTF("%s: dev=%u %s sz=%u dir=%s data=0x%04x", __func__, dev->pci_id,
@@ -690,6 +695,9 @@ virtio_io_notify(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 		break;
 	case PCI_PRODUCT_VIRTIO_SCSI:
 		raise_intr = vioscsi_notifyq(dev, vq_idx);
+		break;
+	case PCI_PRODUCT_VIRTIO_GPU:
+		raise_intr = viogpu_notifyq(dev, vq_idx);
 		break;
 	case PCI_PRODUCT_VIRTIO_VMMCI:
 		/* Does not use a virtqueue. */
@@ -1138,6 +1146,45 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 		}
 	}
 
+	/* Virtio 1.x GPU Device */
+	dev = calloc(1, sizeof(*dev));
+	if (dev == NULL) {
+		log_warn("%s: failure allocating viogpu", __func__);
+		return (1);
+	}
+	log_warnx("alloced gpu");
+	if (pci_add_device(&id, PCI_VENDOR_QUMRANET,
+	    PCI_PRODUCT_QUMRANET_VIO1_GPU, PCI_CLASS_DISPLAY,
+	    PCI_SUBCLASS_DISPLAY_MISC, PCI_VENDOR_OPENBSD,
+	    PCI_PRODUCT_VIRTIO_GPU, 1, 1, NULL)) {
+		log_warnx("can't add PCI virtio gpu device");
+		return (1);
+	}
+	log_warnx("added pcidev for gpuyy");
+	virtio_dev_init(vm, dev, id, VIOGPU_QUEUE_SIZE_DEFAULT,
+	    VIRTIO_GPU_QUEUES, VIRTIO_F_VERSION_1);
+
+	log_warnx("inited gpu");
+	bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_io_dispatch, dev);
+	if (bar_id == -1 || bar_id > 0xff) {
+		log_warnx("can't add bar for virtio gpu device");
+		return (1);
+	}
+	log_warnx("added bar gpu");
+	virtio_pci_add_cap(id, VIRTIO_PCI_CAP_COMMON_CFG, bar_id, 0);
+	virtio_pci_add_cap(id, VIRTIO_PCI_CAP_DEVICE_CFG, bar_id,
+	    sizeof(struct virtio_gpu_config));
+	virtio_pci_add_cap(id, VIRTIO_PCI_CAP_ISR_CFG, bar_id, 0);
+	virtio_pci_add_cap(id, VIRTIO_PCI_CAP_NOTIFY_CFG, bar_id, 0);
+	log_warnx("added caps");
+
+	if (viogpu_init(dev, vm) != 0) {
+		log_warnx("failed to initialize viogpu device");
+		return (1);
+	}
+	viogpu = dev;
+	log_warnx("added gpu device");
+
 	/*
 	 * Launch virtio devices that support subprocess execution.
 	 */
@@ -1186,6 +1233,7 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 		dev->vioscsi.n_blocks = dev->vioscsi.sz /
 		    VIOSCSI_BLOCK_SIZE_CDROM;
 		dev->vioscsi.max_xfer = VIOSCSI_BLOCK_SIZE_CDROM;
+		vioscsi = dev;
 	}
 
 	/* Virtio 0.9 VMM Control Interface */
@@ -1212,6 +1260,8 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 	evtimer_set(&dev->vmmci.timeout, vmmci_timeout, dev);
 	vm_pipe_init2(&dev->vmmci.dev_pipe, vmmci_pipe_dispatch, dev);
 	event_add(&dev->vmmci.dev_pipe.read_ev, NULL);
+
+	/* GPU is in-process; no child launch needed. */
 
 	return (0);
 }
@@ -1273,6 +1323,8 @@ virtio_shutdown(struct vmd_vm *vm)
 	/* Ensure that our disks are synced. */
 	if (vioscsi != NULL)
 		vioscsi->vioscsi.file.close(vioscsi->vioscsi.file.p, 0);
+	if (viogpu != NULL)
+		viogpu_shutdown(viogpu);
 
 	/*
 	 * Broadcast shutdown to child devices. We need to do this
