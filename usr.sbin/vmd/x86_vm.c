@@ -32,6 +32,7 @@
 
 #include <zlib.h>
 
+#include "acpi.h"
 #include "atomicio.h"
 #include "fw_cfg.h"
 #include "i8253.h"
@@ -187,6 +188,8 @@ create_memory_map(struct vmd_vm *vm)
 	 * unconditionally write to 0xb8000 (VGA RAM), and
 	 * we need to make sure that vmm(4) permits accesses
 	 * to it. So allocate guest memory for it.
+	 *
+	 * We also stuff the precreated ACPI tables here.
 	 */
 	len = MB(1) - (LOWMEM_KB * 1024);
 	vmc->vmc_memranges[1].vmr_gpa = LOWMEM_KB * 1024;
@@ -416,6 +419,12 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	ioports_map[PCI_MODE1_DATA_REG + 3] = vcpu_exit_pci;
 	pci_init();
 
+	mmio_init();
+
+	i82093aa_init();
+	i82489dx_init();
+
+	acpi_init(vcp->vcp_ncpus);
 	mmio_init();
 
 	i82093aa_init();
@@ -826,6 +835,7 @@ find_gpa_range(struct vmop_create_params *vmc, paddr_t gpa, size_t len)
 
 	return (vmr);
 }
+
 /*
  * write_mem
  *
