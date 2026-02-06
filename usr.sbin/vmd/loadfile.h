@@ -70,6 +70,8 @@
 #define	COUNT_RANDOM	0x4000
 #define COUNT_ALL	0x7f00
 
+#define LOWMEM_KB 624
+
 #define BOOTARGS_PAGE 0x2000
 #define STACK_PAGE 0xF000
 #define GDT_PAGE 0x10000
