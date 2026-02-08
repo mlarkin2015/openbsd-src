@@ -38,10 +38,28 @@ acpi_calculate_checksum(uint8_t *tbl, size_t len)
 	size_t i;
 
 	cksum = 0;
-	for (i = 0; i < len; i++)
+	for (i = 0; i < len; i++) {
 		cksum += tbl[i];
+		log_warnx("%s: computing checksum tbl[%zd]=0x%x, running sum %d", __func__, i, tbl[i], cksum);
+	}
 
 	return (256 - cksum);
+}
+
+static void
+acpi_verify_checksum(uint8_t *tbl, size_t len)
+{
+	size_t i;
+	uint8_t cksum = 0;
+
+	for (i = 0 ; i < len ; i++) {
+		log_warnx("%s: checksum[%zd] = 0x%x", __func__, i, tbl[i]);
+		cksum += tbl[i];
+	}
+
+	if (cksum)
+		log_warnx("%s: ACPI table checksum error, got %d", __func__,
+		    cksum);
 }
 
 /*
@@ -80,11 +98,13 @@ acpi_create_madt(paddr_t pa, size_t numcpu)
 	size_t i, sz;
 
 	log_warnx("%s: creating MADT", __func__);
-	sz = sizeof(*madt) + sizeof(*ioapic) + sizeof(*lapic) * numcpu;
+	sz = sizeof(*madt) + sizeof(*ioapic) + (sizeof(*lapic) * numcpu);
 	log_warnx("%s: MADT size %zd", __func__, sz);
 	tbl = (uint8_t *)malloc(sz);
 	if (tbl == NULL)
 		fatal("malloc");
+
+	memset(tbl, 0, sz);
 
 	b = tbl;
 	madt = (struct acpi_madt *)b;
@@ -116,8 +136,10 @@ acpi_create_madt(paddr_t pa, size_t numcpu)
 	memcpy(madt->hdr_signature, MADT_SIG, 4);
 	madt->hdr.length = sz;
 	madt->hdr.checksum = acpi_calculate_checksum(tbl, sz);
+	log_warnx("%s: computed MADT checksum 0x%x", __func__, madt->hdr.checksum);
 
 	log_warnx("%s: writing MADT to %lx", __func__, pa);
+	acpi_verify_checksum((uint8_t *)tbl, sz);
 
 	if (write_mem(pa, tbl, sz))
 		log_warnx("%s: could not write MADT table", __func__);
@@ -159,8 +181,10 @@ acpi_create_xsdt(paddr_t pa, paddr_t *tables, size_t numtables)
 	xsdt->hdr.length = sz;
 	xsdt->hdr.checksum = acpi_calculate_checksum((uint8_t *)xsdt, sz);
 
+	acpi_verify_checksum((uint8_t *)xsdt, sz);
+
 	log_warnx("%s: writing XSDT to %lx", __func__, pa);
-	if (write_mem(pa, xsdt, sizeof(xsdt)))
+	if (write_mem(pa, xsdt, sz))
 		log_warnx("%s: could not write XSDT table", __func__);
 
 	log_warnx("%s: XSDT creation complete", __func__);
@@ -197,6 +221,8 @@ acpi_create_rsdp(paddr_t pa, paddr_t xsdt_pa)
 	rsdp.rsdp_extchecksum = acpi_calculate_checksum((uint8_t *)&rsdp,
 	    sizeof(rsdp));
 
+	acpi_verify_checksum((uint8_t *)&rsdp, sizeof(rsdp));
+
 	log_warnx("%s: writing RSDP to %lx", __func__, pa);
 	if (write_mem(pa, &rsdp, sizeof(rsdp)))
 		log_warnx("%s: could not write RSDP table", __func__);
@@ -224,6 +250,9 @@ acpi_init(size_t numcpu)
 	acpi_create_rsdp(VMD_RSDP_PADDR, VMD_XSDT_PADDR);
 
 	/* EBDA pointer */
+	log_warnx("%s: writing RSDP pointer 0x%x -> 0x%x", __func__,
+	    rsdp_ptr_real, VMD_ACPI_EBDA_PTR);
+
 	if (write_mem(VMD_ACPI_EBDA_PTR , &rsdp_ptr_real, sizeof(rsdp_ptr_real)))
 		log_warnx("%s: could not write RSDP pointer to BDA", __func__);
 
