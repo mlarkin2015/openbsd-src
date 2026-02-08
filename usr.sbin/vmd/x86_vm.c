@@ -53,10 +53,11 @@ typedef uint8_t (*io_fn_t)(struct vm_run_params *);
 #define LOWMEM_KB	576
 #define MAX_PORTS	65536
 
+extern char* __progname;
+
 io_fn_t	ioports_map[MAX_PORTS];
 
 int	 translate_gva(struct vm_exit*, uint64_t, uint64_t *, int);
-void	 create_memory_map(struct vm_create_params *);
 
 static int	loadfile_bios(gzFile, off_t, struct vcpu_reg_state *);
 static int	vcpu_exit_eptviolation(struct vm_run_params *);
@@ -424,7 +425,7 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	i82093aa_init();
 	i82489dx_init();
 
-	acpi_init(vcp->vcp_ncpus);
+	acpi_init(vmc->vmc_ncpus);
 	mmio_init();
 
 	i82093aa_init();
@@ -983,7 +984,7 @@ hvaddr_mem(paddr_t gpa, size_t len)
  * Injects the specified IRQ on the supplied vcpu/vm
  *
  * Parameters:
- *  vm_id: VMM vm ID to inject to
+ *  vmm_id: VMM vm ID to inject to
  *  vcpu_id: VCPU ID to inject to
  *  irq: IRQ to inject
  */
@@ -994,7 +995,7 @@ vcpu_assert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 	i82093aa_assert_pin(irq);
 
 	if (i8259_is_pending() || i82489dx_is_pending(vcpu_id)) {
-		if (vcpu_intr(vm_id, vcpu_id, 1))
+		if (vcpu_intr(vmm_id, vcpu_id, 1))
 			fatalx("%s: can't assert INTR", __func__);
 
 		vcpu_unhalt(vcpu_id);
@@ -1008,7 +1009,7 @@ vcpu_assert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
  * Clears the specified IRQ on the supplied vcpu/vm
  *
  * Parameters:
- *  vm_id: VMM vm ID to clear in
+ *  vmm_id: VMM vm ID to clear in
  *  vcpu_id: VCPU ID to clear in
  *  irq: IRQ to clear
  */
@@ -1019,9 +1020,9 @@ vcpu_deassert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 	i82093aa_deassert_pin(irq);
 
 	if (!i8259_is_pending() && !i82489dx_is_pending(vcpu_id)) {
-		if (vcpu_intr(vm_id, vcpu_id, 0))
+		if (vcpu_intr(vmm_id, vcpu_id, 0))
 			fatalx("%s: can't deassert INTR for vm_id %d, "
-			    "vcpu_id %d", __func__, vm_id, vcpu_id);
+			    "vcpu_id %d", __func__, vmm_id, vcpu_id);
 	}
 }
 
