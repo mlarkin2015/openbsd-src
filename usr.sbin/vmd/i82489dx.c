@@ -213,10 +213,8 @@ i82489dx_get_highest_isr(void)
 int
 i82489dx_is_pending(int vcpu_id)
 {
-	if (!i82489dx_enabled()) {
-		log_warnx("%s: lapic disabled", __func__);
+	if (!i82489dx_enabled())
 		return 0;
-	}
 
 	return (i82489dx_get_highest_irr() != 0xFFFF);
 }
