@@ -123,8 +123,10 @@ vm_agentx_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 	 * stdio - for malloc and basic I/O including events.
 	 * unix - for access to the agentx master socket.
 	 */
+	/* DSDT DEBUG: pledge disabled
 	if (pledge("stdio unix", NULL) == -1)
 		fatal("pledge");
+	*/
 }
 
 int

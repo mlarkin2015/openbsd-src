@@ -16,6 +16,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <stdlib.h>
 #include <strings.h>
 
 #include <machine/i82489reg.h>
@@ -30,6 +31,7 @@ struct i82489dx {
 	uint32_t	ver;
 	uint32_t	tpr;
 	uint32_t	svr;
+	uint32_t	id;
 
 	uint32_t	isr[8];
 	uint32_t	irr[8];
@@ -124,7 +126,34 @@ i82489dx_mmio(int dir, paddr_t addr, uint64_t *data)
 			log_warnx("%s: setting LAPIC_SVR=0x%x",
 			    __func__, d);
 			lapic.svr = d;
+			if (lapic.svr & LAPIC_SVR_ENABLE)
+				log_warnx("%s: lapic: enabled", __func__);
+			else
+				log_warnx("%s: lapic: disabled", __func__);
 		}
+		break;
+	case LAPIC_ID:
+		if (dir == MMIO_DIR_READ) {
+			*data &= 0xFFFFFFFF00000000;
+			*data |= lapic.id;
+			log_warnx("%s: read LAPIC_ID: return 0x%llx",
+			    __func__, *data);
+		} else {
+			log_warnx("%s: discarding LAPIC_ID write", __func__);
+		}
+		break;
+	case LAPIC_CCR_TIMER:
+		/* XXX: hack to get it moving */
+		if (dir == MMIO_DIR_READ) {
+			*data &= 0xFFFFFFFF00000000;
+			*data |= arc4random();
+			log_warnx("%s: XXX: faking lapic clock answer",
+			    __func__);
+		} else {
+			log_warnx("%s: impossible write to LAPIC_CCR_TIMER",
+			    __func__);
+		}
+		break;
 	default:
 		if (dir == MMIO_DIR_READ) {
 			log_warnx("%s: unsupported i/o on i82489 reg 0x%x. "
@@ -140,10 +169,11 @@ i82489dx_mmio(int dir, paddr_t addr, uint64_t *data)
 }
 
 void
-i82489dx_init(void)
+i82489dx_init(uint32_t curcpu)
 {
 	lapic.ver = (1ULL << 31) | (6ULL << LAPIC_VERSION_LVT_SHIFT) | 0x10;
 	lapic.base = LAPIC_BASE;
+	lapic.id = (curcpu << LAPIC_ID_SHIFT);
 
 	mmio_dev_add(LAPIC_BASE, LAPIC_BASE + 0xFFF,
 	    (mmio_dev_fn_t)i82489dx_mmio);
@@ -164,6 +194,13 @@ i82489dx_vector_irq(int apic_id, int destmode, uint8_t vector, int level)
 		return;
 	}
 
+	/* XXX : early IRQs causing vector 0 and junk ... */
+	/* XXX: need to ensure those devices arent firing at boot */
+	if (vector < 32) {
+		log_warnx("%s: skipping low vector %d", __func__, vector);
+		return;
+	}
+
 	log_warnx("%s: received irq from ioapic: vec=%d",
 	    __func__, vector);
 	i82489dx_set_irr(vector);
@@ -175,7 +212,7 @@ i82489dx_get_highest_irr(void)
 {
 	int vector = 0xFFFF, i, base, j;
 
-	for (i = 7; i >=0; i--) {
+	for (i = 7; i >= 0; i--) {
 		base = 32 * i;
 		j = ffsl(lapic.irr[i]);
 		if (j) {
@@ -195,7 +232,7 @@ i82489dx_get_highest_isr(void)
 {
 	int vector = 0xFFFF, i, base, j;
 
-	for (i = 7; i >=0; i--) {
+	for (i = 7; i >= 0; i--) {
 		base = 32 * i;
 		j = ffsl(lapic.isr[i]);
 		if (j) {
@@ -244,7 +281,7 @@ i82489dx_set_isr(int vector)
 	log_warnx("%s: setting ISR vector %d (base=%d bit=%d)",
 	    __func__, vector, base, ofs);
 
-	lapic.isr[base] |= ~(1ULL << ofs);
+	lapic.isr[base] |= (1ULL << ofs);
 }
 
 void
@@ -258,7 +295,7 @@ i82489dx_set_irr(int vector)
 	log_warnx("%s: setting IRR vector %d (base=%d bit=%d)",
 	    __func__, vector, base, ofs);
 
-	lapic.irr[base] |= ~(1ULL << ofs);
+	lapic.irr[base] |= (1ULL << ofs);
 }
 
 void
@@ -302,13 +339,18 @@ i82489dx_ack(int vcpu_id)
 {
 	int vector;
 
-	log_warnx("%s: irq ack but lapic disabled", __func__);
+	if (!i82489dx_enabled()) {
+		log_warnx("%s: irq ack but lapic disabled", __func__);
+		return 0xFFFF;
+	}
 
 	vector = i82489dx_get_highest_irr();
 	if (vector == 0xFFFF) {
 		log_warnx("%s: ack called but no IRR bits set?", __func__);
 		return vector;
 	}
+
+	log_warnx("%s: lapic ACKs highest IRR %d", __func__, vector);
 
 	i82489dx_set_isr(vector);
 	i82489dx_clear_irr(vector);

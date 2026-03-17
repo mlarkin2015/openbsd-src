@@ -21,7 +21,7 @@
 
 #include <sys/types.h>
 
-void i82489dx_init(void);
+void i82489dx_init(uint32_t);
 int i82489dx_mmio(int, paddr_t, uint64_t *);
 void i82489dx_vector_irq(int, int, uint8_t, int);
 int i82489dx_is_pending(int);

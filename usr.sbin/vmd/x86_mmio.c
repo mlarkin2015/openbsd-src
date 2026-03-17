@@ -61,7 +61,7 @@ static int get_modrm_addr(struct x86_insn *, struct vcpu_reg_state *);
 static enum decode_result decode_disp(struct x86_decode_state *,
     struct vcpu_reg_state *, struct x86_insn *);
 static enum decode_result decode_sib(struct x86_decode_state *,
-    struct x86_insn *);
+    struct vcpu_reg_state *, struct x86_insn *);
 static enum decode_result decode_imm(struct x86_decode_state *,
     struct x86_insn *);
 
@@ -677,6 +677,11 @@ decode_disp(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 		}
 		insn->insn_disp = disp;
 
+		/* Sign-extend 32-bit displacement to 64 bits in long mode */
+		if (insn->insn_disp_type == DISP_4 &&
+		    insn->insn_cpu_mode == VMM_CPU_MODE_LONG)
+			insn->insn_disp = (int64_t)(int32_t)insn->insn_disp;
+
 		if (insn->insn_cpu_mode == VMM_CPU_MODE_LONG &&
 		    MODRM_MOD(insn->insn_modrm) == 0) {
 			insn->insn_disp += vrs->vrs_gprs[VCPU_REGS_RIP];
@@ -697,6 +702,7 @@ decode_disp(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 	}
 
 	log_warnx("%s: mod = %d\n", __func__, MODRM_MOD(insn->insn_modrm));
+
 	switch (MODRM_MOD(insn->insn_modrm)) {
 	case 0x00:
 		insn->insn_disp_type = DISP_0;
@@ -727,6 +733,10 @@ decode_disp(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 			return (res);
 		}
 		insn->insn_disp = disp;
+		/* Sign-extend 32-bit displacement to 64 bits in long mode */
+		if (insn->insn_disp_type == DISP_4 &&
+		    insn->insn_cpu_mode == VMM_CPU_MODE_LONG)
+			insn->insn_disp = (int64_t)(int32_t)insn->insn_disp;
 		break;
 	default:
 		insn->insn_disp_type = DISP_NONE;
@@ -734,10 +744,11 @@ decode_disp(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 		log_warnx("%s: ?? DISP_NONE fallthrough", __func__);
 	}
 
-	insn->insn_gva += disp;
+	insn->insn_gva += insn->insn_disp;
 
 	log_warnx("%s: returning calculated displacement of 0x%llx", __func__,
 	    insn->insn_disp);
+
 	return (res);
 }
 
@@ -800,10 +811,17 @@ decode_opcode(struct x86_decode_state *state, struct x86_insn *insn)
 }
 
 static enum decode_result
-decode_sib(struct x86_decode_state *state, struct x86_insn *insn)
+decode_sib(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
+    struct x86_insn *insn)
 {
 	enum decode_result res;
-	uint8_t byte;
+	uint8_t byte, mod, scale, index, base;
+	uint64_t scale_val;
+	vaddr_t addr = 0;
+	static const int sib_reg_map[8] = {
+		VCPU_REGS_RAX, VCPU_REGS_RCX, VCPU_REGS_RDX, VCPU_REGS_RBX,
+		VCPU_REGS_RSP, VCPU_REGS_RBP, VCPU_REGS_RSI, VCPU_REGS_RDI
+	};
 
 	if (!is_valid_state(state, __func__) || insn == NULL)
 		return (-1);
@@ -815,12 +833,39 @@ decode_sib(struct x86_decode_state *state, struct x86_insn *insn)
 	if (!insn->insn_modrm_valid)
 		return (res);
 
+	mod = MODRM_MOD(insn->insn_modrm);
+
 	/* XXX is SIB valid in all cpu modes? */
 	if (MODRM_RM(insn->insn_modrm) == 0b100) {
 		res = next_byte(state, &byte);
 		if (res != DECODE_ERROR) {
 			insn->insn_sib_valid = 1;
 			insn->insn_sib = byte;
+
+			scale = SIB_SCALE(byte);
+			index = SIB_INDEX(byte);
+			base = SIB_BASE(byte);
+
+			/* Calculate scale factor: 0->1, 1->2, 2->4, 3->8 */
+			scale_val = 1ULL << scale;
+
+			/* Add base register value (unless special case) */
+			if (base != 0b101 || mod != 0b00) {
+				addr += vrs->vrs_gprs[sib_reg_map[base]];
+			}
+
+			/* Add index * scale (unless index is RSP which means no index) */
+			if (index != 0b100) {
+				addr += vrs->vrs_gprs[sib_reg_map[index]] * scale_val;
+			}
+
+			insn->insn_gva = addr;
+
+			log_warnx("%s: SIB calc: scale=%llu, index=%s, base=%s, "
+			    "addr=0x%lx", __func__, scale_val,
+			    index == 0b100 ? "none" : str_reg(sib_reg_map[index]),
+			    base == 0b101 && mod == 0b00 ? "none" :
+			    str_reg(sib_reg_map[base]), addr);
 		}
 	}
 
@@ -978,7 +1023,7 @@ insn_decode(struct vm_exit *exit, struct x86_insn *insn)
 #endif
 
 	/* Process optional SIB byte. */
-	res = decode_sib(&state, insn);
+	res = decode_sib(&state, vrs, insn);
 	if (res == DECODE_ERROR) {
 		log_warnx("%s: error decoding sib", __func__);
 		goto err;

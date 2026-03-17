@@ -133,6 +133,9 @@ struct x86_insn {
 	int			insn_reg;		/* Register */
 
 	uint8_t			insn_sib;		/* Scale-Index-Base */
+#define SIB_SCALE(x)		((x >> 6) & 0x3)
+#define SIB_INDEX(x)		((x >> 3) & 0x7)
+#define SIB_BASE(x)		((x >> 0) & 0x7)
 	uint8_t			insn_sib_valid;		/* SIB byte set? */
 
 	uint64_t		insn_disp;		/* Displacement */
