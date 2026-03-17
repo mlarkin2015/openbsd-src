@@ -786,9 +786,11 @@ vmd_configure(void)
 	 * chown, fattr - change tty ownership
 	 * flock - locking disk files
 	 */
+	/* DSDT DEBUG: pledge disabled
 	if (pledge("stdio rpath wpath proc tty recvfd sendfd getpw"
 	    " chown fattr flock", NULL) == -1)
 		fatal("pledge");
+	*/
 
 	if ((env->vmd_ptmfd = getptmfd()) == -1)
 		fatal("getptmfd %s", PATH_PTMDEV);

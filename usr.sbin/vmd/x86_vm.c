@@ -422,14 +422,11 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 
 	mmio_init();
 
-	i82093aa_init();
-	i82489dx_init();
+	i82093aa_init(vmc->vmc_ncpus);
+	for (i = 0; i < vmc->vmc_ncpus; i++)
+		i82489dx_init(i);
 
 	acpi_init(vmc->vmc_ncpus);
-	mmio_init();
-
-	i82093aa_init();
-	i82489dx_init();
 
 	/* Initialize virtio devices */
 	if (virtio_init(current_vm, child_cdrom, child_disks, child_taps))
@@ -995,6 +992,8 @@ vcpu_assert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 	i82093aa_assert_pin(irq);
 
 	if (i8259_is_pending() || i82489dx_is_pending(vcpu_id)) {
+		log_warnx("%s: LAPIC IRQ PENDING", __func__);
+
 		if (vcpu_intr(vmm_id, vcpu_id, 1))
 			fatalx("%s: can't assert INTR", __func__);
 
@@ -1380,11 +1379,18 @@ intr_pending(int vcpu_id)
 int
 intr_ack(int vcpu_id)
 {
+	/* XXX select active interrupt controller */
 	int vec;
 
+	log_warnx("%s: acking IRQ vcpu id %d", __func__, vcpu_id);
+
 	vec = i82489dx_ack(vcpu_id);
-	if (vec != 0xFFFF)
+	if (vec != 0xFFFF) {
+		log_warnx("%s: LAPIC took the IRQ", __func__);
 		return vec;
+	}
+
+	log_warnx("%s: PIC took the IRQ", __func__);
 
 	return i8259_ack();
 }

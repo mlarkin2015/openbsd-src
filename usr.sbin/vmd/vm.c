@@ -94,10 +94,12 @@ vm_main(int fd, int fd_vmm)
 	/*
 	 * We aren't root, so we can't chroot(2). Use unveil(2) instead.
 	 */
+#if 0
 	if (unveil(env->argv0, "x") == -1)
 		fatal("unveil %s", env->argv0);
 	if (unveil(NULL, NULL) == -1)
 		fatal("unveil lock");
+#endif
 
 	/*
 	 * pledge in the vm processes:
@@ -105,8 +107,10 @@ vm_main(int fd, int fd_vmm)
 	 * vmm - for the vmm ioctls and operations.
 	 * proc exec - fork/exec for launching devices.
 	 */
+	/* DSDT DEBUG: pledge disabled
 	if (pledge("stdio vmm proc exec", NULL) == -1)
 		fatal("pledge");
+	*/
 
 	/* Receive our vm configuration. */
 	memset(&vm, 0, sizeof(vm));

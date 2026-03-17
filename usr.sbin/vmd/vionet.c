@@ -119,8 +119,10 @@ vionet_main(int fd, int fd_vmm)
 	 * stdio - needed for read/write to disk fds and channels to the vm.
 	 * vmm + proc - needed to create shared vm mappings.
 	 */
+	/* DSDT DEBUG: pledge disabled
 	if (pledge("stdio vmm proc", NULL) == -1)
 		fatal("pledge");
+	*/
 
 	/* Initialize iovec arrays. */
 	memset(iov_rx, 0, sizeof(iov_rx));

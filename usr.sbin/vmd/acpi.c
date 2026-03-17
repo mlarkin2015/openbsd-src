@@ -18,6 +18,9 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <machine/i82093reg.h>
 #include <machine/i82489reg.h>
@@ -63,6 +66,71 @@ acpi_verify_checksum(uint8_t *tbl, size_t len)
 }
 
 /*
+ * acpi_load_table
+ *
+ * Load an ACPI table from the specified file path into memory at 'pa'.
+ * Returns the size of the loaded table on success, or -1 on failure.
+ */
+static ssize_t
+acpi_load_table(const char *path, paddr_t pa)
+{
+	int fd;
+	ssize_t n;
+	size_t total = 0;
+	struct stat sb;
+	void *buf = NULL;
+
+	fd = open(path, O_RDONLY);
+	if (fd == -1) {
+		log_warn("%s: cannot open %s", __func__, path);
+		return (-1);
+	}
+
+	if (fstat(fd, &sb) == -1) {
+		log_warn("%s: cannot stat %s", __func__, path);
+		close(fd);
+		return (-1);
+	}
+
+	if (sb.st_size == 0 || sb.st_size > 1024 * 1024) {
+		/* Reject empty or unreasonably large tables */
+		log_warnx("%s: unreasonable table size %lld", __func__,
+		    (long long)sb.st_size);
+		close(fd);
+		return (-1);
+	}
+
+	buf = malloc(sb.st_size);
+	if (buf == NULL) {
+		log_warn("%s: malloc", __func__);
+		close(fd);
+		return (-1);
+	}
+
+	n = read(fd, buf, sb.st_size);
+	close(fd);
+
+	if (n != sb.st_size) {
+		log_warn("%s: short read from %s", __func__, path);
+		free(buf);
+		return (-1);
+	}
+
+	/* Write to guest memory */
+	if (write_mem(pa, buf, n)) {
+		log_warnx("%s: could not write table to %lx", __func__, pa);
+		free(buf);
+		return (-1);
+	}
+
+	total = n;
+	free(buf);
+
+	log_warnx("%s: loaded %s (%zd bytes) to %lx", __func__, path, total, pa);
+	return (total);
+}
+
+/*
  * acpi_populate_header
  *
  * populates the table header in 'hdr' with default values. The OEM table
@@ -81,6 +149,74 @@ acpi_populate_header(struct acpi_table_header *hdr, uint8_t *oemtableid)
 	hdr->oemrevision = 1;
 	memcpy(hdr->aslcompilerid, VMD_ASLCOMPILER_ID, 4);
 	hdr->aslcompilerrevision = 1;
+}
+
+/*
+ * acpi_create_fadt
+ *
+ * create FADT (Fixed ACPI Description Table) at 'pa' pointing to DSDT at 'dsdt_pa'
+ */
+void
+acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
+{
+	struct acpi_fadt fadt;
+
+	log_warnx("%s: creating FADT", __func__);
+	memset(&fadt, 0, sizeof(fadt));
+
+	acpi_populate_header(&fadt.hdr, VMD_FADT_OEM_TABLEID);
+
+	/* Header */
+	memcpy(fadt.hdr_signature, FADT_SIG, 4);
+	fadt.hdr.length = sizeof(fadt);
+
+	/* DSDT pointer - use both 32-bit and 64-bit fields */
+	fadt.dsdt = (uint32_t)dsdt_pa;  /* ACPI 1.0 compatibility */
+	fadt.x_dsdt = dsdt_pa;          /* ACPI 2.0+ 64-bit address */
+
+	/* System configuration */
+	fadt.int_model = FADT_INT_MULTI_APIC;
+	fadt.pm_profile = FADT_PM_DESKTOP;
+
+	/* SCI interrupt - typically uses IRQ 9 for ACPI */
+	fadt.sci_int = 9;
+
+	/* PM register lengths */
+	fadt.pm1_evt_len = 4;
+	fadt.pm1_cnt_len = 2;
+	fadt.pm_tmr_len = 4;
+	fadt.gpe0_blk_len = 0;
+	fadt.p_lvl2_lat = 100;
+	fadt.p_lvl3_lat = 1000;
+
+	/* PM register block addresses - use 0xB000 range */
+	fadt.pm1a_evt_blk = 0xB000;  /* PM1a Event Block */
+	fadt.pm1b_evt_blk = 0xB004;       /* PM1b Event Block (not used) */
+	fadt.pm1a_cnt_blk = 0xB008;  /* PM1a Control Block */
+	fadt.pm1b_cnt_blk = 0xB00C;       /* PM1b Control Block (not used) */
+	fadt.pm_tmr_blk = 0xB010;    /* PM Timer Block */
+	fadt.gpe0_blk = 0xB020;           /* GPE0 Block (not used) */
+
+	/* IAPC Boot Architecture Flags */
+	fadt.iapc_boot_arch = FADT_LEGACY_DEVICES;  /* Support legacy devices */
+
+	/* FADT flags */
+	fadt.flags = 0;
+
+	/* Checksum */
+	fadt.hdr.checksum = acpi_calculate_checksum((uint8_t *)&fadt, sizeof(fadt));
+
+	log_warnx("%s: FADT size %zu", __func__, sizeof(fadt));
+	log_warnx("%s: DSDT pointer 0x%x / 0x%llx", __func__, fadt.dsdt,
+	    (unsigned long long)fadt.x_dsdt);
+
+	acpi_verify_checksum((uint8_t *)&fadt, sizeof(fadt));
+
+	log_warnx("%s: writing FADT to %lx", __func__, pa);
+	if (write_mem(pa, &fadt, sizeof(fadt)))
+		log_warnx("%s: could not write FADT table", __func__);
+
+	log_warnx("%s: FADT creation complete", __func__);
 }
 
 /*
@@ -132,6 +268,7 @@ acpi_create_madt(paddr_t pa, size_t numcpu)
 	ioapic->reserved = 0;
 	ioapic->address = IOAPIC_BASE_DEFAULT;
 	ioapic->global_int_base = 0;
+	ioapic->acpi_ioapic_id = numcpu + 1;
 
 	memcpy(madt->hdr_signature, MADT_SIG, 4);
 	madt->hdr.length = sz;
@@ -233,18 +370,36 @@ acpi_create_rsdp(paddr_t pa, paddr_t xsdt_pa)
 void
 acpi_init(size_t numcpu)
 {
-	paddr_t tables[1];
+	paddr_t tables[4];
 	size_t numtables;
+	ssize_t dsdt_size;
 	uint16_t rsdp_ptr_real;
+	int have_dsdt = 0;
 
 	log_warnx("%s: initializing acpi tables", __func__);
 	rsdp_ptr_real = VMD_RSDP_PADDR >> 4;
 
 	numtables = 0;
 
+	/* Load DSDT from file - must be loaded before FADT creation */
+	dsdt_size = acpi_load_table("/etc/firmware/vmm.dsdt", VMD_DSDT_PADDR);
+	if (dsdt_size != -1) {
+		have_dsdt = 1;
+		log_warnx("%s: DSDT loaded successfully (%zd bytes)", __func__,
+		    dsdt_size);
+	} else {
+		log_warnx("%s: DSDT not loaded (optional)", __func__);
+	}
+
+	/* Create FADT - points to DSDT if available, required for ACPI */
+	if (have_dsdt) {
+		acpi_create_fadt(VMD_FADT_PADDR, VMD_DSDT_PADDR);
+		tables[numtables++] = VMD_FADT_PADDR;
+		log_warnx("%s: FADT created pointing to DSDT", __func__);
+	}
+
 	acpi_create_madt(VMD_MADT_PADDR, numcpu);
-	tables[0] = VMD_MADT_PADDR;
-	numtables++;
+	tables[numtables++] = VMD_MADT_PADDR;
 
 	acpi_create_xsdt(VMD_XSDT_PADDR, tables, numtables);
 	acpi_create_rsdp(VMD_RSDP_PADDR, VMD_XSDT_PADDR);

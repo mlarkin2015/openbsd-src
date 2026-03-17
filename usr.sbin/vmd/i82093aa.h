@@ -21,7 +21,7 @@
 
 #include <sys/types.h>
 
-#define I82093AA_NUM_PINS		24
+#define I82093AA_NUM_PINS		0x17
 #define I82093AA_VERSION		0x000011
 #define I82093AA_REDIR_SHIFT		56
 #define I82093AA_REDLO_DEL		3
@@ -86,7 +86,7 @@ void i82093aa_decode_redent(uint32_t);
 void i82093aa_winop(int, uint64_t *);
 void i82093aa_regsel(int, uint64_t *);
 int i82093aa_mmio(int, paddr_t, uint64_t *);
-void i82093aa_init(void);
+void i82093aa_init(int);
 void i82093aa_assert_pin(uint8_t);
 void i82093aa_deassert_pin(uint8_t);
 void i82093aa_evaluate_pin(uint8_t);

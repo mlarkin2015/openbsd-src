@@ -73,8 +73,10 @@ vioblk_main(int fd, int fd_vmm)
 	 * stdio - needed for read/write to disk fds and channels to the vm.
 	 * vmm + proc - needed to create shared vm mappings.
 	 */
+	/* DSDT DEBUG: pledge disabled
 	if (pledge("stdio vmm proc", NULL) == -1)
 		fatal("pledge");
+	*/
 
 	/* Zero and initialize io work queue. */
 	memset(io_v, 0, nitems(io_v)*sizeof(io_v[0]));
