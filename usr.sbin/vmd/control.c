@@ -72,8 +72,10 @@ control_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 	 * recvfd - for the proc fd exchange.
 	 * sendfd - for send and receive.
 	 */
+	/* DSDT DEBUG: pledge disabled
 	if (pledge("stdio unix recvfd sendfd", NULL) == -1)
 		fatal("pledge");
+	*/
 
 	/* Signal to the parent that we're done initializing. */
 	proc_compose(ps, PROC_PARENT, IMSG_VMDOP_DONE, NULL, 0);

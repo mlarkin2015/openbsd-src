@@ -105,8 +105,10 @@ vm_main(int fd, int fd_vmm)
 	 * vmm - for the vmm ioctls and operations.
 	 * proc exec - fork/exec for launching devices.
 	 */
+	/* DSDT DEBUG: pledge disabled
 	if (pledge("stdio vmm proc exec", NULL) == -1)
 		fatal("pledge");
+	*/
 
 	/* Receive our vm configuration. */
 	memset(&vm, 0, sizeof(vm));
