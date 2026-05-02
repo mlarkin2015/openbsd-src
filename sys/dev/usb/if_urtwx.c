@@ -61,6 +61,7 @@
 #define URTWX_ENDPT_TX			1
 #define URTWX_ENDPT_INTR		2
 #define URTWX_ENDPT_MAX			3
+#define URTWX_MAX_OUT_PIPES		4
 
 #define URTWX_MAX_FW_CHUNK		0x1000
 #define URTWX_TXDESC_SIZE		48
@@ -68,11 +69,13 @@
 #define URTWX_TXDESC_CSUM_IDX		14
 #define URTWX_TXDESC_QSEL_BE		0
 #define URTWX_TXDESC_QSEL_BEACON	16
+#define URTWX_TXDESC_QSEL_HIGH		17
 #define URTWX_TXDESC_QSEL_MGMT		18
+#define URTWX_TXDESC_QSEL_H2C		19
 #define URTWX_TX_TIMEOUT		1000
 #define URTWX_SCAN_DWELL_TIME		200
 #define URTWX_HOST_CMD_RING_COUNT	8
-#define URTWX_FORCE_PASSIVE_SCAN	1
+#define URTWX_FORCE_PASSIVE_SCAN	0
 #define URTWX_SCAN_LOG_MAX		32
 #define URTWX_TX_MGMT_LOG_MAX		16
 #define URTWX_TXDESC_W0_BMC		0x01000000U
@@ -279,8 +282,11 @@ struct urtwx_softc {
 	struct timeout		 sc_scan_to;
 
 	int			 sc_ed[URTWX_ENDPT_MAX];
+	uint8_t			 sc_out_ed[URTWX_MAX_OUT_PIPES];
 	int			 sc_nbulkout;
 	struct usbd_pipe	*sc_ep[URTWX_ENDPT_MAX];
+	struct usbd_pipe	*sc_out_pipe[URTWX_MAX_OUT_PIPES];
+	struct usbd_pipe	*sc_tx_data_pipe;
 	int			(*sc_newstate)(struct ieee80211com *,
 			    enum ieee80211_state, int);
 
@@ -396,12 +402,13 @@ int	urtwx_detach(struct device *, int);
 
 static int	urtwx_alloc_rx_list(struct urtwx_softc *);
 static int	urtwx_bulkout_num(struct urtwx_softc *);
-static int	urtwx_bulk_tx(struct urtwx_softc *, int);
+static int	urtwx_bulk_tx(struct urtwx_softc *, uint8_t, int);
 static int	urtwx_check_fw_checksum(struct urtwx_softc *, uint32_t);
 static int	urtwx_check_firmware_size(const uint8_t *, size_t);
 static void	urtwx_close_pipes(struct urtwx_softc *);
 static int	urtwx_ctl(struct urtwx_softc *, uint8_t, uint8_t,
 		    uint16_t, uint16_t, void *, int);
+static int	urtwx_dma_mapping_to_out(uint8_t);
 static int	urtwx_ddma_enable(struct urtwx_softc *, uint32_t,
 		    uint32_t, uint32_t);
 static int	urtwx_download_firmware_end_flow(struct urtwx_softc *);
@@ -444,6 +451,7 @@ static int	urtwx_phy_match_cond(struct urtwx_softc *, uint32_t,
 static uint32_t	urtwx_read_rf(struct urtwx_softc *, uint8_t);
 static int	urtwx_power_on(struct urtwx_softc *);
 static int	urtwx_priority_queue_cfg(struct urtwx_softc *);
+static struct usbd_pipe *urtwx_qsel_to_pipe(struct urtwx_softc *, uint8_t);
 static int	urtwx_read_efuse(struct urtwx_softc *, uint8_t *);
 static uint8_t	urtwx_read_1(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t);
@@ -989,11 +997,16 @@ urtwx_txdesc_checksum(struct urtwx_tx_desc *txd)
 }
 
 static int
-urtwx_bulk_tx(struct urtwx_softc *sc, int len)
+urtwx_bulk_tx(struct urtwx_softc *sc, uint8_t qsel, int len)
 {
+	struct usbd_pipe *pipe;
 	usbd_status err;
 
-	usbd_setup_xfer(sc->sc_tx_xfer, sc->sc_ep[URTWX_ENDPT_TX], sc,
+	pipe = urtwx_qsel_to_pipe(sc, qsel);
+	if (pipe == NULL)
+		return (ENXIO);
+
+	usbd_setup_xfer(sc->sc_tx_xfer, pipe, sc,
 	    sc->sc_tx_buf, len, USBD_NO_COPY | USBD_SHORT_XFER_OK |
 	    USBD_SYNCHRONOUS, URTWX_TX_TIMEOUT, NULL);
 	err = usbd_transfer(sc->sc_tx_xfer);
@@ -1020,8 +1033,8 @@ urtwx_txeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 
 	if (__predict_false(status != USBD_NORMAL_COMPLETION)) {
 		DPRINTF(("%s: TX status=%d\n", DEVNAME(sc), status));
-		if (status == USBD_STALLED)
-			usbd_clear_endpoint_stall_async(sc->sc_ep[URTWX_ENDPT_TX]);
+		if (status == USBD_STALLED && sc->sc_tx_data_pipe != NULL)
+			usbd_clear_endpoint_stall_async(sc->sc_tx_data_pipe);
 		if (status != USBD_CANCELLED)
 			ifp->if_oerrors++;
 	}
@@ -1034,6 +1047,7 @@ urtwx_txeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		ieee80211_release_node(&sc->sc_ic, sc->sc_tx_ni);
 		sc->sc_tx_ni = NULL;
 	}
+	sc->sc_tx_data_pipe = NULL;
 	ifq_clr_oactive(&ifp->if_snd);
 	urtwx_start(ifp);
 	splx(s);
@@ -1048,6 +1062,7 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	const char *name;
 	uint32_t len;
 	usbd_status err;
+	struct usbd_pipe *pipe;
 
 	if (sc->sc_tx_active)
 		return (EBUSY);
@@ -1109,15 +1124,21 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	m_copydata(m, 0, m->m_pkthdr.len, sc->sc_tx_buf + URTWX_TXDESC_SIZE);
 	m_freem(m);
 
+	pipe = urtwx_qsel_to_pipe(sc, qsel);
+	if (pipe == NULL)
+		return (ENXIO);
+
 	sc->sc_tx_active = 1;
 	sc->sc_tx_ni = ni;
-	usbd_setup_xfer(sc->sc_tx_xfer, sc->sc_ep[URTWX_ENDPT_TX], sc,
+	sc->sc_tx_data_pipe = pipe;
+	usbd_setup_xfer(sc->sc_tx_xfer, pipe, sc,
 	    sc->sc_tx_buf, len, USBD_FORCE_SHORT_XFER | USBD_NO_COPY,
 	    URTWX_TX_TIMEOUT, urtwx_txeof);
 	err = usbd_transfer(sc->sc_tx_xfer);
 	if (err != USBD_IN_PROGRESS && err != USBD_NORMAL_COMPLETION) {
 		sc->sc_tx_active = 0;
 		sc->sc_tx_ni = NULL;
+		sc->sc_tx_data_pipe = NULL;
 		return (EIO);
 	}
 
@@ -1171,7 +1192,7 @@ urtwx_write_data_rsvd_page(struct urtwx_softc *sc, uint16_t pg_addr,
 	txd->w1 = htole32(URTWX_TXDESC_QSEL_BEACON << 8);
 	urtwx_txdesc_checksum(txd);
 
-	ret = urtwx_bulk_tx(sc, total_len);
+	ret = urtwx_bulk_tx(sc, URTWX_TXDESC_QSEL_BEACON, total_len);
 	if (ret != 0)
 		goto restore;
 
@@ -1684,6 +1705,71 @@ urtwx_bulkout_num(struct urtwx_softc *sc)
 	DPRINTF(("%s: unexpected bulk-out count %d, assuming 2\n",
 	    DEVNAME(sc), sc->sc_nbulkout));
 	return (2);
+}
+
+static int
+urtwx_dma_mapping_to_out(uint8_t mapping)
+{
+	switch (mapping) {
+	case URTWX_PQ_MAPPING_HIGH:
+		return (0);
+	case URTWX_PQ_MAPPING_NORMAL:
+		return (1);
+	case URTWX_PQ_MAPPING_LOW:
+		return (2);
+	case URTWX_PQ_MAPPING_EXTRA:
+		return (3);
+	default:
+		return (-1);
+	}
+}
+
+static struct usbd_pipe *
+urtwx_qsel_to_pipe(struct urtwx_softc *sc, uint8_t qsel)
+{
+	const struct urtwx_rqpn *rqpn;
+	uint8_t mapping;
+	int out;
+
+	rqpn = &urtwx_rqpn_8821c[urtwx_bulkout_num(sc)];
+	switch (qsel) {
+	case URTWX_TXDESC_QSEL_BEACON:
+	case URTWX_TXDESC_QSEL_HIGH:
+	case URTWX_TXDESC_QSEL_H2C:
+		mapping = rqpn->dma_map_hi;
+		break;
+	case URTWX_TXDESC_QSEL_MGMT:
+		mapping = rqpn->dma_map_mg;
+		break;
+	case 0:
+	case 3:
+		mapping = rqpn->dma_map_be;
+		break;
+	case 1:
+	case 2:
+		mapping = rqpn->dma_map_bk;
+		break;
+	case 4:
+	case 5:
+		mapping = rqpn->dma_map_vi;
+		break;
+	case 6:
+	case 7:
+		mapping = rqpn->dma_map_vo;
+		break;
+	default:
+		mapping = rqpn->dma_map_hi;
+		break;
+	}
+
+	out = urtwx_dma_mapping_to_out(mapping);
+	if (out < 0 || out >= sc->sc_nbulkout ||
+	    sc->sc_out_pipe[out] == NULL) {
+		if (sc->sc_nbulkout == 0)
+			return (NULL);
+		return (sc->sc_out_pipe[0]);
+	}
+	return (sc->sc_out_pipe[out]);
 }
 
 static int
@@ -2316,18 +2402,23 @@ urtwx_wait_async(struct urtwx_softc *sc)
 static void
 urtwx_close_pipes(struct urtwx_softc *sc)
 {
+	int i;
+
 	if (sc->sc_ep[URTWX_ENDPT_RX] != NULL) {
 		usbd_close_pipe(sc->sc_ep[URTWX_ENDPT_RX]);
 		sc->sc_ep[URTWX_ENDPT_RX] = NULL;
 	}
-	if (sc->sc_ep[URTWX_ENDPT_TX] != NULL) {
-		usbd_close_pipe(sc->sc_ep[URTWX_ENDPT_TX]);
-		sc->sc_ep[URTWX_ENDPT_TX] = NULL;
+	for (i = 0; i < URTWX_MAX_OUT_PIPES; i++) {
+		if (sc->sc_out_pipe[i] != NULL) {
+			usbd_close_pipe(sc->sc_out_pipe[i]);
+			sc->sc_out_pipe[i] = NULL;
+		}
 	}
 	if (sc->sc_ep[URTWX_ENDPT_INTR] != NULL) {
 		usbd_close_pipe(sc->sc_ep[URTWX_ENDPT_INTR]);
 		sc->sc_ep[URTWX_ENDPT_INTR] = NULL;
 	}
+	sc->sc_tx_data_pipe = NULL;
 }
 
 static void
@@ -3187,6 +3278,7 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 
 	sc->sc_udev = uaa->device;
 	sc->sc_iface = uaa->iface;
+	sc->sc_nbulkout = 0;
 	usb_init_task(&sc->sc_task, urtwx_task, sc, USB_TASK_TYPE_GENERIC);
 	timeout_set(&sc->sc_scan_to, urtwx_scan_to, sc);
 	sc->sc_cmdq.cur = 0;
@@ -3207,10 +3299,13 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 			sc->sc_ed[URTWX_ENDPT_RX] = ed->bEndpointAddress;
 		} else if (UE_GET_DIR(ed->bEndpointAddress) == UE_DIR_OUT &&
 		    UE_GET_XFERTYPE(ed->bmAttributes) == UE_BULK) {
-			sc->sc_nbulkout++;
-			if (sc->sc_ed[URTWX_ENDPT_TX] == 0)
-				sc->sc_ed[URTWX_ENDPT_TX] =
-				    ed->bEndpointAddress;
+			if (sc->sc_nbulkout >= URTWX_MAX_OUT_PIPES) {
+				printf("%s: too many bulk out endpoints\n",
+				    DEVNAME(sc));
+				return;
+			}
+			sc->sc_out_ed[sc->sc_nbulkout++] =
+			    ed->bEndpointAddress;
 		} else if (UE_GET_DIR(ed->bEndpointAddress) == UE_DIR_IN &&
 		    UE_GET_XFERTYPE(ed->bmAttributes) == UE_INTERRUPT) {
 			sc->sc_ed[URTWX_ENDPT_INTR] = ed->bEndpointAddress;
@@ -3218,11 +3313,11 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	}
 
 	if (sc->sc_ed[URTWX_ENDPT_RX] == 0 ||
-	    sc->sc_ed[URTWX_ENDPT_TX] == 0 ||
+	    sc->sc_nbulkout == 0 ||
 	    sc->sc_ed[URTWX_ENDPT_INTR] == 0) {
-		printf("%s: missing endpoints rx=%#x tx=%#x intr=%#x\n",
+		printf("%s: missing endpoints rx=%#x out=%d intr=%#x\n",
 		    DEVNAME(sc), sc->sc_ed[URTWX_ENDPT_RX],
-		    sc->sc_ed[URTWX_ENDPT_TX], sc->sc_ed[URTWX_ENDPT_INTR]);
+		    sc->sc_nbulkout, sc->sc_ed[URTWX_ENDPT_INTR]);
 		return;
 	}
 
@@ -3234,12 +3329,14 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		return;
 	}
 
-	err = usbd_open_pipe(sc->sc_iface, sc->sc_ed[URTWX_ENDPT_TX],
-	    USBD_EXCLUSIVE_USE, &sc->sc_ep[URTWX_ENDPT_TX]);
-	if (err != USBD_NORMAL_COMPLETION) {
-		printf("%s: could not open tx pipe: %s\n", DEVNAME(sc),
-		    usbd_errstr(err));
-		goto fail;
+	for (i = 0; i < sc->sc_nbulkout; i++) {
+		err = usbd_open_pipe(sc->sc_iface, sc->sc_out_ed[i],
+		    USBD_EXCLUSIVE_USE, &sc->sc_out_pipe[i]);
+		if (err != USBD_NORMAL_COMPLETION) {
+			printf("%s: could not open tx pipe %d: %s\n",
+			    DEVNAME(sc), i, usbd_errstr(err));
+			goto fail;
+		}
 	}
 
 	if (urtwx_alloc_rx_list(sc) != 0) {
@@ -3354,7 +3451,7 @@ urtwx_detach(struct device *self, int flags)
 {
 	struct urtwx_softc *sc;
 	struct ifnet *ifp;
-	int s;
+	int i, s;
 
 	sc = (struct urtwx_softc *)self;
 	ifp = &sc->sc_ic.ic_if;
@@ -3364,8 +3461,10 @@ urtwx_detach(struct device *self, int flags)
 
 	if (sc->sc_ep[URTWX_ENDPT_RX] != NULL)
 		usbd_abort_pipe(sc->sc_ep[URTWX_ENDPT_RX]);
-	if (sc->sc_ep[URTWX_ENDPT_TX] != NULL)
-		usbd_abort_pipe(sc->sc_ep[URTWX_ENDPT_TX]);
+	for (i = 0; i < sc->sc_nbulkout; i++) {
+		if (sc->sc_out_pipe[i] != NULL)
+			usbd_abort_pipe(sc->sc_out_pipe[i]);
+	}
 
 	s = splusb();
 	usbd_ref_wait(sc->sc_udev);
