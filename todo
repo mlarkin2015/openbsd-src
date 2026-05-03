@@ -1,0 +1,66 @@
+[X] 1. Keep the normal data path on the data queue, not the management queue.
+
+[X] 2. Delay firmware load until interface up.
+Load firmware, read efuse/MAC, and do runtime MAC/RX bring-up from
+`urtwx_init()` instead of attach so autoconf does not depend on `/etc/firmware`.
+
+[X] 3. Fix the intermittent `!chan,!bssid` association race.
+This still smells like an async state transition ordering/timing bug.
+
+[X] 4. Fix RSSI / RX PHY reporting.
+The current 0% RSSI / weak PHY reporting is not just cosmetic; it affects
+scan quality, BSS selection, and later 5 GHz debugging.
+
+[ ] 5. Validate long-run WPA/RSN stability.
+Initial WPA2 traffic works, but we still need GTK rekey, reconnect loops, AP
+reboot/reassoc, and longer soak tests.
+
+[X] 6. Expose real 802.11n/HT on 2.4 GHz.
+HT20 traffic is working, firmware rate adaptation is active, and throughput is
+measurably better than 11g.
+
+[ ] 7. Report live firmware RA / TX-rate changes to `net80211`.
+The firmware is deciding real runtime TX rates, but `ifconfig` can still show
+stale combinations such as `11g (HT-MCS0)` because `ni_txrate` / `ni_txmcs`
+are not being updated from C2H RA reports.
+
+[ ] 8. Bring up 5 GHz in stages.
+Start with 11a / 20 MHz only, then 5 GHz HT, then wider channels. Do not jump
+straight to VHT.
+
+[ ] 9. Add wide-channel support.
+Evaluate 40 MHz on 2.4 GHz and 40/80 MHz on 5 GHz once the basic 5 GHz path
+is stable.
+
+[ ] 10. Add 802.11ac / VHT support.
+This comes after stable 5 GHz and wide-channel support.
+
+[ ] 11. Add PMF / MFP support.
+This likely means explicit driver support for BIP/IGTK key install/delete and
+advertising `IEEE80211_C_MFP` once tested.
+
+[ ] 12. Add on-air TX aggregation.
+
+[ ] 13. Add on-air RX aggregation.
+
+[ ] 14. Harden USB recovery and error handling.
+Watch timeout recovery, endpoint stall recovery, repeated up/down cycles, and
+bad-state unplug/replug behavior.
+
+[ ] 15. Add support for other RTL88xx USB parts.
+Start with closely related 8821/8822 variants after 8821CU is stable enough
+that refactoring will not move a still-changing target.
+
+[ ] 16. Consider PCI `rtwx` support.
+Likely worth waiting until there is test hardware and the shared 88xx code is
+less fluid.
+
+[ ] 17. Evaluate 2T2R / MIMO work.
+The current RTL8821CU work is 1T1R; MIMO likely belongs with item 14.
+
+[ ] 18. Improve comments and function preambles in `if_urtwx.c` and
+`if_urtwxreg.h`.
+
+[ ] 19. Write `walkthrough.md`.
+Document firmware loading, reserved pages, the security engine, scan/assoc
+bring-up, and the main differences from the Linux `rtw88` path.
