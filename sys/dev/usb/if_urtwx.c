@@ -76,20 +76,57 @@
 #define URTWX_SCAN_DWELL_TIME		200
 #define URTWX_HOST_CMD_RING_COUNT	8
 #define URTWX_FORCE_PASSIVE_SCAN	0
+#define URTWX_FORCE_DATA_MGMT_Q		0
 #define URTWX_SCAN_LOG_MAX		32
+#define URTWX_STATE_LOG_MAX		32
 #define URTWX_TX_MGMT_LOG_MAX		16
+#define URTWX_TX_DATA_LOG_MAX		16
+#define URTWX_C2H_LOG_MAX		16
+#define URTWX_C2H_TX_RPT_MAX		16
+#define URTWX_TX_RPT_REQ_MAX		8
 #define URTWX_TXDESC_W0_BMC		0x01000000U
 #define URTWX_TXDESC_W0_LS		0x04000000U
 #define URTWX_TXDESC_W0_DISQSELSEQ	0x80000000U
+#define URTWX_TXDESC_W1_MACID_MASK	0x000000ffU
 #define URTWX_TXDESC_W1_QSEL_SHIFT	8
 #define URTWX_TXDESC_W1_RATEID_SHIFT	16
+#define URTWX_TXDESC_W1_MORE_DATA	0x20000000U
+#define URTWX_TXDESC_W2_SPE_RPT		0x00080000U
+#define URTWX_TXDESC_W2_BT_NULL		0x00800000U
 #define URTWX_TXDESC_W3_USE_RATE	0x00000100U
 #define URTWX_TXDESC_W3_DISDATAFB	0x00000400U
+#define URTWX_TXDESC_W3_NAVUSEHDR	0x00008000U
+#define URTWX_TXDESC_W5_DATA_SHORT	0x00000010U
+#define URTWX_TXDESC_W5_DATA_LDPC	0x00000080U
+#define URTWX_TXDESC_W6_SWDEF_MASK	0x00000fffU
 #define URTWX_TXDESC_W8_EN_HWSEQ	0x00008000U
+#define URTWX_TXDESC_W9_SWSEQ_SHIFT	12
+#define URTWX_RATEID_BGN_20M_1SS	3
+#define URTWX_RATEID_BG			6
 #define URTWX_RATEID_G			7
 #define URTWX_RATEID_B_20M		8
 #define URTWX_DESC_RATE1M		0x00
+#define URTWX_DESC_RATE11M		0x03
 #define URTWX_DESC_RATE6M		0x04
+#define URTWX_DESC_RATE54M		0x0b
+#define URTWX_DESC_RATEMCS7		0x13
+#define URTWX_H2C_CMD_RSVD_PAGE		0x00
+#define URTWX_H2C_CMD_MEDIA_STATUS_RPT	0x01
+#define URTWX_H2C_CMD_DEFAULT_PORT	0x2c
+#define URTWX_H2C_CMD_RA_INFO		0x40
+#define URTWX_C2H_CCX_TX_RPT		0x03
+#define URTWX_C2H_RA_RPT		0x0c
+#define URTWX_C2H_WLAN_INFO		0x27
+#define URTWX_C2H_BCN_FILTER_NOTIFY	0x36
+#define URTWX_C2H_SCAN_RESULT		0x38
+#define URTWX_C2H_HALMAC		0xff
+#define URTWX_GET_CCX_RPT_SN_V0(p)	((p)[6] & 0xfc)
+#define URTWX_GET_CCX_RPT_ST_V0(p)	((p)[0] & 0xc0)
+#define URTWX_MACID_STA			0
+#define URTWX_PORTID_STA		0
+#define URTWX_RA_MASK_CCK_RATES		0x0000000fU
+#define URTWX_RA_MASK_OFDM_RATES	0x00000ff0U
+#define URTWX_RA_MASK_HT_RATES_1SS	0x000ff000U
 
 #define URTWX_RX_LIST_COUNT		4
 #define URTWX_RXBUFSZ			32768
@@ -117,8 +154,10 @@
 #define URTWX_RSVD_CPU_INSTR_PG_NUM	0
 #define URTWX_RSVD_FW_TXBUF_PG_NUM	4
 #define URTWX_RSVD_PG_NUM		52
+#define URTWX_RSVD_PAGE_MARGIN		(URTWX_PAGE_SIZE - URTWX_TXDESC_SIZE)
 #define URTWX_RSVD_BOUNDARY		\
 	((URTWX_TXFF_SIZE / URTWX_PAGE_SIZE) - URTWX_RSVD_PG_NUM)
+#define URTWX_RSVD_DRV_ADDR		(URTWX_RSVD_BOUNDARY - URTWX_RSVD_DRV_PG_NUM)
 #define URTWX_H2CQ_PG_ADDR		\
 	(URTWX_TXFF_PG_NUM - URTWX_RSVD_FW_TXBUF_PG_NUM -	\
 	 URTWX_RSVD_CPU_INSTR_PG_NUM - URTWX_RSVD_H2CQ_PG_NUM)
@@ -254,6 +293,22 @@ struct urtwx_rx_stat {
 	uint8_t		icv_err;
 };
 
+struct urtwx_c2h_cmd {
+	uint8_t		id;
+	uint8_t		seq;
+	uint8_t		payload[];
+} __packed;
+
+struct urtwx_c2h_ra_rpt {
+	uint8_t		rate_sgi;
+	uint8_t		macid;
+	uint8_t		byte2;
+	uint8_t		status;
+	uint8_t		byte4;
+	uint8_t		ra_ratio;
+	uint8_t		bw;
+} __packed;
+
 struct urtwx_softc;
 
 struct urtwx_host_cmd {
@@ -263,7 +318,9 @@ struct urtwx_host_cmd {
 
 struct urtwx_cmd_newstate {
 	enum ieee80211_state	state;
+	enum ieee80211_state	ostate;
 	int			arg;
+	uint32_t		seq;
 };
 
 struct urtwx_host_cmd_ring {
@@ -301,12 +358,21 @@ struct urtwx_softc {
 	uint8_t			 sc_tx_bb_swing_5g;
 	uint8_t			 sc_pkg_type;
 	uint8_t			 sc_rfe_option;
+	uint8_t			 sc_h2c_box;
 	int			 sc_rfe_btg;
 	int			 sc_tx_active;
 	int			 sc_tx_timer;
+	uint8_t			 sc_tx_report_sn;
+	uint32_t		 sc_state_seq;
 	int			 sc_scan_log;
+	int			 sc_state_log;
 	int			 sc_tx_mgmt_log;
+	int			 sc_tx_data_log;
+	int			 sc_tx_report_req;
 	int			 sc_txeof_log;
+	int			 sc_txeof_data_log;
+	int			 sc_c2h_log;
+	int			 sc_c2h_tx_rpt_log;
 	int			 sc_rx_mgmt_log;
 	unsigned int		 sc_rx_done;
 	unsigned int		 sc_rx_c2h;
@@ -422,7 +488,15 @@ static void	urtwx_download_firmware_reset_platform(struct urtwx_softc *);
 static int	urtwx_download_firmware_validate(struct urtwx_softc *);
 static int	urtwx_dump_log_efuse_map(const uint8_t *, uint8_t *);
 static int	urtwx_dump_phy_efuse_map(struct urtwx_softc *, uint8_t *);
+static int	urtwx_fw_default_port(struct urtwx_softc *);
 static int	urtwx_fw_download(struct urtwx_softc *);
+static int	urtwx_fw_download_sta_rsvd_page(struct urtwx_softc *);
+static int	urtwx_fw_media_status(struct urtwx_softc *, int);
+static int	urtwx_fw_ra_info(struct urtwx_softc *,
+		    struct ieee80211_node *);
+static int	urtwx_fw_rsvd_page(struct urtwx_softc *, uint8_t, uint8_t,
+		    uint8_t);
+static int	urtwx_fw_send_h2c(struct urtwx_softc *, uint32_t, uint32_t);
 static void	urtwx_free_rx_list(struct urtwx_softc *);
 static int	urtwx_iddma_download_firmware(struct urtwx_softc *,
 		    uint32_t, uint32_t, uint32_t, int);
@@ -438,6 +512,9 @@ static int	urtwx_media_change(struct ifnet *);
 static int	urtwx_newstate(struct ieee80211com *, enum ieee80211_state,
 		    int);
 static void	urtwx_newstate_cb(struct urtwx_softc *, void *);
+static void	urtwx_node_tx_info(struct ieee80211_node *, uint8_t *,
+		    uint8_t *, uint8_t *, uint8_t *, uint32_t *);
+static void	urtwx_parse_c2h(struct urtwx_softc *, const uint8_t *, int);
 static void	urtwx_parse_rx_desc(const struct urtwx_rx_desc *,
 		    struct urtwx_rx_stat *);
 static int	urtwx_phy_cfg(struct urtwx_softc *, enum urtwx_phy_cfg,
@@ -451,7 +528,10 @@ static int	urtwx_phy_match_cond(struct urtwx_softc *, uint32_t,
 static uint32_t	urtwx_read_rf(struct urtwx_softc *, uint8_t);
 static int	urtwx_power_on(struct urtwx_softc *);
 static int	urtwx_priority_queue_cfg(struct urtwx_softc *);
+static int	urtwx_sta_enter_run(struct urtwx_softc *);
+static void	urtwx_sta_leave_run(struct urtwx_softc *);
 static struct usbd_pipe *urtwx_qsel_to_pipe(struct urtwx_softc *, uint8_t);
+static uint8_t	urtwx_tx_data_qsel(struct ieee80211_frame *);
 static int	urtwx_read_efuse(struct urtwx_softc *, uint8_t *);
 static uint8_t	urtwx_read_1(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t);
@@ -462,6 +542,7 @@ static uint32_t	urtwx_read_4(struct urtwx_softc *, uint8_t, uint16_t,
 static int	urtwx_read_mem(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t, void *, int);
 static int	urtwx_reg_sec(struct urtwx_softc *, uint16_t, void *);
+static int	urtwx_set_macaddr(struct urtwx_softc *, const uint8_t *);
 static void	urtwx_rx_frame(struct urtwx_softc *, const uint8_t *, int,
 		    struct mbuf_list *);
 static int	urtwx_rx_init(struct urtwx_softc *);
@@ -492,6 +573,10 @@ static int	urtwx_wait_2(struct urtwx_softc *, uint16_t, uint16_t,
 static int	urtwx_wait_4(struct urtwx_softc *, uint16_t, uint32_t,
 		    uint32_t, int, int);
 static void	urtwx_wlan_cpu_enable(struct urtwx_softc *, int);
+static uint32_t	urtwx_build_null_frame(struct urtwx_softc *, uint8_t *, int);
+static uint32_t	urtwx_build_pspoll_frame(struct urtwx_softc *, uint8_t *);
+static void	urtwx_fill_rsvd_page_desc(struct urtwx_tx_desc *, uint32_t,
+		    int, int);
 static int	urtwx_write_rf(struct urtwx_softc *, uint8_t, uint32_t,
 		    uint32_t);
 static int	urtwx_write_1(struct urtwx_softc *, uint8_t, uint16_t,
@@ -779,6 +864,243 @@ urtwx_wait_4(struct urtwx_softc *sc, uint16_t reg, uint32_t mask,
 }
 
 static int
+urtwx_fw_send_h2c(struct urtwx_softc *sc, uint32_t w0, uint32_t w1)
+{
+	static const uint16_t box_reg[] = {
+		REG_HMEBOX0,
+		REG_HMEBOX1,
+		REG_HMEBOX2,
+		REG_HMEBOX3
+	};
+	static const uint16_t box_ex_reg[] = {
+		REG_HMEBOX0_EX,
+		REG_HMEBOX1_EX,
+		REG_HMEBOX2_EX,
+		REG_HMEBOX3_EX
+	};
+	uint8_t box;
+	int ret;
+
+	box = sc->sc_h2c_box & 0x3;
+	ret = urtwx_wait_1(sc, REG_HMETFR, 1 << box, 0,
+	    URTWX_WAIT_COUNT, URTWX_WAIT_DELAY_US);
+	if (ret != 0) {
+		printf("%s: H2C box %u busy\n", DEVNAME(sc), box);
+		return (ret);
+	}
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, box_ex_reg[box], 0, w1);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, box_reg[box], 0, w0);
+	if (ret != 0)
+		return (ret);
+
+	sc->sc_h2c_box = (box + 1) & 0x3;
+	return (0);
+}
+
+static int
+urtwx_fw_default_port(struct urtwx_softc *sc)
+{
+	uint32_t w0;
+
+	w0 = URTWX_H2C_CMD_DEFAULT_PORT |
+	    (URTWX_PORTID_STA << 8) |
+	    (URTWX_MACID_STA << 16);
+
+	return (urtwx_fw_send_h2c(sc, w0, 0));
+}
+
+static int
+urtwx_fw_media_status(struct urtwx_softc *sc, int connected)
+{
+	uint32_t w0;
+
+	w0 = URTWX_H2C_CMD_MEDIA_STATUS_RPT |
+	    (URTWX_MACID_STA << 16);
+	if (connected)
+		w0 |= 1 << 8;
+	return (urtwx_fw_send_h2c(sc, w0, 0));
+}
+
+static int
+urtwx_fw_ra_info(struct urtwx_softc *sc, struct ieee80211_node *ni)
+{
+	uint32_t ra_mask, w0, w1;
+	uint8_t desc_rate, ldpc, rate_id, sgi;
+
+	urtwx_node_tx_info(ni, &rate_id, &desc_rate, &sgi, &ldpc,
+	    &ra_mask);
+
+	w0 = URTWX_H2C_CMD_RA_INFO |
+	    (URTWX_MACID_STA << 8) |
+	    ((uint32_t)rate_id << 16) |
+	    (1U << 21) |
+	    ((uint32_t)sgi << 23) |
+	    ((uint32_t)ldpc << 26) |
+	    (1U << 30);
+	w1 = ra_mask;
+
+	return (urtwx_fw_send_h2c(sc, w0, w1));
+}
+
+static int
+urtwx_fw_rsvd_page(struct urtwx_softc *sc, uint8_t pspoll, uint8_t null,
+    uint8_t qos_null)
+{
+	uint32_t w0, w1;
+
+	w0 = URTWX_H2C_CMD_RSVD_PAGE |
+	    ((uint32_t)pspoll << 16) |
+	    ((uint32_t)null << 24);
+	w1 = qos_null;
+
+	return (urtwx_fw_send_h2c(sc, w0, w1));
+}
+
+static uint32_t
+urtwx_build_pspoll_frame(struct urtwx_softc *sc, uint8_t *buf)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_node *ni = ic->ic_bss;
+	struct ieee80211_frame_pspoll *psp;
+	uint16_t aid;
+
+	psp = (struct ieee80211_frame_pspoll *)buf;
+	memset(psp, 0, sizeof(*psp));
+	psp->i_fc[0] = IEEE80211_FC0_TYPE_CTL |
+	    IEEE80211_FC0_SUBTYPE_PS_POLL;
+	aid = IEEE80211_AID(ni->ni_associd) | 0xc000;
+	USETW(psp->i_aid, aid);
+	memcpy(psp->i_bssid, ni->ni_bssid, IEEE80211_ADDR_LEN);
+	memcpy(psp->i_ta, ic->ic_myaddr, IEEE80211_ADDR_LEN);
+
+	return (sizeof(*psp));
+}
+
+static uint32_t
+urtwx_build_null_frame(struct urtwx_softc *sc, uint8_t *buf, int qos)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_node *ni = ic->ic_bss;
+	struct ieee80211_frame *wh;
+
+	if (qos) {
+		struct ieee80211_qosframe *qwh;
+
+		qwh = (struct ieee80211_qosframe *)buf;
+		memset(qwh, 0, sizeof(*qwh));
+		qwh->i_fc[0] = IEEE80211_FC0_TYPE_DATA |
+		    IEEE80211_FC0_SUBTYPE_NODATA |
+		    IEEE80211_FC0_SUBTYPE_QOS;
+		qwh->i_fc[1] = IEEE80211_FC1_DIR_TODS;
+		memcpy(qwh->i_addr1, ni->ni_bssid, IEEE80211_ADDR_LEN);
+		memcpy(qwh->i_addr2, ic->ic_myaddr, IEEE80211_ADDR_LEN);
+		memcpy(qwh->i_addr3, ni->ni_bssid, IEEE80211_ADDR_LEN);
+		USETW(qwh->i_qos, 7);
+		return (sizeof(*qwh));
+	}
+
+	wh = (struct ieee80211_frame *)buf;
+	memset(wh, 0, sizeof(*wh));
+	wh->i_fc[0] = IEEE80211_FC0_TYPE_DATA |
+	    IEEE80211_FC0_SUBTYPE_NODATA;
+	wh->i_fc[1] = IEEE80211_FC1_DIR_TODS;
+	memcpy(wh->i_addr1, ni->ni_bssid, IEEE80211_ADDR_LEN);
+	memcpy(wh->i_addr2, ic->ic_myaddr, IEEE80211_ADDR_LEN);
+	memcpy(wh->i_addr3, ni->ni_bssid, IEEE80211_ADDR_LEN);
+
+	return (sizeof(*wh));
+}
+
+static void
+urtwx_fill_rsvd_page_desc(struct urtwx_tx_desc *txd, uint32_t len, int qos_null,
+    int nav_use_hdr)
+{
+	memset(txd, 0, sizeof(*txd));
+
+	txd->w0 = htole32((len & 0xffff) | (URTWX_TXDESC_SIZE << 16) |
+	    URTWX_TXDESC_W0_LS |
+	    (nav_use_hdr ? 0 : URTWX_TXDESC_W0_DISQSELSEQ));
+	txd->w1 = htole32((URTWX_MACID_STA & URTWX_TXDESC_W1_MACID_MASK) |
+	    ((uint32_t)URTWX_TXDESC_QSEL_MGMT <<
+	    URTWX_TXDESC_W1_QSEL_SHIFT) |
+	    ((uint32_t)URTWX_RATEID_B_20M <<
+	    URTWX_TXDESC_W1_RATEID_SHIFT));
+	if (qos_null)
+		txd->w2 = htole32(URTWX_TXDESC_W2_BT_NULL);
+	txd->w3 = htole32(URTWX_TXDESC_W3_USE_RATE |
+	    URTWX_TXDESC_W3_DISDATAFB |
+	    (nav_use_hdr ? URTWX_TXDESC_W3_NAVUSEHDR : 0));
+	txd->w4 = htole32(URTWX_DESC_RATE1M);
+	if (!nav_use_hdr)
+		txd->w8 = htole32(URTWX_TXDESC_W8_EN_HWSEQ);
+
+	urtwx_txdesc_checksum(txd);
+}
+
+static int
+urtwx_fw_download_sta_rsvd_page(struct urtwx_softc *sc)
+{
+	struct ieee80211_node *ni = sc->sc_ic.ic_bss;
+	struct urtwx_tx_desc *txd;
+	uint8_t frame[sizeof(struct ieee80211_qosframe)];
+	uint8_t buf[URTWX_RSVD_DRV_PG_NUM * URTWX_PAGE_SIZE];
+	uint8_t null_loc, pspoll_loc, qos_null_loc;
+	uint32_t len, off, size;
+	uint8_t page;
+	int qos, ret;
+
+	memset(buf, 0, sizeof(buf));
+
+	buf[0] = 0;
+	page = 1;
+
+	pspoll_loc = page;
+	len = urtwx_build_pspoll_frame(sc, frame);
+	off = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
+	txd = (struct urtwx_tx_desc *)(buf + off);
+	urtwx_fill_rsvd_page_desc(txd, len, 0, 1);
+	memcpy(buf + off + URTWX_TXDESC_SIZE, frame, len);
+	page += howmany(URTWX_TXDESC_SIZE + len, URTWX_PAGE_SIZE);
+
+	null_loc = page;
+	len = urtwx_build_null_frame(sc, frame, 0);
+	off = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
+	txd = (struct urtwx_tx_desc *)(buf + off);
+	urtwx_fill_rsvd_page_desc(txd, len, 0, 0);
+	memcpy(buf + off + URTWX_TXDESC_SIZE, frame, len);
+	page += howmany(URTWX_TXDESC_SIZE + len, URTWX_PAGE_SIZE);
+
+	qos = (ni->ni_flags & IEEE80211_NODE_QOS) != 0;
+	qos_null_loc = page;
+	len = urtwx_build_null_frame(sc, frame, qos);
+	off = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
+	txd = (struct urtwx_tx_desc *)(buf + off);
+	urtwx_fill_rsvd_page_desc(txd, len, qos, 0);
+	memcpy(buf + off + URTWX_TXDESC_SIZE, frame, len);
+	page += howmany(URTWX_TXDESC_SIZE + len, URTWX_PAGE_SIZE);
+
+	if (page > URTWX_RSVD_DRV_PG_NUM)
+		return (EFBIG);
+
+	size = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
+	ret = urtwx_write_data_rsvd_page(sc, URTWX_RSVD_DRV_ADDR, buf, size);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_data_rsvd_page(sc, URTWX_RSVD_DRV_ADDR, buf, 1);
+	if (ret != 0)
+		return (ret);
+	if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+		DPRINTF(("%s: rsvd page pspoll %u null %u qosnull %u size %u\n",
+		    DEVNAME(sc), pspoll_loc, null_loc, qos_null_loc, size));
+		sc->sc_state_log++;
+	}
+
+	return (urtwx_fw_rsvd_page(sc, pspoll_loc, null_loc, qos_null_loc));
+}
+
+static int
 urtwx_is_powered_on(struct urtwx_softc *sc)
 {
 	if (urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_CR, 0) == 0xea)
@@ -1039,8 +1361,15 @@ urtwx_txeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 			ifp->if_oerrors++;
 	}
 	if (sc->sc_txeof_log < URTWX_TX_MGMT_LOG_MAX) {
-		printf("%s: TX completion status %d\n", DEVNAME(sc), status);
+		DPRINTFN(2, ("%s: TX completion status %d\n", DEVNAME(sc),
+		    status));
 		sc->sc_txeof_log++;
+	}
+	if (sc->sc_ic.ic_state == IEEE80211_S_RUN &&
+	    sc->sc_txeof_data_log < URTWX_TX_DATA_LOG_MAX) {
+		DPRINTFN(2, ("%s: TX data completion status %d\n",
+		    DEVNAME(sc), status));
+		sc->sc_txeof_data_log++;
 	}
 
 	if (sc->sc_tx_ni != NULL) {
@@ -1060,9 +1389,16 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	struct urtwx_tx_desc *txd;
 	struct ieee80211_frame *wh;
 	const char *name;
+	uint16_t seq;
 	uint32_t len;
 	usbd_status err;
 	struct usbd_pipe *pipe;
+	uint32_t ra_mask;
+	uint8_t ldpc;
+	uint8_t report_sn;
+	uint8_t rate;
+	uint8_t rate_id;
+	uint8_t sgi;
 
 	if (sc->sc_tx_active)
 		return (EBUSY);
@@ -1075,11 +1411,27 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	txd = (struct urtwx_tx_desc *)sc->sc_tx_buf;
 	wh = mtod(m, struct ieee80211_frame *);
 	name = NULL;
+	seq = 0;
+	report_sn = 0;
+	rate_id = URTWX_RATEID_G;
+	rate = URTWX_DESC_RATE6M;
+	sgi = 0;
+	ldpc = 0;
+	ra_mask = 0;
+
+#if URTWX_FORCE_DATA_MGMT_Q
+	if (!mgmt)
+		qsel = URTWX_TXDESC_QSEL_MGMT;
+#endif
 
 	txd->w0 = htole32(m->m_pkthdr.len | (URTWX_TXDESC_SIZE << 16) |
 	    (IEEE80211_IS_MULTICAST(wh->i_addr1) ? URTWX_TXDESC_W0_BMC : 0) |
 	    URTWX_TXDESC_W0_LS);
-	txd->w1 = htole32((uint32_t)qsel << URTWX_TXDESC_W1_QSEL_SHIFT);
+	txd->w1 = htole32((URTWX_MACID_STA & URTWX_TXDESC_W1_MACID_MASK) |
+	    ((uint32_t)qsel << URTWX_TXDESC_W1_QSEL_SHIFT));
+	if (qsel == URTWX_TXDESC_QSEL_HIGH)
+		txd->w1 = htole32(letoh32(txd->w1) |
+		    URTWX_TXDESC_W1_MORE_DATA);
 	if (mgmt) {
 		switch (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) {
 		case IEEE80211_FC0_SUBTYPE_PROBE_REQ:
@@ -1099,9 +1451,18 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 			break;
 		}
 		if (sc->sc_tx_mgmt_log < URTWX_TX_MGMT_LOG_MAX) {
-			printf("%s: TX %s len %u chan %u\n", DEVNAME(sc), name,
-			    m->m_pkthdr.len,
-			    ieee80211_chan2ieee(&sc->sc_ic, ni->ni_chan));
+			if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+			    IEEE80211_FC0_SUBTYPE_PROBE_REQ) {
+				DPRINTFN(2, ("%s: TX %s len %u chan %u\n",
+				    DEVNAME(sc), name, m->m_pkthdr.len,
+				    ieee80211_chan2ieee(&sc->sc_ic,
+				    ni->ni_chan)));
+			} else {
+				printf("%s: TX %s len %u chan %u\n",
+				    DEVNAME(sc), name, m->m_pkthdr.len,
+				    ieee80211_chan2ieee(&sc->sc_ic,
+				    ni->ni_chan));
+			}
 			sc->sc_tx_mgmt_log++;
 		}
 		/*
@@ -1118,6 +1479,34 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 		    URTWX_TXDESC_W3_DISDATAFB);
 		txd->w4 = htole32(URTWX_DESC_RATE1M);
 		txd->w8 = htole32(URTWX_TXDESC_W8_EN_HWSEQ);
+	} else {
+		urtwx_node_tx_info(ni, &rate_id, &rate, &sgi, &ldpc,
+		    &ra_mask);
+		txd->w1 = htole32(letoh32(txd->w1) |
+		    ((uint32_t)rate_id << URTWX_TXDESC_W1_RATEID_SHIFT));
+		txd->w4 = htole32(rate);
+		txd->w5 = htole32((sgi ? URTWX_TXDESC_W5_DATA_SHORT : 0) |
+		    (ldpc ? URTWX_TXDESC_W5_DATA_LDPC : 0));
+		if (sc->sc_tx_report_req < URTWX_TX_RPT_REQ_MAX) {
+			report_sn = ((++sc->sc_tx_report_sn) << 2) & 0xfc;
+			txd->w2 = htole32(letoh32(txd->w2) |
+			    URTWX_TXDESC_W2_SPE_RPT);
+			txd->w6 = htole32(report_sn &
+			    URTWX_TXDESC_W6_SWDEF_MASK);
+			sc->sc_tx_report_req++;
+		}
+		memcpy(&seq, wh->i_seq, sizeof(seq));
+		seq = (letoh16(seq) >> IEEE80211_SEQ_SEQ_SHIFT) & 0xfff;
+		txd->w9 = htole32((uint32_t)seq <<
+		    URTWX_TXDESC_W9_SWSEQ_SHIFT);
+		if (sc->sc_tx_data_log < URTWX_TX_DATA_LOG_MAX) {
+			DPRINTFN(2, ("%s: TX data len %u qsel %u seq %u chan %u"
+			    " rateid %u rate %#x auto-rate rpt %#x\n",
+			    DEVNAME(sc), m->m_pkthdr.len, qsel, seq,
+			    ieee80211_chan2ieee(&sc->sc_ic, ni->ni_chan),
+			    rate_id, rate, report_sn));
+			sc->sc_tx_data_log++;
+		}
 	}
 	urtwx_txdesc_checksum(txd);
 
@@ -1772,6 +2161,20 @@ urtwx_qsel_to_pipe(struct urtwx_softc *sc, uint8_t qsel)
 	return (sc->sc_out_pipe[out]);
 }
 
+static uint8_t
+urtwx_tx_data_qsel(struct ieee80211_frame *wh)
+{
+	uint16_t qos;
+
+	if (IEEE80211_IS_MULTICAST(wh->i_addr1))
+		return (URTWX_TXDESC_QSEL_HIGH);
+	if (!ieee80211_has_qos(wh))
+		return (URTWX_TXDESC_QSEL_BE);
+
+	qos = ieee80211_get_qos(wh);
+	return (letoh16(qos) & IEEE80211_QOS_TID);
+}
+
 static int
 urtwx_phy_match_cond(struct urtwx_softc *sc, uint32_t cond, uint32_t cond2)
 {
@@ -2229,6 +2632,155 @@ urtwx_set_chan(struct urtwx_softc *sc, struct ieee80211_channel *c)
 	return (urtwx_phy_set_channel_rxdfir(sc));
 }
 
+static int
+urtwx_set_macaddr(struct urtwx_softc *sc, const uint8_t *addr)
+{
+	uint32_t addr0;
+	uint16_t addr1;
+	int ret;
+
+	addr0 = addr[0] |
+	    ((uint32_t)addr[1] << 8) |
+	    ((uint32_t)addr[2] << 16) |
+	    ((uint32_t)addr[3] << 24);
+	addr1 = addr[4] | ((uint16_t)addr[5] << 8);
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_MACID, 0, addr0);
+	if (ret != 0)
+		return (ret);
+
+	return (urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_MACID + 4, 0, addr1));
+}
+
+static void
+urtwx_sta_leave_run(struct urtwx_softc *sc)
+{
+	(void)urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_ASSOCIATED_BFMER0_INFO,
+	    0, 0);
+	(void)urtwx_write_4_mask(sc, REG_CR, BIT_PORT0_NET_TYPE, 0);
+	(void)urtwx_write_4_mask(sc, REG_RCR,
+	    BIT_CBSSID_DATA | BIT_CBSSID_BCN, 0);
+	(void)urtwx_write_1_mask(sc, REG_BCN_CTRL, BIT_DIS_TSF_UDT,
+	    BIT_DIS_TSF_UDT);
+	(void)urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_DUAL_TSF_RST, 0, 0x03);
+}
+
+static int
+urtwx_sta_enter_run(struct urtwx_softc *sc)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_node *ni = ic->ic_bss;
+	uint16_t aid;
+	uint16_t bssid1, intval;
+	uint32_t bssid0;
+	uint8_t rate;
+	int ret;
+
+	bssid0 = ni->ni_bssid[0] |
+	    ((uint32_t)ni->ni_bssid[1] << 8) |
+	    ((uint32_t)ni->ni_bssid[2] << 16) |
+	    ((uint32_t)ni->ni_bssid[3] << 24);
+	bssid1 = ni->ni_bssid[4] |
+	    ((uint16_t)ni->ni_bssid[5] << 8);
+	intval = ni->ni_intval;
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_BSSID, 0, bssid0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_BSSID + 4, 0, bssid1);
+	if (ret != 0)
+		return (ret);
+	aid = IEEE80211_AID(ni->ni_associd);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_ASSOCIATED_BFMER0_INFO,
+	    0, aid);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_CR, BIT_PORT0_NET_TYPE,
+	    0x00020000U);
+	if (ret != 0)
+		return (ret);
+
+	rate = (ic->ic_curmode == IEEE80211_MODE_11B) ? 0 : 3;
+	ret = urtwx_write_1_mask(sc, REG_INIRTS_RATE_SEL, 0x0f, rate);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_RXFLTMAP2, 0, 0xffff);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_TXPAUSE, 0, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_BCN_INTERVAL, 0, intval);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_BCN_CTRL, BIT_DIS_TSF_UDT, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_RCR,
+	    BIT_CBSSID_DATA | BIT_CBSSID_BCN,
+	    BIT_CBSSID_DATA | BIT_CBSSID_BCN);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_fw_ra_info(sc, ni);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_fw_download_sta_rsvd_page(sc);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_fw_default_port(sc);
+	if (ret != 0)
+		return (ret);
+
+	return (urtwx_fw_media_status(sc, 1));
+}
+
+static void
+urtwx_node_tx_info(struct ieee80211_node *ni, uint8_t *rate_id,
+    uint8_t *desc_rate, uint8_t *sgi, uint8_t *ldpc, uint32_t *ra_mask)
+{
+	const struct ieee80211_rateset *rs = &ni->ni_rates;
+	int has_cck, has_ofdm;
+	int i;
+
+	has_cck = 0;
+	has_ofdm = 0;
+	for (i = 0; i < rs->rs_nrates; i++) {
+		if ((rs->rs_rates[i] & IEEE80211_RATE_VAL) > 22)
+			has_ofdm = 1;
+		else
+			has_cck = 1;
+	}
+
+	*rate_id = URTWX_RATEID_B_20M;
+	*desc_rate = URTWX_DESC_RATE11M;
+	*sgi = 0;
+	*ldpc = 0;
+	*ra_mask = URTWX_RA_MASK_CCK_RATES;
+
+	if (has_cck && has_ofdm) {
+		*rate_id = URTWX_RATEID_BG;
+		*desc_rate = URTWX_DESC_RATE54M;
+		*ra_mask = URTWX_RA_MASK_CCK_RATES |
+		    URTWX_RA_MASK_OFDM_RATES;
+	} else if (has_ofdm) {
+		*rate_id = URTWX_RATEID_G;
+		*desc_rate = URTWX_DESC_RATE54M;
+		*ra_mask = URTWX_RA_MASK_OFDM_RATES;
+	}
+
+	if ((ni->ni_flags & IEEE80211_NODE_HT) != 0) {
+		*rate_id = URTWX_RATEID_BGN_20M_1SS;
+		*desc_rate = URTWX_DESC_RATEMCS7;
+		*ra_mask = URTWX_RA_MASK_CCK_RATES |
+		    URTWX_RA_MASK_OFDM_RATES |
+		    URTWX_RA_MASK_HT_RATES_1SS;
+		if ((ni->ni_flags & IEEE80211_NODE_HT_SGI20) != 0)
+			*sgi = 1;
+		if ((ni->ni_htcaps & IEEE80211_HTCAP_LDPC) != 0)
+			*ldpc = 1;
+	}
+}
+
 static void
 urtwx_scan_to(void *arg)
 {
@@ -2253,7 +2805,17 @@ urtwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 	struct urtwx_cmd_newstate cmd;
 
 	cmd.state = nstate;
+	cmd.ostate = ic->ic_state;
 	cmd.arg = arg;
+	cmd.seq = ++sc->sc_state_seq;
+	if (!(cmd.state == IEEE80211_S_SCAN &&
+	    cmd.ostate == IEEE80211_S_SCAN) &&
+	    sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+		DPRINTF(("%s: newstate req #%u %s -> %s arg %#x\n",
+		    DEVNAME(sc), cmd.seq, ieee80211_state_name[cmd.ostate],
+		    ieee80211_state_name[cmd.state], cmd.arg));
+		sc->sc_state_log++;
+	}
 	urtwx_do_async(sc, urtwx_newstate_cb, &cmd, sizeof(cmd));
 	return (0);
 }
@@ -2264,9 +2826,38 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 	struct urtwx_cmd_newstate *cmd = arg;
 	struct ieee80211com *ic = &sc->sc_ic;
 	struct ieee80211_channel *chan;
+	enum ieee80211_state ostate;
+	int ret;
 	int s;
 
 	s = splnet();
+	ostate = ic->ic_state;
+	if (!(cmd->state == IEEE80211_S_SCAN &&
+	    cmd->ostate == IEEE80211_S_SCAN) &&
+	    sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+		DPRINTF(("%s: newstate cb  #%u req %s -> %s cur %s arg %#x\n",
+		    DEVNAME(sc), cmd->seq,
+		    ieee80211_state_name[cmd->ostate],
+		    ieee80211_state_name[cmd->state],
+		    ieee80211_state_name[ostate], cmd->arg));
+		sc->sc_state_log++;
+	}
+	if (cmd->state == ostate &&
+	    cmd->state != IEEE80211_S_SCAN &&
+	    cmd->state != IEEE80211_S_AUTH) {
+		if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+			DPRINTF(("%s: newstate skip#%u cur %s arg %#x\n",
+			    DEVNAME(sc), cmd->seq,
+			    ieee80211_state_name[ostate], cmd->arg));
+			sc->sc_state_log++;
+		}
+		splx(s);
+		return;
+	}
+	if (ostate == IEEE80211_S_RUN && cmd->state != IEEE80211_S_RUN) {
+		(void)urtwx_fw_media_status(sc, 0);
+		urtwx_sta_leave_run(sc);
+	}
 	switch (cmd->state) {
 	case IEEE80211_S_INIT:
 		timeout_del(&sc->sc_scan_to);
@@ -2275,13 +2866,16 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 #if URTWX_FORCE_PASSIVE_SCAN
 		ic->ic_flags &= ~IEEE80211_F_ASCAN;
 #endif
+		if (ostate != IEEE80211_S_SCAN &&
+		    ostate != IEEE80211_S_RUN)
+			urtwx_sta_leave_run(sc);
 		chan = ic->ic_bss->ni_chan;
 		if (urtwx_set_chan(sc, chan) == 0 &&
 		    !usbd_is_dying(sc->sc_udev)) {
 			if (sc->sc_scan_log < URTWX_SCAN_LOG_MAX) {
-				printf("%s: scan channel %u rf18=%#x\n",
+				DPRINTF(("%s: scan channel %u rf18=%#x\n",
 				    DEVNAME(sc), ieee80211_chan2ieee(ic, chan),
-				    urtwx_read_rf(sc, 0x18));
+				    urtwx_read_rf(sc, 0x18)));
 				sc->sc_scan_log++;
 			}
 			timeout_add_msec(&sc->sc_scan_to,
@@ -2294,10 +2888,41 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 		timeout_del(&sc->sc_scan_to);
 		chan = (ic->ic_opmode == IEEE80211_M_MONITOR) ?
 		    ic->ic_ibss_chan : ic->ic_bss->ni_chan;
-		(void)urtwx_set_chan(sc, chan);
+		ret = urtwx_set_chan(sc, chan);
+		if (ret != 0)
+			printf("%s: could not set channel for state %s: %d\n",
+			    DEVNAME(sc), ieee80211_state_name[cmd->state], ret);
+		if (cmd->state == IEEE80211_S_RUN) {
+			ret = urtwx_sta_enter_run(sc);
+			if (ret != 0) {
+				printf("%s: could not enter RUN state: %d\n",
+				    DEVNAME(sc), ret);
+			} else {
+				printf("%s: RUN bssid %s chan %u intval %u aid %u "
+				    "cr=%#x\n",
+				    DEVNAME(sc),
+				    ether_sprintf(ic->ic_bss->ni_bssid),
+				    ieee80211_chan2ieee(ic, chan),
+				    ic->ic_bss->ni_intval,
+				    IEEE80211_AID(ic->ic_bss->ni_associd),
+				    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_CR, 0));
+				sc->sc_tx_data_log = 0;
+				sc->sc_txeof_data_log = 0;
+			}
+		}
 		break;
 	}
 	(void)sc->sc_newstate(ic, cmd->state, cmd->arg);
+	if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+		DPRINTF(("%s: newstate done#%u now %s link %u assoc_fail %#x "
+		    "flags %#x\n",
+		    DEVNAME(sc), cmd->seq, ieee80211_state_name[ic->ic_state],
+		    ic->ic_if.if_link_state, ic->ic_bss->ni_assoc_fail,
+		    ic->ic_flags));
+		sc->sc_state_log++;
+	}
+	if (cmd->state == IEEE80211_S_RUN)
+		urtwx_start(&ic->ic_if);
 	splx(s);
 }
 
@@ -2440,6 +3065,104 @@ urtwx_parse_rx_desc(const struct urtwx_rx_desc *rxd, struct urtwx_rx_stat *stat)
 }
 
 static void
+urtwx_parse_c2h(struct urtwx_softc *sc, const uint8_t *buf, int len)
+{
+	const struct urtwx_c2h_cmd *c2h;
+	const struct urtwx_c2h_ra_rpt *ra;
+	const char *name;
+	uint8_t status, sn, subid;
+	char bytes[3 * 8];
+	int i, n, off;
+
+	if (len < 2)
+		return;
+
+	c2h = (const struct urtwx_c2h_cmd *)buf;
+	name = "unknown";
+	switch (c2h->id) {
+	case URTWX_C2H_CCX_TX_RPT:
+		name = "ccx-tx-rpt";
+		break;
+	case URTWX_C2H_RA_RPT:
+		name = "ra-rpt";
+		break;
+	case URTWX_C2H_WLAN_INFO:
+		name = "wlan-info";
+		break;
+	case URTWX_C2H_BCN_FILTER_NOTIFY:
+		name = "bcn-filter";
+		break;
+	case URTWX_C2H_SCAN_RESULT:
+		name = "scan-result";
+		break;
+	case URTWX_C2H_HALMAC:
+		name = "halmac";
+		break;
+	}
+
+	if (sc->sc_c2h_log < URTWX_C2H_LOG_MAX) {
+		n = MIN(len, 12);
+		off = 0;
+		memset(bytes, 0, sizeof(bytes));
+		for (i = 0; i < n && off < sizeof(bytes); i++) {
+			off += snprintf(bytes + off, sizeof(bytes) - off,
+			    "%s%02x", (i == 0) ? "" : " ", buf[i]);
+		}
+		DPRINTFN(2, ("%s: C2H id %#x (%s) seq %#x len %d data %s\n",
+		    DEVNAME(sc), c2h->id, name, c2h->seq, len, bytes));
+		sc->sc_c2h_log++;
+	}
+
+	switch (c2h->id) {
+	case URTWX_C2H_CCX_TX_RPT:
+		if (len < 9)
+			break;
+		sn = URTWX_GET_CCX_RPT_SN_V0(c2h->payload);
+		status = URTWX_GET_CCX_RPT_ST_V0(c2h->payload);
+		if (sc->sc_c2h_tx_rpt_log < URTWX_C2H_TX_RPT_MAX) {
+			DPRINTFN(2, ("%s: C2H tx report sn %#x status %#x "
+			    "ack %s\n", DEVNAME(sc), sn, status,
+			    (status == 0) ? "yes" : "no"));
+			sc->sc_c2h_tx_rpt_log++;
+		}
+		break;
+	case URTWX_C2H_RA_RPT:
+		if (len < (int)(2 + sizeof(*ra)))
+			break;
+		ra = (const struct urtwx_c2h_ra_rpt *)c2h->payload;
+		if (sc->sc_c2h_tx_rpt_log < URTWX_C2H_TX_RPT_MAX) {
+			DPRINTFN(2, ("%s: C2H RA report macid %u rate %#x "
+			    "sgi %u status %#x bw %u ratio %u\n",
+			    DEVNAME(sc), ra->macid, ra->rate_sgi & 0x7f,
+			    (ra->rate_sgi & 0x80) != 0, ra->status,
+			    ra->bw, ra->ra_ratio));
+			sc->sc_c2h_tx_rpt_log++;
+		}
+		break;
+	case URTWX_C2H_HALMAC:
+		if (len < 3)
+			break;
+		subid = c2h->payload[0];
+		if (sc->sc_c2h_tx_rpt_log < URTWX_C2H_TX_RPT_MAX) {
+			DPRINTFN(2, ("%s: C2H HALMAC subid %#x\n",
+			    DEVNAME(sc), subid));
+			sc->sc_c2h_tx_rpt_log++;
+		}
+		if (subid == 0x0f && len >= 12) {
+			sn = c2h->payload[8] & 0xfc;
+			status = c2h->payload[9] & 0xc0;
+			if (sc->sc_c2h_tx_rpt_log < URTWX_C2H_TX_RPT_MAX) {
+				DPRINTFN(2, ("%s: C2H HALMAC tx report sn %#x "
+				    "status %#x ack %s\n", DEVNAME(sc), sn,
+				    status, (status == 0) ? "yes" : "no"));
+				sc->sc_c2h_tx_rpt_log++;
+			}
+		}
+		break;
+	}
+}
+
+static void
 urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
     struct mbuf_list *ml)
 {
@@ -2453,11 +3176,12 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 	const char *name;
 	char ssid[IEEE80211_NWID_LEN + 1];
 	uint8_t subtype, chan;
+	uint16_t aid, alg, seq, status;
 	int i, s, ssidlen;
 
 	if (!(ifp->if_flags & IFF_RUNNING))
 		return;
-	if (len < sizeof(*wh) + 12)
+	if (len < sizeof(*wh))
 		return;
 
 	wh = (const struct ieee80211_frame *)buf;
@@ -2492,11 +3216,53 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 		case IEEE80211_FC0_SUBTYPE_PROBE_RESP:
 			name = "probe response";
 			break;
+		case IEEE80211_FC0_SUBTYPE_AUTH:
+			name = "auth";
+			break;
+		case IEEE80211_FC0_SUBTYPE_ASSOC_RESP:
+			name = "assoc response";
+			break;
+		case IEEE80211_FC0_SUBTYPE_REASSOC_RESP:
+			name = "reassoc response";
+			break;
 		default:
 			name = NULL;
 			break;
 		}
 		if (name != NULL) {
+			if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+				if (len < sizeof(*wh) + 6)
+					goto done_log;
+				memcpy(&alg, buf + sizeof(*wh), sizeof(alg));
+				memcpy(&seq, buf + sizeof(*wh) + 2, sizeof(seq));
+				memcpy(&status, buf + sizeof(*wh) + 4,
+				    sizeof(status));
+				alg = letoh16(alg);
+				seq = letoh16(seq);
+				status = letoh16(status);
+				printf("%s: %s bssid %s alg %u seq %u status %u\n",
+				    DEVNAME(sc), name,
+				    ether_sprintf((u_char *)wh->i_addr3), alg,
+				    seq, status);
+				sc->sc_rx_mgmt_log++;
+				goto done_log;
+			}
+			if (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP ||
+			    subtype == IEEE80211_FC0_SUBTYPE_REASSOC_RESP) {
+				if (len < sizeof(*wh) + 6)
+					goto done_log;
+				memcpy(&status, buf + sizeof(*wh) + 2,
+				    sizeof(status));
+				memcpy(&aid, buf + sizeof(*wh) + 4, sizeof(aid));
+				status = letoh16(status);
+				aid = letoh16(aid);
+				printf("%s: %s bssid %s status %u aid %#x\n",
+				    DEVNAME(sc), name,
+				    ether_sprintf((u_char *)wh->i_addr3),
+				    status, aid);
+				sc->sc_rx_mgmt_log++;
+				goto done_log;
+			}
 			frm = buf + sizeof(*wh) + 12;
 			efrm = buf + len;
 			ssidlen = -1;
@@ -2521,7 +3287,7 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 						else
 							ssid[i] = '.';
 					}
-					ssid[ssidlen] = '\0';
+			ssid[ssidlen] = '\0';
 					break;
 				case IEEE80211_ELEMID_DSPARMS:
 					if (frm[1] >= 1)
@@ -2534,19 +3300,36 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 			if (ssidlen < 0)
 				strlcpy(ssid, "<missing>", sizeof(ssid));
 			if (chan != 0) {
-				printf("%s: %s bssid %s chan %u ssid \"%s\"\n",
-				    DEVNAME(sc), name,
-				    ether_sprintf((u_char *)wh->i_addr3),
-				    chan, ssid);
+				if (subtype == IEEE80211_FC0_SUBTYPE_BEACON ||
+				    subtype == IEEE80211_FC0_SUBTYPE_PROBE_RESP) {
+					DPRINTFN(2, ("%s: %s bssid %s chan %u "
+					    "ssid \"%s\"\n", DEVNAME(sc), name,
+					    ether_sprintf((u_char *)wh->i_addr3),
+					    chan, ssid));
+				} else {
+					printf("%s: %s bssid %s chan %u ssid "
+					    "\"%s\"\n", DEVNAME(sc), name,
+					    ether_sprintf((u_char *)wh->i_addr3),
+					    chan, ssid);
+				}
 			} else {
-				printf("%s: %s bssid %s ssid \"%s\"\n",
-				    DEVNAME(sc), name,
-				    ether_sprintf((u_char *)wh->i_addr3),
-				    ssid);
+				if (subtype == IEEE80211_FC0_SUBTYPE_BEACON ||
+				    subtype == IEEE80211_FC0_SUBTYPE_PROBE_RESP) {
+					DPRINTFN(2, ("%s: %s bssid %s ssid "
+					    "\"%s\"\n", DEVNAME(sc), name,
+					    ether_sprintf((u_char *)wh->i_addr3),
+					    ssid));
+				} else {
+					printf("%s: %s bssid %s ssid \"%s\"\n",
+					    DEVNAME(sc), name,
+					    ether_sprintf((u_char *)wh->i_addr3),
+					    ssid);
+				}
 			}
 			sc->sc_rx_mgmt_log++;
 		}
 	}
+done_log:
 
 	s = splnet();
 	ni = ieee80211_find_rxnode(ic, (const struct ieee80211_frame *)buf);
@@ -2580,8 +3363,8 @@ urtwx_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 	buf = data->buf;
 	sc->sc_rx_done++;
 	if (sc->sc_rx_done <= 8) {
-		printf("%s: RX completion %u len %d\n", DEVNAME(sc),
-		    sc->sc_rx_done, len);
+		DPRINTFN(2, ("%s: RX completion %u len %d\n", DEVNAME(sc),
+		    sc->sc_rx_done, len));
 	}
 
 	while (len >= URTWX_RX_DESC_SIZE) {
@@ -2591,10 +3374,10 @@ urtwx_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		if (stat.pktlen == 0)
 			break;
 		if (sc->sc_rx_desc_log < 16) {
-			printf("%s: RX desc pktlen %u info %u shift %u c2h %u "
-			    "crc %u icv %u\n", DEVNAME(sc), stat.pktlen,
-			    stat.drvinfosz, stat.shift, stat.is_c2h,
-			    stat.crc_err, stat.icv_err);
+			DPRINTFN(2, ("%s: RX desc pktlen %u info %u shift %u "
+			    "c2h %u crc %u icv %u\n", DEVNAME(sc),
+			    stat.pktlen, stat.drvinfosz, stat.shift,
+			    stat.is_c2h, stat.crc_err, stat.icv_err));
 			sc->sc_rx_desc_log++;
 		}
 
@@ -2617,9 +3400,10 @@ urtwx_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		if (stat.is_c2h) {
 			sc->sc_rx_c2h++;
 			if (sc->sc_rx_c2h <= 8) {
-				printf("%s: RX C2H pktlen %u\n", DEVNAME(sc),
-				    stat.pktlen);
+				DPRINTFN(2, ("%s: RX C2H pktlen %u\n",
+				    DEVNAME(sc), stat.pktlen));
 			}
+			urtwx_parse_c2h(sc, buf + pktoff, stat.pktlen);
 		} else if (!stat.crc_err && !stat.icv_err) {
 			urtwx_rx_frame(sc, buf + pktoff, stat.pktlen, &ml);
 		}
@@ -2651,6 +3435,9 @@ urtwx_rx_init(struct urtwx_softc *sc)
 	sc->sc_rx_c2h = 0;
 	sc->sc_rx_desc_log = 0;
 	sc->sc_rx_err = 0;
+	sc->sc_tx_report_req = 0;
+	sc->sc_c2h_log = 0;
+	sc->sc_c2h_tx_rpt_log = 0;
 
 	for (i = 0; i < URTWX_RX_LIST_COUNT; i++) {
 		data = &sc->sc_rx_data[i];
@@ -2689,15 +3476,25 @@ urtwx_init(struct ifnet *ifp)
 	struct urtwx_softc *sc = ifp->if_softc;
 	struct ieee80211com *ic = &sc->sc_ic;
 
+	if (urtwx_set_macaddr(sc, ic->ic_myaddr) != 0)
+		return (EIO);
+
 	ic->ic_bss->ni_chan = ic->ic_ibss_chan;
 	sc->sc_scan_log = 0;
+	sc->sc_state_log = 0;
 	sc->sc_tx_mgmt_log = 0;
+	sc->sc_tx_data_log = 0;
 	sc->sc_txeof_log = 0;
+	sc->sc_txeof_data_log = 0;
 	sc->sc_rx_mgmt_log = 0;
 	sc->sc_rx_done = 0;
 	sc->sc_rx_c2h = 0;
 	sc->sc_rx_desc_log = 0;
 	sc->sc_rx_err = 0;
+	sc->sc_tx_report_sn = 0;
+	sc->sc_tx_report_req = 0;
+	sc->sc_c2h_log = 0;
+	sc->sc_c2h_tx_rpt_log = 0;
 	ifp->if_flags |= IFF_RUNNING;
 	ifq_clr_oactive(&ifp->if_snd);
 	sc->sc_tx_timer = 0;
@@ -2730,8 +3527,10 @@ urtwx_start(struct ifnet *ifp)
 {
 	struct urtwx_softc *sc = ifp->if_softc;
 	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_frame *wh;
 	struct ieee80211_node *ni;
 	struct mbuf *m;
+	uint8_t qsel;
 
 	if (!(ifp->if_flags & IFF_RUNNING) || sc->sc_tx_active) {
 		if (sc->sc_tx_active)
@@ -2757,8 +3556,38 @@ urtwx_start(struct ifnet *ifp)
 			ifp->if_timer = 1;
 			break;
 		}
-		if (ic->ic_state != IEEE80211_S_RUN)
+		if (ic->ic_state != IEEE80211_S_RUN ||
+		    (ic->ic_xflags & IEEE80211_F_TX_MGMT_ONLY) != 0)
 			break;
+		m = ifq_dequeue(&ifp->if_snd);
+		if (m == NULL)
+			break;
+		if (m->m_len < sizeof(struct ether_header) &&
+		    (m = m_pullup(m, sizeof(struct ether_header))) == NULL) {
+			ifp->if_oerrors++;
+			continue;
+		}
+#if NBPFILTER > 0
+		if (ifp->if_bpf != NULL)
+			bpf_mtap(ifp->if_bpf, m, BPF_DIRECTION_OUT);
+#endif
+		if ((m = ieee80211_encap(ifp, m, &ni)) == NULL) {
+			ifp->if_oerrors++;
+			continue;
+		}
+#if NBPFILTER > 0
+		if (ic->ic_rawbpf != NULL)
+			bpf_mtap(ic->ic_rawbpf, m, BPF_DIRECTION_OUT);
+#endif
+		wh = mtod(m, struct ieee80211_frame *);
+		qsel = urtwx_tx_data_qsel(wh);
+		if (urtwx_tx(sc, m, ni, qsel, 0) != 0) {
+			ieee80211_release_node(ic, ni);
+			ifp->if_oerrors++;
+			continue;
+		}
+		sc->sc_tx_timer = 5;
+		ifp->if_timer = 1;
 		break;
 	}
 }
@@ -2997,6 +3826,7 @@ urtwx_init_h2c(struct urtwx_softc *sc)
 		DPRINTF(("%s: H2C queue mismatch wp=%#x rp=%#x free=%#x\n",
 		    DEVNAME(sc), wp, rp, freeq));
 	}
+	sc->sc_h2c_box = 0;
 
 	return (0);
 }
@@ -3397,6 +4227,10 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ifp->if_watchdog = urtwx_watchdog;
 	memcpy(ifp->if_xname, DEVNAME(sc), IFNAMSIZ);
 	IEEE80211_ADDR_COPY(ic->ic_myaddr, sc->sc_macaddr);
+	if (urtwx_set_macaddr(sc, ic->ic_myaddr) != 0) {
+		printf("%s: could not program MAC address\n", DEVNAME(sc));
+		goto fail;
+	}
 
 	if_attach(ifp);
 	ifp_attached = 1;
@@ -3411,24 +4245,25 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		goto fail;
 	}
 
-	printf("%s: runtime regs CR=%#x RCR=%#x RXDMA_MODE=%#x TXDMA_PQ=%#x\n",
-	    DEVNAME(sc),
+	DPRINTF(("%s: runtime regs CR=%#x RCR=%#x RXDMA_MODE=%#x "
+	    "TXDMA_PQ=%#x\n", DEVNAME(sc),
 	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_CR, 0),
 	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RCR, 0),
 	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RXDMA_MODE, 0),
-	    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_TXDMA_PQ_MAP, 0));
-	printf("%s: rxdma agg=%#x pktnum=%#x status=%#x dpr=%#x\n",
+	    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_TXDMA_PQ_MAP, 0)));
+	DPRINTF(("%s: rxdma agg=%#x pktnum=%#x status=%#x dpr=%#x\n",
 	    DEVNAME(sc),
 	    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_RXDMA_AGG_PG_TH, 0),
 	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXPKT_NUM, 0),
 	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_STATUS, 0),
-	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_DPR, 0));
-	printf("%s: fixed channel %u rf18=%#x rfectl=%#x xtal=%#x rfe=%#x\n",
-	    DEVNAME(sc), URTWX_FIXED_CHANNEL, urtwx_read_rf(sc, 0x18),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_DPR, 0)));
+	DPRINTF(("%s: fixed channel %u rf18=%#x rfectl=%#x xtal=%#x "
+	    "rfe=%#x\n", DEVNAME(sc), URTWX_FIXED_CHANNEL,
+	    urtwx_read_rf(sc, 0x18),
 	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RFECTL, 0),
-	    sc->sc_crystal_cap, sc->sc_rfe_option);
-	printf("%s: RX ready, listening for management frames\n",
-	    DEVNAME(sc));
+	    sc->sc_crystal_cap, sc->sc_rfe_option));
+	DPRINTF(("%s: RX ready, listening for management frames\n",
+	    DEVNAME(sc)));
 	return;
 
 fail:
