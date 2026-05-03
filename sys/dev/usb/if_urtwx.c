@@ -302,9 +302,12 @@ struct urtwx_rx_stat {
 	uint16_t	drvinfosz;
 	uint8_t		shift;
 	uint8_t		enc_type;
+	uint8_t		phy_status;
 	uint8_t		swdec;
 	uint8_t		decrypted;
 	uint8_t		is_c2h;
+	uint8_t		rate;
+	uint8_t		rssi;
 	uint8_t		crc_err;
 	uint8_t		icv_err;
 };
@@ -405,6 +408,62 @@ struct urtwx_softc {
 	int			 sc_key_tasks;
 };
 
+static const char *
+urtwx_desc_rate_name(uint8_t rate, char *buf, size_t len)
+{
+	static const char * const legacy_rates[] = {
+		[0x00] = "1M",
+		[0x01] = "2M",
+		[0x02] = "5.5M",
+		[0x03] = "11M",
+		[0x04] = "6M",
+		[0x05] = "9M",
+		[0x06] = "12M",
+		[0x07] = "18M",
+		[0x08] = "24M",
+		[0x09] = "36M",
+		[0x0a] = "48M",
+		[0x0b] = "54M",
+	};
+	unsigned int mcs, nss;
+
+	if (rate < nitems(legacy_rates) && legacy_rates[rate] != NULL)
+		return legacy_rates[rate];
+
+	if (rate >= 0x0c && rate <= 0x2b) {
+		mcs = rate - 0x0c;
+		snprintf(buf, len, "HT-MCS%u", mcs);
+		return buf;
+	}
+
+	if (rate >= 0x2c && rate <= 0x53) {
+		nss = 1 + ((rate - 0x2c) / 10);
+		mcs = (rate - 0x2c) % 10;
+		snprintf(buf, len, "VHT%uSS-MCS%u", nss, mcs);
+		return buf;
+	}
+
+	snprintf(buf, len, "rate%#x", rate);
+	return buf;
+}
+
+static const char *
+urtwx_ra_bw_name(uint8_t bw)
+{
+	switch (bw) {
+	case 0:
+		return "20";
+	case 1:
+		return "40";
+	case 2:
+		return "80";
+	case 3:
+		return "160";
+	default:
+		return "?";
+	}
+}
+
 static const struct usb_devno urtwx_devs[] = {
 	{ USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8821CU_1 },
 	{ USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8821CU_2 },
@@ -412,6 +471,15 @@ static const struct usb_devno urtwx_devs[] = {
 
 static const char *urtwx_fw_names[] = {
 	"rtw8821c_fw.bin",
+};
+
+static const int8_t urtwx_lna_gain_table_0[] = {
+	22, 8, -6, -22, -31, -40, -46, -52
+};
+
+static const int8_t urtwx_lna_gain_table_1[] = {
+	10, 6, 2, -2, -6, -10, -14, -17,
+	-20, -24, -28, -31, -34, -37, -40, -44
 };
 
 enum urtwx_pq_mapping {
@@ -2911,6 +2979,9 @@ urtwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 	struct urtwx_softc *sc = ic->ic_if.if_softc;
 	struct urtwx_cmd_newstate cmd;
 
+	if (nstate != IEEE80211_S_SCAN)
+		timeout_del(&sc->sc_scan_to);
+
 	cmd.state = nstate;
 	cmd.ostate = ic->ic_state;
 	cmd.arg = arg;
@@ -2948,6 +3019,19 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 		    ieee80211_state_name[cmd->state],
 		    ieee80211_state_name[ostate], cmd->arg));
 		sc->sc_state_log++;
+	}
+	if (cmd->ostate != ostate) {
+		if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+			DPRINTF(("%s: newstate stale#%u req %s -> %s cur %s "
+			    "arg %#x\n",
+			    DEVNAME(sc), cmd->seq,
+			    ieee80211_state_name[cmd->ostate],
+			    ieee80211_state_name[cmd->state],
+			    ieee80211_state_name[ostate], cmd->arg));
+			sc->sc_state_log++;
+		}
+		splx(s);
+		return;
 	}
 	if (cmd->state == ostate &&
 	    cmd->state != IEEE80211_S_SCAN &&
@@ -3375,9 +3459,11 @@ urtwx_parse_rx_desc(const struct urtwx_rx_desc *rxd, struct urtwx_rx_stat *stat)
 	stat->drvinfosz = ((w0 >> 16) & 0xf) * 8;
 	stat->enc_type = (w0 >> 20) & 0x7;
 	stat->shift = (w0 >> 24) & 0x3;
+	stat->phy_status = (w0 & 0x04000000U) != 0;
 	stat->swdec = (w0 >> 27) & 0x1;
 	stat->decrypted = !stat->swdec && stat->enc_type != 0;
 	stat->is_c2h = (w2 & 0x10000000U) != 0;
+	stat->rate = letoh32(rxd->w3) & 0x7f;
 }
 
 static void
@@ -3386,8 +3472,11 @@ urtwx_parse_c2h(struct urtwx_softc *sc, const uint8_t *buf, int len)
 	const struct urtwx_c2h_cmd *c2h;
 	const struct urtwx_c2h_ra_rpt *ra;
 	const char *name;
+	const char *rate_name;
 	uint8_t status, sn, subid;
+	uint8_t rate, sgi;
 	char bytes[3 * 8];
+	char ratebuf[16];
 	int i, n, off;
 
 	if (len < 2)
@@ -3446,12 +3535,15 @@ urtwx_parse_c2h(struct urtwx_softc *sc, const uint8_t *buf, int len)
 		if (len < (int)(2 + sizeof(*ra)))
 			break;
 		ra = (const struct urtwx_c2h_ra_rpt *)c2h->payload;
+		rate = ra->rate_sgi & 0x7f;
+		sgi = (ra->rate_sgi & 0x80) != 0;
+		rate_name = urtwx_desc_rate_name(rate, ratebuf, sizeof(ratebuf));
 		if (sc->sc_c2h_tx_rpt_log < URTWX_C2H_TX_RPT_MAX) {
-			DPRINTFN(2, ("%s: C2H RA report macid %u rate %#x "
-			    "sgi %u status %#x bw %u ratio %u\n",
-			    DEVNAME(sc), ra->macid, ra->rate_sgi & 0x7f,
-			    (ra->rate_sgi & 0x80) != 0, ra->status,
-			    ra->bw, ra->ra_ratio));
+			DPRINTFN(2, ("%s: C2H RA report macid %u %s (%#x) "
+			    "sgi %u bw %s status %#x ratio %u\n",
+			    DEVNAME(sc), ra->macid, rate_name, rate, sgi,
+			    urtwx_ra_bw_name(ra->bw), ra->status,
+			    ra->ra_ratio));
 			sc->sc_c2h_tx_rpt_log++;
 		}
 		break;
@@ -3476,6 +3568,67 @@ urtwx_parse_c2h(struct urtwx_softc *sc, const uint8_t *buf, int len)
 		}
 		break;
 	}
+}
+
+static uint8_t
+urtwx_rx_power_to_rssi(int8_t rx_power)
+{
+	if (rx_power <= -100)
+		return (0);
+	if (rx_power >= 0)
+		return (100);
+	return (100 + rx_power);
+}
+
+static int8_t
+urtwx_cck_rx_power(struct urtwx_softc *sc, const uint8_t *phy_status)
+{
+	const int8_t *lna_gain_table;
+	size_t lna_gain_table_size;
+	uint32_t dw3;
+	uint8_t lna_idx, vga_idx;
+
+	if (sc->sc_rfe_option == 0) {
+		lna_gain_table = urtwx_lna_gain_table_0;
+		lna_gain_table_size = nitems(urtwx_lna_gain_table_0);
+	} else {
+		lna_gain_table = urtwx_lna_gain_table_1;
+		lna_gain_table_size = nitems(urtwx_lna_gain_table_1);
+	}
+
+	dw3 = UGETDW(phy_status + 12);
+	vga_idx = (dw3 >> 8) & 0x1f;
+	lna_idx = ((dw3 >> 20) & 0x8) | ((dw3 >> 13) & 0x7);
+	if (lna_idx >= lna_gain_table_size)
+		return (-100);
+
+	return (lna_gain_table[lna_idx] - (2 * vga_idx));
+}
+
+static void
+urtwx_get_rx_rssi(struct urtwx_softc *sc, const uint8_t *phy_status,
+    struct urtwx_rx_stat *stat)
+{
+	uint32_t dw1;
+	int8_t rx_power;
+
+	stat->rssi = 0;
+	if (!stat->phy_status || stat->drvinfosz == 0 || phy_status == NULL)
+		return;
+
+	if (stat->rate <= URTWX_DESC_RATE11M) {
+		if (stat->drvinfosz < 16)
+			return;
+		rx_power = urtwx_cck_rx_power(sc, phy_status);
+		stat->rssi = urtwx_rx_power_to_rssi(rx_power);
+		return;
+	}
+
+	if (stat->drvinfosz < 8)
+		return;
+	dw1 = UGETDW(phy_status + 4);
+	rx_power = ((dw1 >> 8) & 0xff) - 110;
+	stat->rssi = urtwx_rx_power_to_rssi(rx_power);
 }
 
 static void
@@ -3658,6 +3811,7 @@ done_log:
 	s = splnet();
 	ni = ieee80211_find_rxnode(ic, mtod(m, struct ieee80211_frame *));
 	memset(&rxi, 0, sizeof(rxi));
+	rxi.rxi_rssi = stat->rssi;
 	if (stat->decrypted)
 		rxi.rxi_flags |= IEEE80211_RXI_HWDEC;
 	ieee80211_inputm(ifp, m, ni, &rxi, ml);
@@ -3723,6 +3877,9 @@ urtwx_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		}
 		if (pkttot > len)
 			pkttot = len;
+
+		urtwx_get_rx_rssi(sc, buf + URTWX_RX_DESC_SIZE + stat.shift,
+		    &stat);
 
 		if (stat.is_c2h) {
 			sc->sc_rx_c2h++;
@@ -4595,6 +4752,9 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_phytype = IEEE80211_T_OFDM;
 	ic->ic_opmode = IEEE80211_M_STA;
 	ic->ic_state = IEEE80211_S_INIT;
+	ic->ic_max_rssi = 100;
+	ic->ic_htcaps = IEEE80211_HTCAP_SGI20;
+	ic->ic_sup_mcs[0] = 0xff;
 	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_SHPREAMBLE |
 	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN;
 	ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
@@ -4604,7 +4764,8 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		    ieee80211_ieee2mhz(i, IEEE80211_CHAN_2GHZ);
 		ic->ic_channels[i].ic_flags =
 		    IEEE80211_CHAN_CCK | IEEE80211_CHAN_OFDM |
-		    IEEE80211_CHAN_DYN | IEEE80211_CHAN_2GHZ;
+		    IEEE80211_CHAN_DYN | IEEE80211_CHAN_2GHZ |
+		    IEEE80211_CHAN_HT;
 	}
 	ic->ic_ibss_chan = &ic->ic_channels[1];
 
