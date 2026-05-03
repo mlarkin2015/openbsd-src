@@ -381,6 +381,8 @@ struct urtwx_softc {
 	uint8_t			 sc_pkg_type;
 	uint8_t			 sc_rfe_option;
 	uint8_t			 sc_h2c_box;
+	int			 sc_have_macaddr;
+	int			 sc_hw_init;
 	int			 sc_rfe_btg;
 	int			 sc_tx_active;
 	int			 sc_tx_timer;
@@ -3811,7 +3813,70 @@ urtwx_init(struct ifnet *ifp)
 {
 	struct urtwx_softc *sc = ifp->if_softc;
 	struct ieee80211com *ic = &sc->sc_ic;
+	int error;
 
+	if (!sc->sc_hw_init) {
+		error = urtwx_fw_download(sc);
+		if (error != 0) {
+			printf("%s: firmware download failed\n",
+			    DEVNAME(sc));
+			return (error);
+		}
+
+		if (!sc->sc_have_macaddr) {
+			if (urtwx_read_efuse(sc, sc->sc_macaddr) != 0) {
+				printf("%s: could not read efuse MAC address\n",
+				    DEVNAME(sc));
+				return (EIO);
+			}
+			sc->sc_have_macaddr = 1;
+			printf("%s: MAC %s\n", DEVNAME(sc),
+			    ether_sprintf(sc->sc_macaddr));
+		}
+
+		if (urtwx_mac_init_runtime(sc) != 0) {
+			printf("%s: could not initialize MAC/RX path\n",
+			    DEVNAME(sc));
+			return (EIO);
+		}
+
+		error = if_setlladdr(ifp, sc->sc_macaddr);
+		if (error != 0) {
+			printf("%s: could not set MAC address %s: %d\n",
+			    DEVNAME(sc), ether_sprintf(sc->sc_macaddr), error);
+			return (error);
+		}
+		sc->sc_hw_init = 1;
+
+		if (urtwx_rx_init(sc) != 0) {
+			printf("%s: could not start RX path\n", DEVNAME(sc));
+			sc->sc_hw_init = 0;
+			return (EIO);
+		}
+
+		DPRINTF(("%s: runtime regs CR=%#x RCR=%#x RXDMA_MODE=%#x "
+		    "TXDMA_PQ=%#x\n", DEVNAME(sc),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_CR, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RCR, 0),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RXDMA_MODE, 0),
+		    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_TXDMA_PQ_MAP, 0)));
+		DPRINTF(("%s: rxdma agg=%#x pktnum=%#x status=%#x dpr=%#x\n",
+		    DEVNAME(sc),
+		    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_RXDMA_AGG_PG_TH, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXPKT_NUM, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_STATUS, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_DPR, 0)));
+		DPRINTF(("%s: fixed channel %u rf18=%#x rfectl=%#x xtal=%#x "
+		    "rfe=%#x\n", DEVNAME(sc), URTWX_FIXED_CHANNEL,
+		    urtwx_read_rf(sc, 0x18),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RFECTL, 0),
+		    sc->sc_crystal_cap, sc->sc_rfe_option));
+		DPRINTF(("%s: RX ready, listening for management frames\n",
+		    DEVNAME(sc)));
+	}
+
+	IEEE80211_ADDR_COPY(ic->ic_myaddr,
+	    ((struct arpcom *)ifp)->ac_enaddr);
 	if (urtwx_set_macaddr(sc, ic->ic_myaddr) != 0)
 		return (EIO);
 
@@ -4437,7 +4502,6 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	usb_interface_descriptor_t	*id;
 	usb_endpoint_descriptor_t	*ed;
 	usbd_status			 err;
-	uint8_t				 mac[ETHER_ADDR_LEN];
 	int				 i, ifp_attached;
 
 	sc = (struct urtwx_softc *)self;
@@ -4454,6 +4518,8 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_cmdq.cur = 0;
 	sc->sc_cmdq.next = 0;
 	sc->sc_cmdq.queued = 0;
+	sc->sc_have_macaddr = 0;
+	sc->sc_hw_init = 0;
 
 	id = usbd_get_interface_descriptor(sc->sc_iface);
 	for (i = 0; i < id->bNumEndpoints; i++) {
@@ -4526,24 +4592,6 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		goto fail;
 	}
 
-	if (urtwx_fw_download(sc) != 0) {
-		printf("%s: firmware download failed\n", DEVNAME(sc));
-		goto fail;
-	}
-
-	if (urtwx_read_efuse(sc, mac) != 0) {
-		printf("%s: could not read efuse MAC address\n", DEVNAME(sc));
-		goto fail;
-	}
-	memcpy(sc->sc_macaddr, mac, sizeof(sc->sc_macaddr));
-
-	printf("%s: MAC %s\n", DEVNAME(sc), ether_sprintf(mac));
-
-	if (urtwx_mac_init_runtime(sc) != 0) {
-		printf("%s: could not initialize MAC/RX path\n", DEVNAME(sc));
-		goto fail;
-	}
-
 	ic->ic_phytype = IEEE80211_T_OFDM;
 	ic->ic_opmode = IEEE80211_M_STA;
 	ic->ic_state = IEEE80211_S_INIT;
@@ -4566,11 +4614,9 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ifp->if_start = urtwx_start;
 	ifp->if_watchdog = urtwx_watchdog;
 	memcpy(ifp->if_xname, DEVNAME(sc), IFNAMSIZ);
-	IEEE80211_ADDR_COPY(ic->ic_myaddr, sc->sc_macaddr);
-	if (urtwx_set_macaddr(sc, ic->ic_myaddr) != 0) {
-		printf("%s: could not program MAC address\n", DEVNAME(sc));
-		goto fail;
-	}
+	ether_fakeaddr(ifp);
+	IEEE80211_ADDR_COPY(ic->ic_myaddr,
+	    ((struct arpcom *)ifp)->ac_enaddr);
 
 	if_attach(ifp);
 	ifp_attached = 1;
@@ -4581,31 +4627,6 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_newstate = urtwx_newstate;
 	ieee80211_media_init(ifp, urtwx_media_change,
 	    ieee80211_media_status);
-
-	if (urtwx_rx_init(sc) != 0) {
-		printf("%s: could not start RX path\n", DEVNAME(sc));
-		goto fail;
-	}
-
-	DPRINTF(("%s: runtime regs CR=%#x RCR=%#x RXDMA_MODE=%#x "
-	    "TXDMA_PQ=%#x\n", DEVNAME(sc),
-	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_CR, 0),
-	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RCR, 0),
-	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RXDMA_MODE, 0),
-	    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_TXDMA_PQ_MAP, 0)));
-	DPRINTF(("%s: rxdma agg=%#x pktnum=%#x status=%#x dpr=%#x\n",
-	    DEVNAME(sc),
-	    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_RXDMA_AGG_PG_TH, 0),
-	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXPKT_NUM, 0),
-	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_STATUS, 0),
-	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_DPR, 0)));
-	DPRINTF(("%s: fixed channel %u rf18=%#x rfectl=%#x xtal=%#x "
-	    "rfe=%#x\n", DEVNAME(sc), URTWX_FIXED_CHANNEL,
-	    urtwx_read_rf(sc, 0x18),
-	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RFECTL, 0),
-	    sc->sc_crystal_cap, sc->sc_rfe_option));
-	DPRINTF(("%s: RX ready, listening for management frames\n",
-	    DEVNAME(sc)));
 	return;
 
 fail:
