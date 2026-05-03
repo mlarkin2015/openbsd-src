@@ -75,6 +75,7 @@
 #define URTWX_TX_TIMEOUT		1000
 #define URTWX_SCAN_DWELL_TIME		200
 #define URTWX_HOST_CMD_RING_COUNT	8
+#define URTWX_HOST_CMD_DATA_LEN		256
 #define URTWX_FORCE_PASSIVE_SCAN	0
 #define URTWX_FORCE_DATA_MGMT_Q		0
 #define URTWX_SCAN_LOG_MAX		32
@@ -90,6 +91,7 @@
 #define URTWX_TXDESC_W1_MACID_MASK	0x000000ffU
 #define URTWX_TXDESC_W1_QSEL_SHIFT	8
 #define URTWX_TXDESC_W1_RATEID_SHIFT	16
+#define URTWX_TXDESC_W1_SEC_TYPE_SHIFT	22
 #define URTWX_TXDESC_W1_MORE_DATA	0x20000000U
 #define URTWX_TXDESC_W2_SPE_RPT		0x00080000U
 #define URTWX_TXDESC_W2_BT_NULL		0x00800000U
@@ -110,10 +112,21 @@
 #define URTWX_DESC_RATE6M		0x04
 #define URTWX_DESC_RATE54M		0x0b
 #define URTWX_DESC_RATEMCS7		0x13
+#define URTWX_SEC_TYPE_WEP40		0x01
+#define URTWX_SEC_TYPE_TKIP		0x01
+#define URTWX_SEC_TYPE_WEP104		0x01
+#define URTWX_SEC_TYPE_CCMP		0x03
 #define URTWX_H2C_CMD_RSVD_PAGE		0x00
 #define URTWX_H2C_CMD_MEDIA_STATUS_RPT	0x01
 #define URTWX_H2C_CMD_DEFAULT_PORT	0x2c
 #define URTWX_H2C_CMD_RA_INFO		0x40
+#define URTWX_CAM_ENTRY_WORDS		8
+#define URTWX_CAM_ENTRY_SHIFT		3
+#define URTWX_CAM_PAIRWISE_ENTRY	4
+#define URTWX_CAM_ALGO_CCMP		4
+#define URTWX_SEC_CMD_WRITE_ENABLE	0x00010000U
+#define URTWX_SEC_CMD_CLEAR		0x40000000U
+#define URTWX_SEC_CMD_POLLING		0x80000000U
 #define URTWX_C2H_CCX_TX_RPT		0x03
 #define URTWX_C2H_RA_RPT		0x0c
 #define URTWX_C2H_WLAN_INFO		0x27
@@ -288,6 +301,9 @@ struct urtwx_rx_stat {
 	uint16_t	pktlen;
 	uint16_t	drvinfosz;
 	uint8_t		shift;
+	uint8_t		enc_type;
+	uint8_t		swdec;
+	uint8_t		decrypted;
 	uint8_t		is_c2h;
 	uint8_t		crc_err;
 	uint8_t		icv_err;
@@ -313,7 +329,7 @@ struct urtwx_softc;
 
 struct urtwx_host_cmd {
 	void	(*cb)(struct urtwx_softc *, void *);
-	uint8_t	data[16];
+	uint8_t	data[URTWX_HOST_CMD_DATA_LEN];
 };
 
 struct urtwx_cmd_newstate {
@@ -321,6 +337,12 @@ struct urtwx_cmd_newstate {
 	enum ieee80211_state	ostate;
 	int			arg;
 	uint32_t		seq;
+};
+
+struct urtwx_cmd_key {
+	struct ieee80211_key	key;
+	struct ieee80211_node	*ni;
+	int			set;
 };
 
 struct urtwx_host_cmd_ring {
@@ -378,6 +400,7 @@ struct urtwx_softc {
 	unsigned int		 sc_rx_c2h;
 	unsigned int		 sc_rx_desc_log;
 	unsigned int		 sc_rx_err;
+	int			 sc_key_tasks;
 };
 
 static const struct usb_devno urtwx_devs[] = {
@@ -512,6 +535,12 @@ static int	urtwx_media_change(struct ifnet *);
 static int	urtwx_newstate(struct ieee80211com *, enum ieee80211_state,
 		    int);
 static void	urtwx_newstate_cb(struct urtwx_softc *, void *);
+static int	urtwx_set_key(struct ieee80211com *, struct ieee80211_node *,
+		    struct ieee80211_key *);
+static void	urtwx_delete_key(struct ieee80211com *,
+		    struct ieee80211_node *, struct ieee80211_key *);
+static void	urtwx_set_key_cb(struct urtwx_softc *, void *);
+static void	urtwx_delete_key_cb(struct urtwx_softc *, void *);
 static void	urtwx_node_tx_info(struct ieee80211_node *, uint8_t *,
 		    uint8_t *, uint8_t *, uint8_t *, uint32_t *);
 static void	urtwx_parse_c2h(struct urtwx_softc *, const uint8_t *, int);
@@ -544,7 +573,7 @@ static int	urtwx_read_mem(struct urtwx_softc *, uint8_t, uint16_t,
 static int	urtwx_reg_sec(struct urtwx_softc *, uint16_t, void *);
 static int	urtwx_set_macaddr(struct urtwx_softc *, const uint8_t *);
 static void	urtwx_rx_frame(struct urtwx_softc *, const uint8_t *, int,
-		    struct mbuf_list *);
+		    const struct urtwx_rx_stat *, struct mbuf_list *);
 static int	urtwx_rx_init(struct urtwx_softc *);
 static void	urtwx_rxeof(struct usbd_xfer *, void *, usbd_status);
 static void	urtwx_scan_to(void *);
@@ -563,6 +592,12 @@ static int	urtwx_txdma_queue_mapping(struct urtwx_softc *);
 static void	urtwx_txdesc_checksum(struct urtwx_tx_desc *);
 static int	urtwx_usb_interface_cfg(struct urtwx_softc *);
 static int	urtwx_usb_rx_agg_cfg(struct urtwx_softc *);
+static int	urtwx_sec_enable(struct urtwx_softc *);
+static int	urtwx_sec_cam_write(struct urtwx_softc *, uint8_t, uint32_t);
+static int	urtwx_hw_set_key(struct ieee80211com *, struct ieee80211_node *,
+		    struct ieee80211_key *);
+static void	urtwx_hw_delete_key(struct ieee80211com *,
+		    struct ieee80211_node *, struct ieee80211_key *);
 static void	urtwx_wait_async(struct urtwx_softc *);
 static void	urtwx_watchdog(struct ifnet *);
 static int	urtwx_valid_etheraddr(const uint8_t *);
@@ -1388,27 +1423,25 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 {
 	struct urtwx_tx_desc *txd;
 	struct ieee80211_frame *wh;
+	struct ieee80211_key *k;
 	const char *name;
 	uint16_t seq;
 	uint32_t len;
 	usbd_status err;
 	struct usbd_pipe *pipe;
 	uint32_t ra_mask;
+	uint8_t sec_type;
 	uint8_t ldpc;
 	uint8_t report_sn;
 	uint8_t rate;
 	uint8_t rate_id;
 	uint8_t sgi;
+	uint32_t txpktlen;
+	int hdrlen;
+	uint8_t *txbuf;
 
 	if (sc->sc_tx_active)
 		return (EBUSY);
-
-	len = URTWX_TXDESC_SIZE + m->m_pkthdr.len;
-	if (len > URTWX_TXDESC_SIZE + URTWX_MAX_FW_CHUNK)
-		return (EFBIG);
-
-	memset(sc->sc_tx_buf, 0, len);
-	txd = (struct urtwx_tx_desc *)sc->sc_tx_buf;
 	wh = mtod(m, struct ieee80211_frame *);
 	name = NULL;
 	seq = 0;
@@ -1418,17 +1451,69 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	sgi = 0;
 	ldpc = 0;
 	ra_mask = 0;
+	k = NULL;
+	sec_type = 0;
+	txpktlen = m->m_pkthdr.len;
+	hdrlen = 0;
+	txbuf = NULL;
+
+	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
+		k = ieee80211_get_txkey(&sc->sc_ic, wh, ni);
+		if (k == NULL)
+			return (EINVAL);
+		/*
+		 * net80211 still marks software-crypto keys explicitly.
+		 * Use that slow path only when needed; otherwise let the
+		 * 8821C security engine use the CAM entry we installed.
+		 */
+		if (k->k_flags & IEEE80211_KEY_SWCRYPTO) {
+			if ((m = ieee80211_encrypt(&sc->sc_ic, m, k)) ==
+			    NULL)
+				return (ENOBUFS);
+			wh = mtod(m, struct ieee80211_frame *);
+			txpktlen = m->m_pkthdr.len;
+		} else {
+			switch (k->k_cipher) {
+			case IEEE80211_CIPHER_WEP40:
+				sec_type = URTWX_SEC_TYPE_WEP40;
+				break;
+			case IEEE80211_CIPHER_WEP104:
+				sec_type = URTWX_SEC_TYPE_WEP104;
+				break;
+			case IEEE80211_CIPHER_TKIP:
+				sec_type = URTWX_SEC_TYPE_TKIP;
+				break;
+			case IEEE80211_CIPHER_CCMP:
+				sec_type = URTWX_SEC_TYPE_CCMP;
+				break;
+			default:
+				break;
+			}
+			if (k->k_cipher == IEEE80211_CIPHER_CCMP)
+				txpktlen += IEEE80211_CCMP_HDRLEN;
+		}
+	}
+
+	len = URTWX_TXDESC_SIZE + m->m_pkthdr.len;
+	if (sec_type == URTWX_SEC_TYPE_CCMP && k != NULL &&
+	    (k->k_flags & IEEE80211_KEY_SWCRYPTO) == 0)
+		len += IEEE80211_CCMP_HDRLEN;
+	if (len > URTWX_TXDESC_SIZE + URTWX_MAX_FW_CHUNK)
+		return (EFBIG);
 
 #if URTWX_FORCE_DATA_MGMT_Q
 	if (!mgmt)
 		qsel = URTWX_TXDESC_QSEL_MGMT;
 #endif
 
-	txd->w0 = htole32(m->m_pkthdr.len | (URTWX_TXDESC_SIZE << 16) |
+	memset(sc->sc_tx_buf, 0, len);
+	txd = (struct urtwx_tx_desc *)sc->sc_tx_buf;
+	txd->w0 = htole32(txpktlen | (URTWX_TXDESC_SIZE << 16) |
 	    (IEEE80211_IS_MULTICAST(wh->i_addr1) ? URTWX_TXDESC_W0_BMC : 0) |
 	    URTWX_TXDESC_W0_LS);
 	txd->w1 = htole32((URTWX_MACID_STA & URTWX_TXDESC_W1_MACID_MASK) |
-	    ((uint32_t)qsel << URTWX_TXDESC_W1_QSEL_SHIFT));
+	    ((uint32_t)qsel << URTWX_TXDESC_W1_QSEL_SHIFT) |
+	    ((uint32_t)sec_type << URTWX_TXDESC_W1_SEC_TYPE_SHIFT));
 	if (qsel == URTWX_TXDESC_QSEL_HIGH)
 		txd->w1 = htole32(letoh32(txd->w1) |
 		    URTWX_TXDESC_W1_MORE_DATA);
@@ -1458,10 +1543,10 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 				    ieee80211_chan2ieee(&sc->sc_ic,
 				    ni->ni_chan)));
 			} else {
-				printf("%s: TX %s len %u chan %u\n",
+				DPRINTF(("%s: TX %s len %u chan %u\n",
 				    DEVNAME(sc), name, m->m_pkthdr.len,
 				    ieee80211_chan2ieee(&sc->sc_ic,
-				    ni->ni_chan));
+				    ni->ni_chan)));
 			}
 			sc->sc_tx_mgmt_log++;
 		}
@@ -1510,7 +1595,28 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	}
 	urtwx_txdesc_checksum(txd);
 
-	m_copydata(m, 0, m->m_pkthdr.len, sc->sc_tx_buf + URTWX_TXDESC_SIZE);
+	txbuf = sc->sc_tx_buf + URTWX_TXDESC_SIZE;
+	if (sec_type == URTWX_SEC_TYPE_CCMP && k != NULL &&
+	    (k->k_flags & IEEE80211_KEY_SWCRYPTO) == 0) {
+		hdrlen = ieee80211_get_hdrlen(wh);
+		m_copydata(m, 0, hdrlen, txbuf);
+		txbuf += hdrlen;
+
+		k->k_tsc++;
+		txbuf[0] = k->k_tsc;
+		txbuf[1] = k->k_tsc >> 8;
+		txbuf[2] = 0;
+		txbuf[3] = k->k_id | IEEE80211_WEP_EXTIV;
+		txbuf[4] = k->k_tsc >> 16;
+		txbuf[5] = k->k_tsc >> 24;
+		txbuf[6] = k->k_tsc >> 32;
+		txbuf[7] = k->k_tsc >> 40;
+		txbuf += IEEE80211_CCMP_HDRLEN;
+
+		m_copydata(m, hdrlen, m->m_pkthdr.len - hdrlen, txbuf);
+	} else {
+		m_copydata(m, 0, m->m_pkthdr.len, txbuf);
+	}
 	m_freem(m);
 
 	pipe = urtwx_qsel_to_pipe(sc, qsel);
@@ -2683,7 +2789,6 @@ urtwx_sta_enter_run(struct urtwx_softc *sc)
 	bssid1 = ni->ni_bssid[4] |
 	    ((uint16_t)ni->ni_bssid[5] << 8);
 	intval = ni->ni_intval;
-
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_BSSID, 0, bssid0);
 	if (ret != 0)
 		return (ret);
@@ -2898,14 +3003,15 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 				printf("%s: could not enter RUN state: %d\n",
 				    DEVNAME(sc), ret);
 			} else {
-				printf("%s: RUN bssid %s chan %u intval %u aid %u "
-				    "cr=%#x\n",
+				DPRINTF(("%s: RUN bssid %s chan %u intval %u "
+				    "aid %u cr=%#x\n",
 				    DEVNAME(sc),
 				    ether_sprintf(ic->ic_bss->ni_bssid),
 				    ieee80211_chan2ieee(ic, chan),
 				    ic->ic_bss->ni_intval,
 				    IEEE80211_AID(ic->ic_bss->ni_associd),
-				    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_CR, 0));
+				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+				    REG_CR, 0)));
 				sc->sc_tx_data_log = 0;
 				sc->sc_txeof_data_log = 0;
 			}
@@ -2924,6 +3030,211 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 	if (cmd->state == IEEE80211_S_RUN)
 		urtwx_start(&ic->ic_if);
 	splx(s);
+}
+
+static int
+urtwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
+    struct ieee80211_key *k)
+{
+	struct urtwx_softc *sc = ic->ic_softc;
+	struct urtwx_cmd_key cmd;
+
+	if (k->k_cipher != IEEE80211_CIPHER_CCMP)
+		return (ieee80211_set_key(ic, ni, k));
+	if ((ic->ic_if.if_flags & (IFF_UP | IFF_RUNNING)) !=
+	    (IFF_UP | IFF_RUNNING))
+		return (0);
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.key = *k;
+	cmd.ni = ni;
+	cmd.set = 1;
+	urtwx_do_async(sc, urtwx_set_key_cb, &cmd, sizeof(cmd));
+	sc->sc_key_tasks++;
+
+	return (EBUSY);
+}
+
+static void
+urtwx_set_key_cb(struct urtwx_softc *sc, void *arg)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct urtwx_cmd_key *cmd = arg;
+
+	sc->sc_key_tasks--;
+	if (urtwx_hw_set_key(ic, cmd->ni, &cmd->key) == 0) {
+		if (sc->sc_key_tasks == 0 && cmd->ni != NULL) {
+			cmd->ni->ni_port_valid = 1;
+			ieee80211_set_link_state(ic, LINK_STATE_UP);
+		}
+	} else if (cmd->ni != NULL) {
+		IEEE80211_SEND_MGMT(ic, cmd->ni, IEEE80211_FC0_SUBTYPE_DEAUTH,
+		    IEEE80211_REASON_AUTH_LEAVE);
+		ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+	}
+}
+
+static void
+urtwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
+    struct ieee80211_key *k)
+{
+	struct urtwx_softc *sc = ic->ic_softc;
+	struct urtwx_cmd_key cmd;
+
+	if (k->k_cipher != IEEE80211_CIPHER_CCMP) {
+		ieee80211_delete_key(ic, ni, k);
+		return;
+	}
+	if (!(ic->ic_if.if_flags & IFF_RUNNING) || ic->ic_state != IEEE80211_S_RUN)
+		return;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.key = *k;
+	cmd.ni = ni;
+	urtwx_do_async(sc, urtwx_delete_key_cb, &cmd, sizeof(cmd));
+}
+
+static void
+urtwx_delete_key_cb(struct urtwx_softc *sc, void *arg)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct urtwx_cmd_key *cmd = arg;
+
+	urtwx_hw_delete_key(ic, cmd->ni, &cmd->key);
+}
+
+static int
+urtwx_sec_cam_write(struct urtwx_softc *sc, uint8_t addr, uint32_t data)
+{
+	int ret;
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_CAMWRITE, 0, data);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_CAMCMD, 0,
+	    URTWX_SEC_CMD_POLLING | URTWX_SEC_CMD_WRITE_ENABLE | addr);
+	if (ret != 0)
+		return (ret);
+
+	return (urtwx_wait_4(sc, REG_CAMCMD, URTWX_SEC_CMD_POLLING, 0,
+	    URTWX_WAIT_COUNT, URTWX_WAIT_DELAY_US));
+}
+
+static int
+urtwx_sec_enable(struct urtwx_softc *sc)
+{
+	uint16_t seccfg;
+	int ret;
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_CAMCMD, 0,
+	    URTWX_SEC_CMD_POLLING | URTWX_SEC_CMD_CLEAR);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_wait_4(sc, REG_CAMCMD, URTWX_SEC_CMD_POLLING, 0,
+	    URTWX_WAIT_COUNT, URTWX_WAIT_DELAY_US);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_CR, BIT_MAC_SEC_EN,
+	    BIT_MAC_SEC_EN);
+	if (ret != 0)
+		return (ret);
+
+	seccfg = urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_SECCFG, 0);
+	seccfg |= BIT_SECCFG_TXUCKEY_DEF | BIT_SECCFG_RXUCKEY_DEF |
+	    BIT_SECCFG_TXENC_ENA | BIT_SECCFG_RXENC_ENA |
+	    BIT_SECCFG_TXBCKEY_DEF | BIT_SECCFG_RXBCKEY_DEF;
+
+	return (urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_SECCFG, 0, seccfg));
+}
+
+static int
+urtwx_hw_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
+    struct ieee80211_key *k)
+{
+	struct urtwx_softc *sc = ic->ic_softc;
+	static const uint8_t etherbroadcastaddr[IEEE80211_ADDR_LEN] = {
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+	};
+	const uint8_t *macaddr;
+	uint8_t algo, entry, keybuf[16];
+	uint32_t content;
+	int i, j, ret;
+
+	if (k->k_cipher != IEEE80211_CIPHER_CCMP)
+		return (EINVAL);
+
+	if ((k->k_flags & IEEE80211_KEY_GROUP) != 0) {
+		macaddr = etherbroadcastaddr;
+		entry = k->k_id;
+	} else {
+		if (ni == NULL)
+			return (EINVAL);
+		macaddr = ni->ni_macaddr;
+		entry = URTWX_CAM_PAIRWISE_ENTRY;
+	}
+	algo = URTWX_CAM_ALGO_CCMP;
+
+	memset(keybuf, 0, sizeof(keybuf));
+	memcpy(keybuf, k->k_key, MIN(k->k_len, sizeof(keybuf)));
+	for (i = URTWX_CAM_ENTRY_WORDS - 1; i >= 0; i--) {
+		switch (i) {
+		case 0:
+			content = (k->k_id & 0x3) |
+			    ((uint32_t)(algo & 0x7) << 2) |
+			    (((k->k_flags & IEEE80211_KEY_GROUP) != 0) << 6) |
+			    (1U << 15) |
+			    ((uint32_t)macaddr[0] << 16) |
+			    ((uint32_t)macaddr[1] << 24);
+			break;
+		case 1:
+			content = macaddr[2] |
+			    ((uint32_t)macaddr[3] << 8) |
+			    ((uint32_t)macaddr[4] << 16) |
+			    ((uint32_t)macaddr[5] << 24);
+			break;
+		case 6:
+		case 7:
+			content = 0;
+			break;
+		default:
+			j = (i - 2) << 2;
+			content = keybuf[j] |
+			    ((uint32_t)keybuf[j + 1] << 8) |
+			    ((uint32_t)keybuf[j + 2] << 16) |
+			    ((uint32_t)keybuf[j + 3] << 24);
+			break;
+		}
+
+		ret = urtwx_sec_cam_write(sc,
+		    (entry << URTWX_CAM_ENTRY_SHIFT) + i, content);
+		if (ret != 0)
+			return (ret);
+	}
+
+	return (0);
+}
+
+static void
+urtwx_hw_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
+    struct ieee80211_key *k)
+{
+	struct urtwx_softc *sc = ic->ic_softc;
+	uint8_t entry;
+	int i;
+
+	if (k->k_cipher != IEEE80211_CIPHER_CCMP)
+		return;
+
+	if ((k->k_flags & IEEE80211_KEY_GROUP) != 0)
+		entry = k->k_id;
+	else
+		entry = URTWX_CAM_PAIRWISE_ENTRY;
+
+	for (i = 0; i < URTWX_CAM_ENTRY_WORDS; i++) {
+		if (urtwx_sec_cam_write(sc,
+		    (entry << URTWX_CAM_ENTRY_SHIFT) + i, 0) != 0)
+			break;
+	}
 }
 
 static int
@@ -3060,7 +3371,10 @@ urtwx_parse_rx_desc(const struct urtwx_rx_desc *rxd, struct urtwx_rx_stat *stat)
 	stat->crc_err = (w0 & 0x4000) != 0;
 	stat->icv_err = (w0 & 0x8000) != 0;
 	stat->drvinfosz = ((w0 >> 16) & 0xf) * 8;
+	stat->enc_type = (w0 >> 20) & 0x7;
 	stat->shift = (w0 >> 24) & 0x3;
+	stat->swdec = (w0 >> 27) & 0x1;
+	stat->decrypted = !stat->swdec && stat->enc_type != 0;
 	stat->is_c2h = (w2 & 0x10000000U) != 0;
 }
 
@@ -3164,7 +3478,7 @@ urtwx_parse_c2h(struct urtwx_softc *sc, const uint8_t *buf, int len)
 
 static void
 urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
-    struct mbuf_list *ml)
+    const struct urtwx_rx_stat *stat, struct mbuf_list *ml)
 {
 	struct ieee80211com *ic = &sc->sc_ic;
 	struct ifnet *ifp = &ic->ic_if;
@@ -3185,6 +3499,13 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 		return;
 
 	wh = (const struct ieee80211_frame *)buf;
+	if (ic->ic_opmode == IEEE80211_M_STA &&
+	    ic->ic_state != IEEE80211_S_SCAN &&
+	    (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_DATA &&
+	    (wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) == IEEE80211_FC1_DIR_FROMDS &&
+	    !IEEE80211_IS_MULTICAST(wh->i_addr1) &&
+	    !IEEE80211_ADDR_EQ(wh->i_addr1, ic->ic_myaddr))
+		return;
 	if (len > MCLBYTES) {
 		ifp->if_ierrors++;
 		return;
@@ -3240,10 +3561,11 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 				alg = letoh16(alg);
 				seq = letoh16(seq);
 				status = letoh16(status);
-				printf("%s: %s bssid %s alg %u seq %u status %u\n",
+				DPRINTF(("%s: %s bssid %s alg %u seq %u "
+				    "status %u\n",
 				    DEVNAME(sc), name,
 				    ether_sprintf((u_char *)wh->i_addr3), alg,
-				    seq, status);
+				    seq, status));
 				sc->sc_rx_mgmt_log++;
 				goto done_log;
 			}
@@ -3256,10 +3578,10 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 				memcpy(&aid, buf + sizeof(*wh) + 4, sizeof(aid));
 				status = letoh16(status);
 				aid = letoh16(aid);
-				printf("%s: %s bssid %s status %u aid %#x\n",
+				DPRINTF(("%s: %s bssid %s status %u aid %#x\n",
 				    DEVNAME(sc), name,
 				    ether_sprintf((u_char *)wh->i_addr3),
-				    status, aid);
+				    status, aid));
 				sc->sc_rx_mgmt_log++;
 				goto done_log;
 			}
@@ -3332,8 +3654,10 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 done_log:
 
 	s = splnet();
-	ni = ieee80211_find_rxnode(ic, (const struct ieee80211_frame *)buf);
+	ni = ieee80211_find_rxnode(ic, mtod(m, struct ieee80211_frame *));
 	memset(&rxi, 0, sizeof(rxi));
+	if (stat->decrypted)
+		rxi.rxi_flags |= IEEE80211_RXI_HWDEC;
 	ieee80211_inputm(ifp, m, ni, &rxi, ml);
 	ieee80211_release_node(ic, ni);
 	splx(s);
@@ -3347,8 +3671,9 @@ urtwx_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 	struct mbuf_list ml = MBUF_LIST_INITIALIZER();
 	struct urtwx_rx_desc *rxd;
 	struct urtwx_rx_stat stat;
+	const struct ieee80211_frame_min *wh;
 	uint8_t *buf;
-	int error, len, pktoff, pktlen, pkttot;
+	int error, len, pktoff, pktlen, pkttot, protected;
 
 	if (status != USBD_NORMAL_COMPLETION) {
 		DPRINTF(("%s: RX status=%d\n", DEVNAME(sc), status));
@@ -3404,8 +3729,19 @@ urtwx_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 				    DEVNAME(sc), stat.pktlen));
 			}
 			urtwx_parse_c2h(sc, buf + pktoff, stat.pktlen);
-		} else if (!stat.crc_err && !stat.icv_err) {
-			urtwx_rx_frame(sc, buf + pktoff, stat.pktlen, &ml);
+		} else if (!stat.crc_err) {
+			protected = 0;
+			if (stat.pktlen >= sizeof(*wh)) {
+				wh = (const struct ieee80211_frame_min *)
+				    (buf + pktoff);
+				protected =
+				    (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
+			}
+			if (!stat.icv_err || protected)
+				urtwx_rx_frame(sc, buf + pktoff, stat.pktlen,
+				    &stat, &ml);
+			else
+				sc->sc_rx_err++;
 		}
 
 		buf += pkttot;
@@ -3674,10 +4010,11 @@ urtwx_txdma_queue_mapping(struct urtwx_softc *sc)
 	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_TXDMA_PQ_MAP, 0, pq_map);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_CR, 0, 0);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_CR, 0, 0);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_CR, 0, MAC_TRX_ENABLE);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_CR, 0,
+	    MAC_TRX_ENABLE);
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_H2CQ_CSR, 0,
@@ -4068,6 +4405,9 @@ urtwx_mac_init_runtime(struct urtwx_softc *sc)
 	ret = urtwx_usb_interface_cfg(sc);
 	if (ret != 0)
 		return (ret);
+	ret = urtwx_sec_enable(sc);
+	if (ret != 0)
+		return (ret);
 
 	return (urtwx_usb_rx_agg_cfg(sc));
 }
@@ -4207,8 +4547,8 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_phytype = IEEE80211_T_OFDM;
 	ic->ic_opmode = IEEE80211_M_STA;
 	ic->ic_state = IEEE80211_S_INIT;
-	ic->ic_caps = IEEE80211_C_SHPREAMBLE | IEEE80211_C_SHSLOT |
-	    IEEE80211_C_WEP | IEEE80211_C_RSN;
+	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_SHPREAMBLE |
+	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN;
 	ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
 	ic->ic_sup_rates[IEEE80211_MODE_11G] = ieee80211_std_rateset_11g;
 	for (i = 1; i <= 14; i++) {
@@ -4235,6 +4575,8 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	if_attach(ifp);
 	ifp_attached = 1;
 	ieee80211_ifattach(ifp);
+	ic->ic_set_key = urtwx_set_key;
+	ic->ic_delete_key = urtwx_delete_key;
 	sc->sc_newstate = ic->ic_newstate;
 	ic->ic_newstate = urtwx_newstate;
 	ieee80211_media_init(ifp, urtwx_media_change,
