@@ -2715,28 +2715,73 @@ urtwx_phy_set_channel_bb(struct urtwx_softc *sc, uint8_t channel)
 	uint32_t val32;
 	int ret;
 
-	if (channel > 14)
+	if (channel > 14 && channel < 36)
 		return (EINVAL);
 
-	ret = urtwx_write_4_mask(sc, REG_RXPSEL, 0x10000000U, 0x10000000U);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_1_mask(sc, REG_CCK_CHECK, BIT_CHECK_CCK_EN, 0);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_ENTXCCK, 0x00040000U, 0);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_RXCCAMSK, 0x0000fc00U, 15U << 10);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_TXSCALE_A, 0x00000f00U, 0);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_CLKTRK, 0x1ffe0000U,
-	    0x96aU << 17);
-	if (ret != 0)
-		return (ret);
+	if (channel <= 14) {
+		ret = urtwx_write_4_mask(sc, REG_RXPSEL, 0x10000000U,
+		    0x10000000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_1_mask(sc, REG_CCK_CHECK,
+		    BIT_CHECK_CCK_EN, 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_ENTXCCK, 0x00040000U, 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_RXCCAMSK, 0x0000fc00U,
+		    15U << 10);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_TXSCALE_A, 0x00000f00U, 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_CLKTRK, 0x1ffe0000U,
+		    0x96aU << 17);
+		if (ret != 0)
+			return (ret);
+	} else {
+		ret = urtwx_write_4_mask(sc, REG_ENTXCCK, 0x00040000U,
+		    0x00040000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_1_mask(sc, REG_CCK_CHECK,
+		    BIT_CHECK_CCK_EN, BIT_CHECK_CCK_EN);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_RXPSEL, 0x10000000U, 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_RXCCAMSK, 0x0000fc00U,
+		    15U << 10);
+		if (ret != 0)
+			return (ret);
+
+		if (channel >= 36 && channel <= 64)
+			val32 = 1;
+		else if (channel >= 100 && channel <= 144)
+			val32 = 2;
+		else
+			val32 = 3;
+		ret = urtwx_write_4_mask(sc, REG_TXSCALE_A, 0x00000f00U,
+		    val32 << 8);
+		if (ret != 0)
+			return (ret);
+
+		if (channel >= 36 && channel <= 48)
+			val32 = 0x494U;
+		else if (channel >= 52 && channel <= 64)
+			val32 = 0x453U;
+		else if (channel >= 100 && channel <= 116)
+			val32 = 0x452U;
+		else
+			val32 = 0x412U;
+		ret = urtwx_write_4_mask(sc, REG_CLKTRK, 0x1ffe0000U,
+		    val32 << 17);
+		if (ret != 0)
+			return (ret);
+	}
 
 	val32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_ADCCLK, 0);
 	val32 &= 0xffcffc00U;
@@ -2793,22 +2838,38 @@ urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel)
 	rf18 = urtwx_read_rf(sc, 0x18);
 	rf18 &= ~(RF18_BAND_MASK | RF18_CHANNEL_MASK | RF18_RFSI_MASK |
 	    RF18_BW_MASK);
-	rf18 |= RF18_BAND_2G | (channel & RF18_CHANNEL_MASK) |
-	    RF18_BW_20M;
-
-	if (sc->sc_rfe_btg)
-		ret = urtwx_phy_switch_rf_set(sc, URTWX_SWITCH_TO_BTG);
+	rf18 |= (channel & RF18_CHANNEL_MASK) | RF18_BW_20M;
+	if (channel <= 14)
+		rf18 |= RF18_BAND_2G;
 	else
-		ret = urtwx_phy_switch_rf_set(sc, URTWX_SWITCH_TO_WLG);
+		rf18 |= RF18_BAND_5G;
+	if (channel >= 100 && channel <= 140)
+		rf18 |= RF18_RFSI_GE;
+	else if (channel > 140)
+		rf18 |= RF18_RFSI_GT;
+
+	if (channel <= 14) {
+		if (sc->sc_rfe_btg)
+			ret = urtwx_phy_switch_rf_set(sc, URTWX_SWITCH_TO_BTG);
+		else
+			ret = urtwx_phy_switch_rf_set(sc, URTWX_SWITCH_TO_WLG);
+	} else
+		ret = urtwx_phy_switch_rf_set(sc, URTWX_SWITCH_TO_WLA);
 	if (ret != 0)
 		return (ret);
 
-	ret = urtwx_write_rf(sc, RF_LUTDBG, 0x40, 1);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_rf(sc, 0x64, 0x0f, 0x0f);
-	if (ret != 0)
-		return (ret);
+	if (channel <= 14) {
+		ret = urtwx_write_rf(sc, RF_LUTDBG, 0x40, 1);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_rf(sc, 0x64, 0x0f, 0x0f);
+		if (ret != 0)
+			return (ret);
+	} else {
+		ret = urtwx_write_rf(sc, RF_LUTDBG, 0x40, 0);
+		if (ret != 0)
+			return (ret);
+	}
 	ret = urtwx_write_rf(sc, 0x18, RFREG_MASK, rf18);
 	if (ret != 0)
 		return (ret);
@@ -2865,11 +2926,12 @@ urtwx_set_chan(struct urtwx_softc *sc, struct ieee80211_channel *c)
 	uint8_t chan;
 	int ret;
 
-	if (c == NULL || !IEEE80211_IS_CHAN_2GHZ(c))
+	if (c == NULL ||
+	    (!IEEE80211_IS_CHAN_2GHZ(c) && !IEEE80211_IS_CHAN_5GHZ(c)))
 		return (ENOTSUP);
 
 	chan = ieee80211_chan2ieee(&sc->sc_ic, c);
-	if (chan == 0 || chan > 14)
+	if (chan == 0 || (chan > 14 && chan < 36))
 		return (EINVAL);
 
 	ret = urtwx_phy_set_channel_bb(sc, chan);
@@ -4920,6 +4982,7 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_sup_mcs[0] = 0xff;
 	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_SHPREAMBLE |
 	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN;
+	ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
 	ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
 	ic->ic_sup_rates[IEEE80211_MODE_11G] = ieee80211_std_rateset_11g;
 	for (i = 1; i <= 14; i++) {
@@ -4930,6 +4993,19 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		    IEEE80211_CHAN_DYN | IEEE80211_CHAN_2GHZ |
 		    IEEE80211_CHAN_HT;
 	}
+	for (i = 36; i <= 48; i += 4) {
+		ic->ic_channels[i].ic_freq =
+		    ieee80211_ieee2mhz(i, IEEE80211_CHAN_5GHZ);
+		ic->ic_channels[i].ic_flags = IEEE80211_CHAN_A;
+	}
+	for (i = 149; i <= 161; i += 4) {
+		ic->ic_channels[i].ic_freq =
+		    ieee80211_ieee2mhz(i, IEEE80211_CHAN_5GHZ);
+		ic->ic_channels[i].ic_flags = IEEE80211_CHAN_A;
+	}
+	ic->ic_channels[165].ic_freq =
+	    ieee80211_ieee2mhz(165, IEEE80211_CHAN_5GHZ);
+	ic->ic_channels[165].ic_flags = IEEE80211_CHAN_A;
 	ic->ic_ibss_chan = &ic->ic_channels[1];
 
 	ifp->if_softc = sc;
