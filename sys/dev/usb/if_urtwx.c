@@ -2728,8 +2728,7 @@ urtwx_update_htcaps(struct urtwx_softc *sc, struct ieee80211_channel *c)
 	uint16_t htcaps;
 
 	htcaps = URTWX_HTCAP_BASE;
-	if (c != NULL && IEEE80211_IS_CHAN_5GHZ(c) &&
-	    IEEE80211_CHAN_40MHZ_ALLOWED(c)) {
+	if (c != NULL && IEEE80211_CHAN_40MHZ_ALLOWED(c)) {
 		htcaps |= IEEE80211_HTCAP_CBW20_40 |
 		    IEEE80211_HTCAP_SGI40;
 	}
@@ -3353,6 +3352,14 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 			printf("%s: could not set channel for state %s: %d\n",
 			    DEVNAME(sc), ieee80211_state_name[cmd->state], ret);
 		if (cmd->state == IEEE80211_S_RUN) {
+			uint8_t center_chan, bw, primary_idx;
+
+			urtwx_get_chan_params(sc, chan, &center_chan, &bw,
+			    &primary_idx);
+			printf("%s: run chan primary %u center %u bw %s\n",
+			    DEVNAME(sc), ieee80211_chan2ieee(ic, chan),
+			    center_chan,
+			    bw == URTWX_CHANNEL_WIDTH_40 ? "40" : "20");
 			ret = urtwx_sta_enter_run(sc);
 			if (ret != 0) {
 				printf("%s: could not enter RUN state: %d\n",
@@ -5104,6 +5111,8 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		    IEEE80211_CHAN_CCK | IEEE80211_CHAN_OFDM |
 		    IEEE80211_CHAN_DYN | IEEE80211_CHAN_2GHZ |
 		    IEEE80211_CHAN_HT;
+		if (i != 14)
+			ic->ic_channels[i].ic_flags |= IEEE80211_CHAN_40MHZ;
 	}
 	for (i = 36; i <= 48; i += 4) {
 		ic->ic_channels[i].ic_freq =
