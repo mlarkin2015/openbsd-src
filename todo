@@ -11,10 +11,9 @@ This still smells like an async state transition ordering/timing bug.
 The current 0% RSSI / weak PHY reporting is not just cosmetic; it affects
 scan quality, BSS selection, and later 5 GHz debugging.
 
-[~] 5. Validate long-run WPA/RSN stability.
-Initial WPA2 traffic works, and a 60-second GTK rekey stress run under
-continuous `iperf3` traffic passed for 10+ minutes. Still need reconnect
-loops, AP reboot/loss recovery, mode transitions, and a longer soak test.
+[X] 5. Validate long-run WPA/RSN stability.
+WPA2 traffic is stable under GTK rekey stress, reconnect loops, AP
+reboot/loss recovery, mode transitions, and a 60+ minute soak.
 
 [X] 6. Expose real 802.11n/HT on 2.4 GHz.
 HT20 traffic is working, firmware rate adaptation is active, and throughput is
@@ -24,9 +23,9 @@ measurably better than 11g.
 The firmware is deciding real runtime TX rates, and `ifconfig` now tracks
 legacy vs HT mode changes through C2H RA report updates.
 
-[ ] 8. Bring up 5 GHz in stages.
-Start with 11a / 20 MHz only, then 5 GHz HT, then wider channels. Do not jump
-straight to VHT.
+[~] 8. Bring up 5 GHz in stages.
+5 GHz 11a / 20 MHz is working on non-DFS channels for both open and WPA2.
+Still need 5 GHz HT, then wider channels. Do not jump straight to VHT.
 
 [ ] 9. Add wide-channel support.
 Evaluate 40 MHz on 2.4 GHz and 40/80 MHz on 5 GHz once the basic 5 GHz path
