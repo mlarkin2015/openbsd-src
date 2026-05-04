@@ -78,9 +78,9 @@
 #define URTWX_HOST_CMD_DATA_LEN		256
 #define URTWX_FORCE_PASSIVE_SCAN	0
 #define URTWX_FORCE_DATA_MGMT_Q		0
-#define URTWX_SCAN_LOG_MAX		32
-#define URTWX_STATE_LOG_MAX		32
-#define URTWX_TX_MGMT_LOG_MAX		16
+#define URTWX_SCAN_LOG_MAX		64
+#define URTWX_STATE_LOG_MAX		128
+#define URTWX_TX_MGMT_LOG_MAX		32
 #define URTWX_TX_DATA_LOG_MAX		16
 #define URTWX_C2H_LOG_MAX		16
 #define URTWX_C2H_TX_RPT_MAX		16
@@ -144,7 +144,7 @@
 #define URTWX_RX_LIST_COUNT		4
 #define URTWX_RXBUFSZ			32768
 #define URTWX_RX_DESC_SIZE		24
-#define URTWX_RX_MGMT_LOG_MAX		32
+#define URTWX_RX_MGMT_LOG_MAX		64
 
 #define URTWX_WAIT_COUNT		1000
 #define URTWX_WAIT_DELAY_US		10
@@ -385,7 +385,7 @@ struct urtwx_softc {
 	uint8_t			 sc_rfe_option;
 	uint8_t			 sc_h2c_box;
 	int			 sc_have_macaddr;
-	int			 sc_hw_init;
+	int			 sc_fw_loaded;
 	int			 sc_rfe_btg;
 	int			 sc_tx_active;
 	int			 sc_tx_timer;
@@ -462,6 +462,84 @@ urtwx_ra_bw_name(uint8_t bw)
 	default:
 		return "?";
 	}
+}
+
+static int
+urtwx_desc_rate2val(uint8_t rate)
+{
+	switch (rate) {
+	case 0x00:
+		return 2;
+	case 0x01:
+		return 4;
+	case 0x02:
+		return 11;
+	case 0x03:
+		return 22;
+	case 0x04:
+		return 12;
+	case 0x05:
+		return 18;
+	case 0x06:
+		return 24;
+	case 0x07:
+		return 36;
+	case 0x08:
+		return 48;
+	case 0x09:
+		return 72;
+	case 0x0a:
+		return 96;
+	case 0x0b:
+		return 108;
+	default:
+		return -1;
+	}
+}
+
+static int
+urtwx_legacy_rate_index(struct ieee80211_node *ni, uint8_t desc_rate)
+{
+	int i, val;
+
+	val = urtwx_desc_rate2val(desc_rate);
+	if (val < 0)
+		return -1;
+
+	for (i = 0; i < ni->ni_rates.rs_nrates; i++) {
+		if ((ni->ni_rates.rs_rates[i] & IEEE80211_RATE_VAL) == val)
+			return i;
+	}
+
+	return -1;
+}
+
+static void
+urtwx_update_ra_node(struct urtwx_softc *sc, uint8_t desc_rate)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_node *ni = ic->ic_bss;
+	int idx, mcs, nss;
+
+	if (ic->ic_state != IEEE80211_S_RUN || ni == NULL)
+		return;
+
+	if (desc_rate >= 0x2c && desc_rate <= 0x53) {
+		nss = 1 + ((desc_rate - 0x2c) / 10);
+		mcs = (desc_rate - 0x2c) % 10;
+		ni->ni_txmcs = mcs;
+		ni->ni_vht_ss = nss;
+		return;
+	}
+
+	if (desc_rate >= 0x0c && desc_rate <= 0x2b) {
+		ni->ni_txmcs = desc_rate - 0x0c;
+		return;
+	}
+
+	idx = urtwx_legacy_rate_index(ni, desc_rate);
+	if (idx >= 0)
+		ni->ni_txrate = idx;
 }
 
 static const struct usb_devno urtwx_devs[] = {
@@ -1456,7 +1534,7 @@ urtwx_txeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 	s = splnet();
 	sc->sc_tx_active = 0;
 	sc->sc_tx_timer = 0;
-	ifp->if_timer = 0;
+	ifp->if_timer = (sc->sc_ic.ic_mgt_timer != 0);
 
 	if (__predict_false(status != USBD_NORMAL_COMPLETION)) {
 		DPRINTF(("%s: TX status=%d\n", DEVNAME(sc), status));
@@ -1466,8 +1544,7 @@ urtwx_txeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 			ifp->if_oerrors++;
 	}
 	if (sc->sc_txeof_log < URTWX_TX_MGMT_LOG_MAX) {
-		DPRINTFN(2, ("%s: TX completion status %d\n", DEVNAME(sc),
-		    status));
+		printf("%s: TX completion status %d\n", DEVNAME(sc), status);
 		sc->sc_txeof_log++;
 	}
 	if (sc->sc_ic.ic_state == IEEE80211_S_RUN &&
@@ -1613,10 +1690,10 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 				    ieee80211_chan2ieee(&sc->sc_ic,
 				    ni->ni_chan)));
 			} else {
-				DPRINTF(("%s: TX %s len %u chan %u\n",
+				printf("%s: TX %s len %u chan %u\n",
 				    DEVNAME(sc), name, m->m_pkthdr.len,
 				    ieee80211_chan2ieee(&sc->sc_ic,
-				    ni->ni_chan)));
+				    ni->ni_chan));
 			}
 			sc->sc_tx_mgmt_log++;
 		}
@@ -2849,7 +2926,9 @@ urtwx_sta_enter_run(struct urtwx_softc *sc)
 	uint16_t aid;
 	uint16_t bssid1, intval;
 	uint32_t bssid0;
+	uint32_t ra_mask;
 	uint8_t rate;
+	uint8_t rate_id, desc_rate, sgi, ldpc;
 	int ret;
 
 	bssid0 = ni->ni_bssid[0] |
@@ -2859,6 +2938,14 @@ urtwx_sta_enter_run(struct urtwx_softc *sc)
 	bssid1 = ni->ni_bssid[4] |
 	    ((uint16_t)ni->ni_bssid[5] << 8);
 	intval = ni->ni_intval;
+	urtwx_node_tx_info(ni, &rate_id, &desc_rate, &sgi, &ldpc, &ra_mask);
+	if (desc_rate >= 0x2c && desc_rate <= 0x53) {
+		ni->ni_vht_ss = 1 + ((desc_rate - 0x2c) / 10);
+		ni->ni_txmcs = (desc_rate - 0x2c) % 10;
+	} else if (desc_rate >= 0x0c && desc_rate <= 0x2b)
+		ni->ni_txmcs = desc_rate - 0x0c;
+	else if ((ret = urtwx_legacy_rate_index(ni, desc_rate)) >= 0)
+		ni->ni_txrate = ret;
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_BSSID, 0, bssid0);
 	if (ret != 0)
 		return (ret);
@@ -2989,9 +3076,9 @@ urtwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 	if (!(cmd.state == IEEE80211_S_SCAN &&
 	    cmd.ostate == IEEE80211_S_SCAN) &&
 	    sc->sc_state_log < URTWX_STATE_LOG_MAX) {
-		DPRINTF(("%s: newstate req #%u %s -> %s arg %#x\n",
+		printf("%s: newstate req #%u %s -> %s arg %#x\n",
 		    DEVNAME(sc), cmd.seq, ieee80211_state_name[cmd.ostate],
-		    ieee80211_state_name[cmd.state], cmd.arg));
+		    ieee80211_state_name[cmd.state], cmd.arg);
 		sc->sc_state_log++;
 	}
 	urtwx_do_async(sc, urtwx_newstate_cb, &cmd, sizeof(cmd));
@@ -3013,21 +3100,21 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 	if (!(cmd->state == IEEE80211_S_SCAN &&
 	    cmd->ostate == IEEE80211_S_SCAN) &&
 	    sc->sc_state_log < URTWX_STATE_LOG_MAX) {
-		DPRINTF(("%s: newstate cb  #%u req %s -> %s cur %s arg %#x\n",
+		printf("%s: newstate cb  #%u req %s -> %s cur %s arg %#x\n",
 		    DEVNAME(sc), cmd->seq,
 		    ieee80211_state_name[cmd->ostate],
 		    ieee80211_state_name[cmd->state],
-		    ieee80211_state_name[ostate], cmd->arg));
+		    ieee80211_state_name[ostate], cmd->arg);
 		sc->sc_state_log++;
 	}
 	if (cmd->ostate != ostate) {
 		if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
-			DPRINTF(("%s: newstate stale#%u req %s -> %s cur %s "
+			printf("%s: newstate stale#%u req %s -> %s cur %s "
 			    "arg %#x\n",
 			    DEVNAME(sc), cmd->seq,
 			    ieee80211_state_name[cmd->ostate],
 			    ieee80211_state_name[cmd->state],
-			    ieee80211_state_name[ostate], cmd->arg));
+			    ieee80211_state_name[ostate], cmd->arg);
 			sc->sc_state_log++;
 		}
 		splx(s);
@@ -3037,16 +3124,15 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 	    cmd->state != IEEE80211_S_SCAN &&
 	    cmd->state != IEEE80211_S_AUTH) {
 		if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
-			DPRINTF(("%s: newstate skip#%u cur %s arg %#x\n",
+			printf("%s: newstate skip#%u cur %s arg %#x\n",
 			    DEVNAME(sc), cmd->seq,
-			    ieee80211_state_name[ostate], cmd->arg));
+			    ieee80211_state_name[ostate], cmd->arg);
 			sc->sc_state_log++;
 		}
 		splx(s);
 		return;
 	}
 	if (ostate == IEEE80211_S_RUN && cmd->state != IEEE80211_S_RUN) {
-		(void)urtwx_fw_media_status(sc, 0);
 		urtwx_sta_leave_run(sc);
 	}
 	switch (cmd->state) {
@@ -3064,9 +3150,9 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 		if (urtwx_set_chan(sc, chan) == 0 &&
 		    !usbd_is_dying(sc->sc_udev)) {
 			if (sc->sc_scan_log < URTWX_SCAN_LOG_MAX) {
-				DPRINTF(("%s: scan channel %u rf18=%#x\n",
+				printf("%s: scan channel %u rf18=%#x\n",
 				    DEVNAME(sc), ieee80211_chan2ieee(ic, chan),
-				    urtwx_read_rf(sc, 0x18)));
+				    urtwx_read_rf(sc, 0x18));
 				sc->sc_scan_log++;
 			}
 			timeout_add_msec(&sc->sc_scan_to,
@@ -3079,6 +3165,16 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 		timeout_del(&sc->sc_scan_to);
 		chan = (ic->ic_opmode == IEEE80211_M_MONITOR) ?
 		    ic->ic_ibss_chan : ic->ic_bss->ni_chan;
+		if (cmd->state == IEEE80211_S_AUTH &&
+		    sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+			printf("%s: auth candidate bssid %s chan %u ess ",
+			    DEVNAME(sc), ether_sprintf(ic->ic_bss->ni_bssid),
+			    ieee80211_chan2ieee(ic, chan));
+			ieee80211_print_essid(ic->ic_bss->ni_essid,
+			    ic->ic_bss->ni_esslen);
+			printf("\n");
+			sc->sc_state_log++;
+		}
 		ret = urtwx_set_chan(sc, chan);
 		if (ret != 0)
 			printf("%s: could not set channel for state %s: %d\n",
@@ -3106,11 +3202,11 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 	}
 	(void)sc->sc_newstate(ic, cmd->state, cmd->arg);
 	if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
-		DPRINTF(("%s: newstate done#%u now %s link %u assoc_fail %#x "
+		printf("%s: newstate done#%u now %s link %u assoc_fail %#x "
 		    "flags %#x\n",
 		    DEVNAME(sc), cmd->seq, ieee80211_state_name[ic->ic_state],
 		    ic->ic_if.if_link_state, ic->ic_bss->ni_assoc_fail,
-		    ic->ic_flags));
+		    ic->ic_flags);
 		sc->sc_state_log++;
 	}
 	if (cmd->state == IEEE80211_S_RUN)
@@ -3537,6 +3633,8 @@ urtwx_parse_c2h(struct urtwx_softc *sc, const uint8_t *buf, int len)
 		ra = (const struct urtwx_c2h_ra_rpt *)c2h->payload;
 		rate = ra->rate_sgi & 0x7f;
 		sgi = (ra->rate_sgi & 0x80) != 0;
+		if (ra->macid == URTWX_MACID_STA)
+			urtwx_update_ra_node(sc, rate);
 		rate_name = urtwx_desc_rate_name(rate, ratebuf, sizeof(ratebuf));
 		if (sc->sc_c2h_tx_rpt_log < URTWX_C2H_TX_RPT_MAX) {
 			DPRINTFN(2, ("%s: C2H RA report macid %u %s (%#x) "
@@ -3682,8 +3780,7 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 	memcpy(mtod(m, uint8_t *), buf, len);
 	m->m_pkthdr.len = m->m_len = len;
 
-	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT &&
-	    sc->sc_rx_mgmt_log < URTWX_RX_MGMT_LOG_MAX) {
+	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT) {
 		subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
 		switch (subtype) {
 		case IEEE80211_FC0_SUBTYPE_BEACON:
@@ -3716,12 +3813,11 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 				alg = letoh16(alg);
 				seq = letoh16(seq);
 				status = letoh16(status);
-				DPRINTF(("%s: %s bssid %s alg %u seq %u "
+				printf("%s: %s bssid %s alg %u seq %u "
 				    "status %u\n",
 				    DEVNAME(sc), name,
 				    ether_sprintf((u_char *)wh->i_addr3), alg,
-				    seq, status));
-				sc->sc_rx_mgmt_log++;
+				    seq, status);
 				goto done_log;
 			}
 			if (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP ||
@@ -3733,13 +3829,14 @@ urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
 				memcpy(&aid, buf + sizeof(*wh) + 4, sizeof(aid));
 				status = letoh16(status);
 				aid = letoh16(aid);
-				DPRINTF(("%s: %s bssid %s status %u aid %#x\n",
+				printf("%s: %s bssid %s status %u aid %#x\n",
 				    DEVNAME(sc), name,
 				    ether_sprintf((u_char *)wh->i_addr3),
-				    status, aid));
-				sc->sc_rx_mgmt_log++;
+				    status, aid);
 				goto done_log;
 			}
+			if (sc->sc_rx_mgmt_log >= URTWX_RX_MGMT_LOG_MAX)
+				goto done_log;
 			frm = buf + sizeof(*wh) + 12;
 			efrm = buf + len;
 			ssidlen = -1;
@@ -3844,8 +3941,8 @@ urtwx_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 	buf = data->buf;
 	sc->sc_rx_done++;
 	if (sc->sc_rx_done <= 8) {
-		DPRINTFN(2, ("%s: RX completion %u len %d\n", DEVNAME(sc),
-		    sc->sc_rx_done, len));
+		printf("%s: RX completion %u len %d\n", DEVNAME(sc),
+		    sc->sc_rx_done, len);
 	}
 
 	while (len >= URTWX_RX_DESC_SIZE) {
@@ -3972,7 +4069,16 @@ urtwx_init(struct ifnet *ifp)
 	struct ieee80211com *ic = &sc->sc_ic;
 	int error;
 
-	if (!sc->sc_hw_init) {
+	printf("%s: init fw_loaded %d have_mac %d state %s\n",
+	    DEVNAME(sc), sc->sc_fw_loaded, sc->sc_have_macaddr,
+	    ieee80211_state_name[ic->ic_state]);
+	printf("%s: init des_ess ", DEVNAME(sc));
+	ieee80211_print_essid(ic->ic_des_essid, ic->ic_des_esslen);
+	printf(" len %d autojoin %d rsn %d\n", ic->ic_des_esslen,
+	    ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) != 0,
+	    ISSET(ic->ic_flags, IEEE80211_F_RSNON) != 0);
+
+	if (!sc->sc_fw_loaded) {
 		error = urtwx_fw_download(sc);
 		if (error != 0) {
 			printf("%s: firmware download failed\n",
@@ -3991,46 +4097,51 @@ urtwx_init(struct ifnet *ifp)
 			    ether_sprintf(sc->sc_macaddr));
 		}
 
-		if (urtwx_mac_init_runtime(sc) != 0) {
-			printf("%s: could not initialize MAC/RX path\n",
-			    DEVNAME(sc));
-			return (EIO);
-		}
-
 		error = if_setlladdr(ifp, sc->sc_macaddr);
 		if (error != 0) {
 			printf("%s: could not set MAC address %s: %d\n",
 			    DEVNAME(sc), ether_sprintf(sc->sc_macaddr), error);
 			return (error);
 		}
-		sc->sc_hw_init = 1;
-
-		if (urtwx_rx_init(sc) != 0) {
-			printf("%s: could not start RX path\n", DEVNAME(sc));
-			sc->sc_hw_init = 0;
-			return (EIO);
-		}
-
-		DPRINTF(("%s: runtime regs CR=%#x RCR=%#x RXDMA_MODE=%#x "
-		    "TXDMA_PQ=%#x\n", DEVNAME(sc),
-		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_CR, 0),
-		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RCR, 0),
-		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RXDMA_MODE, 0),
-		    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_TXDMA_PQ_MAP, 0)));
-		DPRINTF(("%s: rxdma agg=%#x pktnum=%#x status=%#x dpr=%#x\n",
-		    DEVNAME(sc),
-		    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_RXDMA_AGG_PG_TH, 0),
-		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXPKT_NUM, 0),
-		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_STATUS, 0),
-		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_DPR, 0)));
-		DPRINTF(("%s: fixed channel %u rf18=%#x rfectl=%#x xtal=%#x "
-		    "rfe=%#x\n", DEVNAME(sc), URTWX_FIXED_CHANNEL,
-		    urtwx_read_rf(sc, 0x18),
-		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RFECTL, 0),
-		    sc->sc_crystal_cap, sc->sc_rfe_option));
-		DPRINTF(("%s: RX ready, listening for management frames\n",
-		    DEVNAME(sc)));
+		sc->sc_fw_loaded = 1;
 	}
+
+	error = urtwx_power_on(sc);
+	if (error != 0) {
+		printf("%s: power-on/system init failed\n", DEVNAME(sc));
+		return (error);
+	}
+
+	if (urtwx_mac_init_runtime(sc) != 0) {
+		printf("%s: could not initialize MAC/RX path\n",
+		    DEVNAME(sc));
+		return (EIO);
+	}
+
+	if (urtwx_rx_init(sc) != 0) {
+		printf("%s: could not start RX path\n", DEVNAME(sc));
+		return (EIO);
+	}
+
+	DPRINTF(("%s: runtime regs CR=%#x RCR=%#x RXDMA_MODE=%#x "
+	    "TXDMA_PQ=%#x\n", DEVNAME(sc),
+	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_CR, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RCR, 0),
+	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RXDMA_MODE, 0),
+	    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_TXDMA_PQ_MAP, 0)));
+	DPRINTF(("%s: rxdma agg=%#x pktnum=%#x status=%#x dpr=%#x\n",
+	    DEVNAME(sc),
+	    urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_RXDMA_AGG_PG_TH, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXPKT_NUM, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_STATUS, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RXDMA_DPR, 0)));
+	DPRINTF(("%s: fixed channel %u rf18=%#x rfectl=%#x xtal=%#x "
+	    "rfe=%#x\n", DEVNAME(sc), URTWX_FIXED_CHANNEL,
+	    urtwx_read_rf(sc, 0x18),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RFECTL, 0),
+	    sc->sc_crystal_cap, sc->sc_rfe_option));
+	DPRINTF(("%s: RX ready, listening for management frames\n",
+	    DEVNAME(sc)));
 
 	IEEE80211_ADDR_COPY(ic->ic_myaddr,
 	    ((struct arpcom *)ifp)->ac_enaddr);
@@ -4057,6 +4168,7 @@ urtwx_init(struct ifnet *ifp)
 	ifq_clr_oactive(&ifp->if_snd);
 	sc->sc_tx_timer = 0;
 	ifp->if_timer = 0;
+	printf("%s: init begin scan\n", DEVNAME(sc));
 	ieee80211_begin_scan(ifp);
 	return (0);
 }
@@ -4066,18 +4178,49 @@ urtwx_stop(struct ifnet *ifp)
 {
 	struct urtwx_softc *sc = ifp->if_softc;
 	struct ieee80211com *ic = &sc->sc_ic;
+	int i;
+	int leave_mgt;
 	int s;
+
+	printf("%s: stop state %s fw_loaded %d\n", DEVNAME(sc),
+	    ieee80211_state_name[ic->ic_state], sc->sc_fw_loaded);
+	printf("%s: stop des_ess ", DEVNAME(sc));
+	ieee80211_print_essid(ic->ic_des_essid, ic->ic_des_esslen);
+	printf(" len %d autojoin %d rsn %d\n", ic->ic_des_esslen,
+	    ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) != 0,
+	    ISSET(ic->ic_flags, IEEE80211_F_RSNON) != 0);
+
+	timeout_del(&sc->sc_scan_to);
+
+	leave_mgt = (ic->ic_state >= IEEE80211_S_ASSOC) ? 0 : -1;
+	s = splnet();
+	ieee80211_new_state(ic, IEEE80211_S_INIT, leave_mgt);
+	urtwx_wait_async(sc);
+	splx(s);
+
+	if (leave_mgt != -1) {
+		for (i = 0; i < 200; i++) {
+			if (!sc->sc_tx_active)
+				break;
+			delay(1000);
+		}
+	}
 
 	sc->sc_tx_timer = 0;
 	ifp->if_timer = 0;
 	ifp->if_flags &= ~IFF_RUNNING;
 	ifq_clr_oactive(&ifp->if_snd);
-	timeout_del(&sc->sc_scan_to);
 
-	s = splnet();
-	ieee80211_new_state(ic, IEEE80211_S_INIT, -1);
-	urtwx_wait_async(sc);
-	splx(s);
+	if (sc->sc_ep[URTWX_ENDPT_RX] != NULL)
+		usbd_abort_pipe(sc->sc_ep[URTWX_ENDPT_RX]);
+	for (i = 0; i < sc->sc_nbulkout; i++) {
+		if (sc->sc_out_pipe[i] != NULL)
+			usbd_abort_pipe(sc->sc_out_pipe[i]);
+	}
+
+	sc->sc_tx_active = 0;
+	sc->sc_tx_data_pipe = NULL;
+	sc->sc_key_tasks = 0;
 }
 
 static void
@@ -4104,6 +4247,15 @@ urtwx_start(struct ifnet *ifp)
 		m = mq_dequeue(&ic->ic_mgtq);
 		if (m != NULL) {
 			ni = m->m_pkthdr.ph_cookie;
+			if (ic->ic_state == IEEE80211_S_AUTH ||
+			    ic->ic_state == IEEE80211_S_ASSOC) {
+				if (urtwx_set_chan(sc, ic->ic_bss->ni_chan) != 0) {
+					ieee80211_release_node(ic, ni);
+					m_freem(m);
+					ifp->if_oerrors++;
+					continue;
+				}
+			}
 			if (urtwx_tx(sc, m, ni, URTWX_TXDESC_QSEL_MGMT,
 			    1) != 0) {
 				ieee80211_release_node(ic, ni);
@@ -4199,8 +4351,19 @@ urtwx_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		error = ieee80211_ioctl(ifp, cmd, data);
 		if (error == ENETRESET) {
 			if (ifp->if_flags & IFF_RUNNING) {
-				urtwx_stop(ifp);
-				error = urtwx_init(ifp);
+				/*
+				 * Wireless-parameter ioctls commonly arrive
+				 * in a burst around the initial up/join path.
+				 * If we are not yet fully associated, tearing
+				 * the device back down here just restarts scan
+				 * underneath an in-flight state transition.
+				 */
+				if (sc->sc_ic.ic_state == IEEE80211_S_RUN) {
+					urtwx_stop(ifp);
+					error = urtwx_init(ifp);
+				} else {
+					error = 0;
+				}
 			} else
 				error = 0;
 		}
@@ -4676,7 +4839,7 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_cmdq.next = 0;
 	sc->sc_cmdq.queued = 0;
 	sc->sc_have_macaddr = 0;
-	sc->sc_hw_init = 0;
+	sc->sc_fw_loaded = 0;
 
 	id = usbd_get_interface_descriptor(sc->sc_iface);
 	for (i = 0; i < id->bNumEndpoints; i++) {
