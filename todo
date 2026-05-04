@@ -26,12 +26,12 @@ legacy vs HT mode changes through C2H RA report updates.
 [X] 8. Bring up 5 GHz in stages.
 5 GHz 11a and HT are working on non-DFS channels for both open and WPA2.
 
-[~] 9. Add wide-channel support.
-5 GHz HT40 is working on non-DFS channels for both open and WPA2. Still need
-2.4 GHz HT40 evaluation and wider 5 GHz modes beyond HT40.
+[X] 9. Add wide-channel support.
+HT40 is working on both 2.4 GHz and non-DFS 5 GHz for open and WPA2.
 
-[ ] 10. Add 802.11ac / VHT support.
-This comes after stable 5 GHz and wide-channel support.
+[X] 10. Add 802.11ac / VHT support.
+VHT80 is working on non-DFS 5 GHz for both open and WPA2. Throughput tuning
+still depends on on-air aggregation work.
 
 [ ] 11. Add PMF / MFP support.
 This likely means explicit driver support for BIP/IGTK key install/delete and
