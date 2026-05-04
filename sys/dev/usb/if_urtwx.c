@@ -4996,16 +4996,19 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	for (i = 36; i <= 48; i += 4) {
 		ic->ic_channels[i].ic_freq =
 		    ieee80211_ieee2mhz(i, IEEE80211_CHAN_5GHZ);
-		ic->ic_channels[i].ic_flags = IEEE80211_CHAN_A;
+		ic->ic_channels[i].ic_flags =
+		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT;
 	}
 	for (i = 149; i <= 161; i += 4) {
 		ic->ic_channels[i].ic_freq =
 		    ieee80211_ieee2mhz(i, IEEE80211_CHAN_5GHZ);
-		ic->ic_channels[i].ic_flags = IEEE80211_CHAN_A;
+		ic->ic_channels[i].ic_flags =
+		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT;
 	}
 	ic->ic_channels[165].ic_freq =
 	    ieee80211_ieee2mhz(165, IEEE80211_CHAN_5GHZ);
-	ic->ic_channels[165].ic_flags = IEEE80211_CHAN_A;
+	ic->ic_channels[165].ic_flags =
+	    IEEE80211_CHAN_A | IEEE80211_CHAN_HT;
 	ic->ic_ibss_chan = &ic->ic_channels[1];
 
 	ifp->if_softc = sc;
