@@ -103,10 +103,17 @@
 #define URTWX_TXDESC_W6_SWDEF_MASK	0x00000fffU
 #define URTWX_TXDESC_W8_EN_HWSEQ	0x00008000U
 #define URTWX_TXDESC_W9_SWSEQ_SHIFT	12
+#define URTWX_HTCAP_BASE		IEEE80211_HTCAP_SGI20
+#define URTWX_RATEID_BGN_40M_1SS	1
 #define URTWX_RATEID_BGN_20M_1SS	3
 #define URTWX_RATEID_BG			6
 #define URTWX_RATEID_G			7
 #define URTWX_RATEID_B_20M		8
+#define URTWX_CHANNEL_WIDTH_20		0
+#define URTWX_CHANNEL_WIDTH_40		1
+#define URTWX_SC_DONT_CARE		0
+#define URTWX_SC_20_UPPER		1
+#define URTWX_SC_20_LOWER		2
 #define URTWX_DESC_RATE1M		0x00
 #define URTWX_DESC_RATE11M		0x03
 #define URTWX_DESC_RATE6M		0x04
@@ -696,6 +703,11 @@ static void	urtwx_parse_rx_desc(const struct urtwx_rx_desc *,
 		    struct urtwx_rx_stat *);
 static int	urtwx_phy_cfg(struct urtwx_softc *, enum urtwx_phy_cfg,
 		    uint32_t, uint32_t);
+static void	urtwx_update_htcaps(struct urtwx_softc *,
+		    struct ieee80211_channel *);
+static void	urtwx_get_chan_params(struct urtwx_softc *,
+		    struct ieee80211_channel *, uint8_t *, uint8_t *,
+		    uint8_t *);
 static int	urtwx_phy_init_runtime(struct urtwx_softc *);
 static int	urtwx_phy_load_table(struct urtwx_softc *,
 		    const uint32_t *, size_t, enum urtwx_phy_cfg);
@@ -2709,8 +2721,60 @@ urtwx_phy_enable_bb_rf(struct urtwx_softc *sc)
 	    BIT_RX_PSEL_RST));
 }
 
+static void
+urtwx_update_htcaps(struct urtwx_softc *sc, struct ieee80211_channel *c)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	uint16_t htcaps;
+
+	htcaps = URTWX_HTCAP_BASE;
+	if (c != NULL && IEEE80211_IS_CHAN_5GHZ(c) &&
+	    IEEE80211_CHAN_40MHZ_ALLOWED(c)) {
+		htcaps |= IEEE80211_HTCAP_CBW20_40 |
+		    IEEE80211_HTCAP_SGI40;
+	}
+	ic->ic_htcaps = htcaps;
+}
+
+static void
+urtwx_get_chan_params(struct urtwx_softc *sc, struct ieee80211_channel *c,
+    uint8_t *chanp, uint8_t *bwp, uint8_t *primaryp)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_node *ni = ic->ic_bss;
+	uint8_t chan, sco;
+
+	chan = ieee80211_chan2ieee(ic, c);
+	*chanp = chan;
+	*bwp = URTWX_CHANNEL_WIDTH_20;
+	*primaryp = URTWX_SC_DONT_CARE;
+
+	if (ic->ic_state == IEEE80211_S_SCAN || ni == NULL || ni->ni_chan != c ||
+	    !IEEE80211_CHAN_40MHZ_ALLOWED(c) ||
+	    !ieee80211_node_supports_ht_chan40(ni))
+		return;
+
+	sco = (ni->ni_htop0 & IEEE80211_HTOP0_SCO_MASK) >>
+	    IEEE80211_HTOP0_SCO_SHIFT;
+	switch (sco) {
+	case IEEE80211_HTOP0_SCO_SCA:
+		*chanp = chan + 2;
+		*bwp = URTWX_CHANNEL_WIDTH_40;
+		*primaryp = URTWX_SC_20_LOWER;
+		break;
+	case IEEE80211_HTOP0_SCO_SCB:
+		if (chan > 2) {
+			*chanp = chan - 2;
+			*bwp = URTWX_CHANNEL_WIDTH_40;
+			*primaryp = URTWX_SC_20_UPPER;
+		}
+		break;
+	}
+}
+
 static int
-urtwx_phy_set_channel_bb(struct urtwx_softc *sc, uint8_t channel)
+urtwx_phy_set_channel_bb(struct urtwx_softc *sc, uint8_t channel, uint8_t bw,
+    uint8_t primary_ch_idx)
 {
 	uint32_t val32;
 	int ret;
@@ -2783,27 +2847,53 @@ urtwx_phy_set_channel_bb(struct urtwx_softc *sc, uint8_t channel)
 			return (ret);
 	}
 
-	val32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_ADCCLK, 0);
-	val32 &= 0xffcffc00U;
-	val32 |= 0x10010000U;
-	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_ADCCLK, 0, val32);
-	if (ret != 0)
-		return (ret);
+	switch (bw) {
+	case URTWX_CHANNEL_WIDTH_40:
+		if (primary_ch_idx == URTWX_SC_20_UPPER)
+			ret = urtwx_write_4_mask(sc, REG_RXSB, 0x00000010U,
+			    0x00000010U);
+		else
+			ret = urtwx_write_4_mask(sc, REG_RXSB, 0x00000010U, 0);
+		if (ret != 0)
+			return (ret);
+
+		val32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_ADCCLK, 0);
+		val32 &= 0xff3ff300U;
+		val32 |= 0x20020000U |
+		    ((primary_ch_idx & 0x0f) << 2) |
+		    URTWX_CHANNEL_WIDTH_40;
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_ADCCLK, 0, val32);
+		if (ret != 0)
+			return (ret);
+		break;
+	case URTWX_CHANNEL_WIDTH_20:
+	default:
+		val32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_ADCCLK, 0);
+		val32 &= 0xffcffc00U;
+		val32 |= 0x10010000U;
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_ADCCLK, 0, val32);
+		if (ret != 0)
+			return (ret);
+		break;
+	}
 
 	return (urtwx_write_4_mask(sc, REG_ADC160, 0x40000000U,
 	    0x40000000U));
 }
 
 static int
-urtwx_phy_set_channel_mac(struct urtwx_softc *sc, uint8_t channel)
+urtwx_phy_set_channel_mac(struct urtwx_softc *sc, uint8_t channel, uint8_t bw,
+    uint8_t primary_ch_idx)
 {
 	uint32_t val32;
 	int ret;
 
-	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_DATA_SC, 0, 0);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_DATA_SC, 0,
+	    BIT_TXSC_20M(primary_ch_idx));
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_WMAC_TRXPTCL_CTL, BIT_RFMOD, 0);
+	ret = urtwx_write_4_mask(sc, REG_WMAC_TRXPTCL_CTL, BIT_RFMOD,
+	    (bw == URTWX_CHANNEL_WIDTH_40) ? BIT_RFMOD_40M : 0);
 	if (ret != 0)
 		return (ret);
 
@@ -2830,7 +2920,7 @@ urtwx_phy_set_channel_mac(struct urtwx_softc *sc, uint8_t channel)
 }
 
 static int
-urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel)
+urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel, uint8_t bw)
 {
 	uint32_t rf18;
 	int ret;
@@ -2838,7 +2928,11 @@ urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel)
 	rf18 = urtwx_read_rf(sc, 0x18);
 	rf18 &= ~(RF18_BAND_MASK | RF18_CHANNEL_MASK | RF18_RFSI_MASK |
 	    RF18_BW_MASK);
-	rf18 |= (channel & RF18_CHANNEL_MASK) | RF18_BW_20M;
+	rf18 |= (channel & RF18_CHANNEL_MASK);
+	if (bw == URTWX_CHANNEL_WIDTH_40)
+		rf18 |= RF18_BW_40M;
+	else
+		rf18 |= RF18_BW_20M;
 	if (channel <= 14)
 		rf18 |= RF18_BAND_2G;
 	else
@@ -2881,7 +2975,7 @@ urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel)
 }
 
 static int
-urtwx_phy_set_channel_rxdfir(struct urtwx_softc *sc)
+urtwx_phy_set_channel_rxdfir(struct urtwx_softc *sc, uint8_t bw)
 {
 	int ret;
 
@@ -2892,6 +2986,13 @@ urtwx_phy_set_channel_rxdfir(struct urtwx_softc *sc)
 	    0x20000000U);
 	if (ret != 0)
 		return (ret);
+	if (bw == URTWX_CHANNEL_WIDTH_40) {
+		ret = urtwx_write_4_mask(sc, REG_TXDFIR, 0x80000000U, 0);
+		if (ret != 0)
+			return (ret);
+		return (urtwx_write_4_mask(sc, REG_CHFIR, 0x80000000U, 0));
+	}
+
 	ret = urtwx_write_4_mask(sc, REG_TXDFIR, 0x80000000U, 0x80000000U);
 	if (ret != 0)
 		return (ret);
@@ -2907,44 +3008,48 @@ urtwx_phy_init_runtime(struct urtwx_softc *sc)
 	ret = urtwx_phy_enable_bb_rf(sc);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_phy_set_channel_bb(sc, URTWX_FIXED_CHANNEL);
+	ret = urtwx_phy_set_channel_bb(sc, URTWX_FIXED_CHANNEL,
+	    URTWX_CHANNEL_WIDTH_20, URTWX_SC_DONT_CARE);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_phy_set_channel_mac(sc, URTWX_FIXED_CHANNEL);
+	ret = urtwx_phy_set_channel_mac(sc, URTWX_FIXED_CHANNEL,
+	    URTWX_CHANNEL_WIDTH_20, URTWX_SC_DONT_CARE);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_phy_set_channel_rf(sc, URTWX_FIXED_CHANNEL);
+	ret = urtwx_phy_set_channel_rf(sc, URTWX_FIXED_CHANNEL,
+	    URTWX_CHANNEL_WIDTH_20);
 	if (ret != 0)
 		return (ret);
 
-	return (urtwx_phy_set_channel_rxdfir(sc));
+	return (urtwx_phy_set_channel_rxdfir(sc, URTWX_CHANNEL_WIDTH_20));
 }
 
 static int
 urtwx_set_chan(struct urtwx_softc *sc, struct ieee80211_channel *c)
 {
-	uint8_t chan;
+	uint8_t chan, bw, primary_ch_idx;
 	int ret;
 
 	if (c == NULL ||
 	    (!IEEE80211_IS_CHAN_2GHZ(c) && !IEEE80211_IS_CHAN_5GHZ(c)))
 		return (ENOTSUP);
 
-	chan = ieee80211_chan2ieee(&sc->sc_ic, c);
+	urtwx_update_htcaps(sc, c);
+	urtwx_get_chan_params(sc, c, &chan, &bw, &primary_ch_idx);
 	if (chan == 0 || (chan > 14 && chan < 36))
 		return (EINVAL);
 
-	ret = urtwx_phy_set_channel_bb(sc, chan);
+	ret = urtwx_phy_set_channel_bb(sc, chan, bw, primary_ch_idx);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_phy_set_channel_mac(sc, chan);
+	ret = urtwx_phy_set_channel_mac(sc, chan, bw, primary_ch_idx);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_phy_set_channel_rf(sc, chan);
+	ret = urtwx_phy_set_channel_rf(sc, chan, bw);
 	if (ret != 0)
 		return (ret);
 
-	return (urtwx_phy_set_channel_rxdfir(sc));
+	return (urtwx_phy_set_channel_rxdfir(sc, bw));
 }
 
 static int
@@ -3098,7 +3203,12 @@ urtwx_node_tx_info(struct ieee80211_node *ni, uint8_t *rate_id,
 		*ra_mask = URTWX_RA_MASK_CCK_RATES |
 		    URTWX_RA_MASK_OFDM_RATES |
 		    URTWX_RA_MASK_HT_RATES_1SS;
-		if ((ni->ni_flags & IEEE80211_NODE_HT_SGI20) != 0)
+		if (IEEE80211_CHAN_40MHZ_ALLOWED(ni->ni_chan) &&
+		    ieee80211_node_supports_ht_chan40(ni)) {
+			*rate_id = URTWX_RATEID_BGN_40M_1SS;
+			if ((ni->ni_flags & IEEE80211_NODE_HT_SGI40) != 0)
+				*sgi = 1;
+		} else if ((ni->ni_flags & IEEE80211_NODE_HT_SGI20) != 0)
 			*sgi = 1;
 		if ((ni->ni_htcaps & IEEE80211_HTCAP_LDPC) != 0)
 			*ldpc = 1;
@@ -3224,6 +3334,7 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 	case IEEE80211_S_AUTH:
 	case IEEE80211_S_ASSOC:
 	case IEEE80211_S_RUN:
+	{
 		timeout_del(&sc->sc_scan_to);
 		chan = (ic->ic_opmode == IEEE80211_M_MONITOR) ?
 		    ic->ic_ibss_chan : ic->ic_bss->ni_chan;
@@ -3257,10 +3368,11 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
 				    REG_CR, 0)));
 				sc->sc_tx_data_log = 0;
-				sc->sc_txeof_data_log = 0;
+					sc->sc_txeof_data_log = 0;
 			}
 		}
 		break;
+	}
 	}
 	(void)sc->sc_newstate(ic, cmd->state, cmd->arg);
 	if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
@@ -4978,7 +5090,7 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_opmode = IEEE80211_M_STA;
 	ic->ic_state = IEEE80211_S_INIT;
 	ic->ic_max_rssi = 100;
-	ic->ic_htcaps = IEEE80211_HTCAP_SGI20;
+	ic->ic_htcaps = URTWX_HTCAP_BASE;
 	ic->ic_sup_mcs[0] = 0xff;
 	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_SHPREAMBLE |
 	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN;
@@ -4997,13 +5109,15 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		ic->ic_channels[i].ic_freq =
 		    ieee80211_ieee2mhz(i, IEEE80211_CHAN_5GHZ);
 		ic->ic_channels[i].ic_flags =
-		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT;
+		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT |
+		    IEEE80211_CHAN_40MHZ;
 	}
 	for (i = 149; i <= 161; i += 4) {
 		ic->ic_channels[i].ic_freq =
 		    ieee80211_ieee2mhz(i, IEEE80211_CHAN_5GHZ);
 		ic->ic_channels[i].ic_flags =
-		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT;
+		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT |
+		    IEEE80211_CHAN_40MHZ;
 	}
 	ic->ic_channels[165].ic_freq =
 	    ieee80211_ieee2mhz(165, IEEE80211_CHAN_5GHZ);

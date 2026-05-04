@@ -23,13 +23,12 @@ measurably better than 11g.
 The firmware is deciding real runtime TX rates, and `ifconfig` now tracks
 legacy vs HT mode changes through C2H RA report updates.
 
-[~] 8. Bring up 5 GHz in stages.
-5 GHz 11a / 20 MHz is working on non-DFS channels for both open and WPA2.
-Still need 5 GHz HT, then wider channels. Do not jump straight to VHT.
+[X] 8. Bring up 5 GHz in stages.
+5 GHz 11a and HT are working on non-DFS channels for both open and WPA2.
 
-[ ] 9. Add wide-channel support.
-Evaluate 40 MHz on 2.4 GHz and 40/80 MHz on 5 GHz once the basic 5 GHz path
-is stable.
+[~] 9. Add wide-channel support.
+5 GHz HT40 is working on non-DFS channels for both open and WPA2. Still need
+2.4 GHz HT40 evaluation and wider 5 GHz modes beyond HT40.
 
 [ ] 10. Add 802.11ac / VHT support.
 This comes after stable 5 GHz and wide-channel support.
@@ -63,3 +62,6 @@ The current RTL8821CU work is 1T1R; MIMO likely belongs with item 14.
 [ ] 19. Write `walkthrough.md`.
 Document firmware loading, reserved pages, the security engine, scan/assoc
 bring-up, and the main differences from the Linux `rtw88` path.
+
+[ ] 20. Write `urtwx(4)`.
+Follow the same pattern and style as other OpenBSD USB Wi-Fi driver manpages.

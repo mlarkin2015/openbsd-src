@@ -207,7 +207,14 @@
 #define BIT_TXDMA_BKQ_MAP(x)		(((x) & 0x3) << 10)
 #define BIT_TXDMA_MGQ_MAP(x)		(((x) & 0x3) << 12)
 #define BIT_TXDMA_HIQ_MAP(x)		(((x) & 0x3) << 14)
+#define BIT_SHIFT_TXSC_40M		4
+#define BIT_MASK_TXSC_40M		0x0f
+#define BIT_TXSC_40M(x)		(((x) & BIT_MASK_TXSC_40M) << BIT_SHIFT_TXSC_40M)
+#define BIT_SHIFT_TXSC_20M		0
+#define BIT_MASK_TXSC_20M		0x0f
+#define BIT_TXSC_20M(x)		(((x) & BIT_MASK_TXSC_20M) << BIT_SHIFT_TXSC_20M)
 #define BIT_RFMOD			0x00000180U
+#define BIT_RFMOD_40M			0x00000080U
 #define BIT_MAC_SEC_EN			0x00000200U
 #define MAC_TRX_ENABLE			\
 	(BIT_HCI_TXDMA_EN | BIT_HCI_RXDMA_EN | BIT_TXDMA_EN |	\
