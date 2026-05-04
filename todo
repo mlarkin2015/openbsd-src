@@ -11,18 +11,18 @@ This still smells like an async state transition ordering/timing bug.
 The current 0% RSSI / weak PHY reporting is not just cosmetic; it affects
 scan quality, BSS selection, and later 5 GHz debugging.
 
-[ ] 5. Validate long-run WPA/RSN stability.
-Initial WPA2 traffic works, but we still need GTK rekey, reconnect loops, AP
-reboot/reassoc, and longer soak tests.
+[~] 5. Validate long-run WPA/RSN stability.
+Initial WPA2 traffic works, and a 60-second GTK rekey stress run under
+continuous `iperf3` traffic passed for 10+ minutes. Still need reconnect
+loops, AP reboot/loss recovery, mode transitions, and a longer soak test.
 
 [X] 6. Expose real 802.11n/HT on 2.4 GHz.
 HT20 traffic is working, firmware rate adaptation is active, and throughput is
 measurably better than 11g.
 
-[ ] 7. Report live firmware RA / TX-rate changes to `net80211`.
-The firmware is deciding real runtime TX rates, but `ifconfig` can still show
-stale combinations such as `11g (HT-MCS0)` because `ni_txrate` / `ni_txmcs`
-are not being updated from C2H RA reports.
+[X] 7. Report live firmware RA / TX-rate changes to `net80211`.
+The firmware is deciding real runtime TX rates, and `ifconfig` now tracks
+legacy vs HT mode changes through C2H RA report updates.
 
 [ ] 8. Bring up 5 GHz in stages.
 Start with 11a / 20 MHz only, then 5 GHz HT, then wider channels. Do not jump

@@ -2888,7 +2888,10 @@ ieee80211_recv_deauth(struct ieee80211com *ic, struct mbuf *m,
 		    ic->ic_state == IEEE80211_S_RUN);
 		int stay_auth = ((ic->ic_userflags & IEEE80211_F_STAYAUTH) &&
 		    ic->ic_state >= IEEE80211_S_AUTH);
-		if (!(bgscan || stay_auth))
+		if (ic->ic_state == IEEE80211_S_AUTH)
+			ieee80211_new_state(ic, IEEE80211_S_AUTH,
+			    IEEE80211_FC0_SUBTYPE_AUTH);
+		else if (!(bgscan || stay_auth))
 			ieee80211_new_state(ic, IEEE80211_S_AUTH,
 			    IEEE80211_FC0_SUBTYPE_DEAUTH);
 		}
@@ -2943,7 +2946,18 @@ ieee80211_recv_disassoc(struct ieee80211com *ic, struct mbuf *m,
 	case IEEE80211_M_STA: {
 		int bgscan = ((ic->ic_flags & IEEE80211_F_BGSCAN) &&
 		    ic->ic_state == IEEE80211_S_RUN);
-		if (!bgscan) /* ignore disassoc during bgscan */
+		if (bgscan)
+			break;	/* ignore disassoc during bgscan */
+		/*
+		 * A disassoc received before authentication completed does
+		 * not mean we may proceed with association. Retry open auth
+		 * immediately instead of waiting for the auth timeout path
+		 * to rescan and try again.
+		 */
+		if (ic->ic_state == IEEE80211_S_AUTH)
+			ieee80211_new_state(ic, IEEE80211_S_AUTH,
+			    IEEE80211_FC0_SUBTYPE_AUTH);
+		else if (ic->ic_state >= IEEE80211_S_ASSOC)
 			ieee80211_new_state(ic, IEEE80211_S_ASSOC,
 			    IEEE80211_FC0_SUBTYPE_DISASSOC);
 		}
