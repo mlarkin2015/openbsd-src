@@ -78,6 +78,7 @@
 #define URTWX_HOST_CMD_DATA_LEN		256
 #define URTWX_FORCE_PASSIVE_SCAN	0
 #define URTWX_FORCE_DATA_MGMT_Q		0
+#define URTWX_REFUSE_RX_ADDBA		0
 #define URTWX_SCAN_LOG_MAX		64
 #define URTWX_STATE_LOG_MAX		128
 #define URTWX_TX_MGMT_LOG_MAX		32
@@ -93,10 +94,13 @@
 #define URTWX_TXDESC_W1_RATEID_SHIFT	16
 #define URTWX_TXDESC_W1_SEC_TYPE_SHIFT	22
 #define URTWX_TXDESC_W1_MORE_DATA	0x20000000U
+#define URTWX_TXDESC_W2_AGG_EN		0x00001000U
 #define URTWX_TXDESC_W2_SPE_RPT		0x00080000U
+#define URTWX_TXDESC_W2_AMPDU_DEN_SHIFT	20
 #define URTWX_TXDESC_W2_BT_NULL		0x00800000U
 #define URTWX_TXDESC_W3_USE_RATE	0x00000100U
 #define URTWX_TXDESC_W3_DISDATAFB	0x00000400U
+#define URTWX_TXDESC_W3_MAX_AGGNUM_SHIFT 17
 #define URTWX_TXDESC_W3_NAVUSEHDR	0x00008000U
 #define URTWX_TXDESC_W5_DATA_SHORT	0x00000010U
 #define URTWX_TXDESC_W5_DATA_LDPC	0x00000080U
@@ -156,7 +160,7 @@
 #define URTWX_RA_MASK_HT_RATES_1SS	0x000ff000U
 #define URTWX_RA_MASK_VHT_RATES_1SS	0x3ff000U
 
-#define URTWX_RX_LIST_COUNT		4
+#define URTWX_RX_LIST_COUNT		16
 #define URTWX_RXBUFSZ			32768
 #define URTWX_RX_DESC_SIZE		24
 #define URTWX_RX_MGMT_LOG_MAX		64
@@ -529,6 +533,22 @@ urtwx_legacy_rate_index(struct ieee80211_node *ni, uint8_t desc_rate)
 	return -1;
 }
 
+static uint8_t
+urtwx_tx_ampdu_num(const struct ieee80211_node *ni)
+{
+	uint8_t exp;
+
+	exp = ni->ni_ampdu_param & IEEE80211_AMPDU_PARAM_LE;
+	return ((1U << (exp + 2)) - 1);
+}
+
+static uint8_t
+urtwx_tx_ampdu_density(const struct ieee80211_node *ni)
+{
+	return ((ni->ni_ampdu_param & IEEE80211_AMPDU_PARAM_SS) >>
+	    2);
+}
+
 static void
 urtwx_update_ra_node(struct urtwx_softc *sc, uint8_t desc_rate)
 {
@@ -697,6 +717,10 @@ static int	urtwx_mask2shift(uint32_t);
 static int	urtwx_media_change(struct ifnet *);
 static int	urtwx_newstate(struct ieee80211com *, enum ieee80211_state,
 		    int);
+static int	urtwx_ampdu_rx_start(struct ieee80211com *,
+		    struct ieee80211_node *, uint8_t);
+static void	urtwx_ampdu_rx_stop(struct ieee80211com *,
+		    struct ieee80211_node *, uint8_t);
 static void	urtwx_newstate_cb(struct urtwx_softc *, void *);
 static int	urtwx_set_key(struct ieee80211com *, struct ieee80211_node *,
 		    struct ieee80211_key *);
@@ -1603,8 +1627,12 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	uint8_t rate;
 	uint8_t rate_id;
 	uint8_t sgi;
+	uint8_t tid;
+	uint8_t ampdu_density;
+	uint8_t ampdu_num;
 	uint32_t txpktlen;
 	int hdrlen;
+	int ampdu;
 	uint8_t *txbuf;
 
 	if (sc->sc_tx_active)
@@ -1620,8 +1648,12 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	ra_mask = 0;
 	k = NULL;
 	sec_type = 0;
+	tid = 0;
+	ampdu_density = 0;
+	ampdu_num = 0;
 	txpktlen = m->m_pkthdr.len;
 	hdrlen = 0;
+	ampdu = 0;
 	txbuf = NULL;
 
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
@@ -1739,6 +1771,22 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 		txd->w4 = htole32(rate);
 		txd->w5 = htole32((sgi ? URTWX_TXDESC_W5_DATA_SHORT : 0) |
 		    (ldpc ? URTWX_TXDESC_W5_DATA_LDPC : 0));
+		if (!IEEE80211_IS_MULTICAST(wh->i_addr1) &&
+		    ieee80211_has_qos(wh)) {
+			tid = ieee80211_get_qos(wh) & IEEE80211_QOS_TID;
+			if (ni->ni_tx_ba[tid].ba_state == IEEE80211_BA_AGREED) {
+				ampdu = 1;
+				ampdu_density = urtwx_tx_ampdu_density(ni);
+				ampdu_num = urtwx_tx_ampdu_num(ni);
+				txd->w2 = htole32(letoh32(txd->w2) |
+				    URTWX_TXDESC_W2_AGG_EN |
+				    ((uint32_t)ampdu_density <<
+				    URTWX_TXDESC_W2_AMPDU_DEN_SHIFT));
+				txd->w3 = htole32(letoh32(txd->w3) |
+				    ((uint32_t)ampdu_num <<
+				    URTWX_TXDESC_W3_MAX_AGGNUM_SHIFT));
+			}
+		}
 		if (sc->sc_tx_report_req < URTWX_TX_RPT_REQ_MAX) {
 			report_sn = ((++sc->sc_tx_report_sn) << 2) & 0xfc;
 			txd->w2 = htole32(letoh32(txd->w2) |
@@ -1753,10 +1801,12 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 		    URTWX_TXDESC_W9_SWSEQ_SHIFT);
 		if (sc->sc_tx_data_log < URTWX_TX_DATA_LOG_MAX) {
 			DPRINTFN(2, ("%s: TX data len %u qsel %u seq %u chan %u"
-			    " rateid %u rate %#x auto-rate rpt %#x\n",
+			    " rateid %u rate %#x auto-rate rpt %#x agg %d"
+			    " tid %u den %u num %u\n",
 			    DEVNAME(sc), m->m_pkthdr.len, qsel, seq,
 			    ieee80211_chan2ieee(&sc->sc_ic, ni->ni_chan),
-			    rate_id, rate, report_sn));
+			    rate_id, rate, report_sn, ampdu, tid,
+			    ampdu_density, ampdu_num));
 			sc->sc_tx_data_log++;
 		}
 	}
@@ -3333,6 +3383,30 @@ urtwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 	}
 	urtwx_do_async(sc, urtwx_newstate_cb, &cmd, sizeof(cmd));
 	return (0);
+}
+
+static int
+urtwx_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
+    uint8_t tid)
+{
+#if URTWX_REFUSE_RX_ADDBA
+	/*
+	 * Temporary diagnostic: refuse incoming ADDBA so we can isolate
+	 * whether reverse-stream stalls are driven by RX BA/reorder.
+	 */
+	DPRINTFN(2, ("%s: refusing RX ADDBA from %s tid %u\n",
+	    DEVNAME((struct urtwx_softc *)ic->ic_softc),
+	    ether_sprintf(ni->ni_macaddr), tid));
+	return (ENOTSUP);
+#else
+	return (0);
+#endif
+}
+
+static void
+urtwx_ampdu_rx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
+    uint8_t tid)
+{
 }
 
 static void
@@ -5187,8 +5261,9 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_vht_txmcs = ic->ic_vht_rxmcs;
 	ic->ic_vht_rx_max_lgi_mbit_s = 390;
 	ic->ic_vht_tx_max_lgi_mbit_s = 390;
-	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_SHPREAMBLE |
-	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN;
+	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
+	    IEEE80211_C_SHPREAMBLE | IEEE80211_C_SHSLOT |
+	    IEEE80211_C_WEP | IEEE80211_C_RSN;
 	ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
 	ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
 	ic->ic_sup_rates[IEEE80211_MODE_11G] = ieee80211_std_rateset_11g;
@@ -5241,6 +5316,8 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ieee80211_ifattach(ifp);
 	ic->ic_set_key = urtwx_set_key;
 	ic->ic_delete_key = urtwx_delete_key;
+	ic->ic_ampdu_rx_start = urtwx_ampdu_rx_start;
+	ic->ic_ampdu_rx_stop = urtwx_ampdu_rx_stop;
 	sc->sc_newstate = ic->ic_newstate;
 	ic->ic_newstate = urtwx_newstate;
 	ieee80211_media_init(ifp, urtwx_media_change,
