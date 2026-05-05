@@ -33,9 +33,9 @@ HT40 is working on both 2.4 GHz and non-DFS 5 GHz for open and WPA2.
 VHT80 is working on non-DFS 5 GHz for both open and WPA2. Throughput tuning
 still depends on on-air aggregation work.
 
-[ ] 11. Add PMF / MFP support.
-This likely means explicit driver support for BIP/IGTK key install/delete and
-advertising `IEEE80211_C_MFP` once tested.
+[X] 11. Add PMF / MFP support.
+PMF now works with both optional and required AP policy, and unprotected
+deauthentication no longer disconnects the station.
 
 [~] 12. Add on-air TX aggregation.
 TX BA negotiation and descriptor aggregation hints are working and give a
@@ -49,8 +49,13 @@ throughput is now stable in the ~50 MB/s range. `urtwx` currently disables
 reorder-path collapse on this USB design.
 
 [ ] 14. Harden USB recovery and error handling.
-Watch timeout recovery, endpoint stall recovery, repeated up/down cycles, and
-bad-state unplug/replug behavior.
+Exercise and harden:
+- watchdog-triggered TX timeout recovery
+- RX/TX endpoint stall recovery under load
+- repeated `ifconfig down/up` and mode-switch churn under traffic
+- unplug during scan/assoc/traffic and clean replug recovery
+- bad-state recovery without requiring a physical replug
+- any suspend/resume style stale-state path that shows up on USB
 
 [ ] 15. Add support for other RTL88xx USB parts.
 Start with closely related 8821/8822 variants after 8821CU is stable enough

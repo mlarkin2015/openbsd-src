@@ -5275,6 +5275,7 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_vht_rx_max_lgi_mbit_s = 390;
 	ic->ic_vht_tx_max_lgi_mbit_s = 390;
 	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
+	    IEEE80211_C_MFP |
 	    IEEE80211_C_SHPREAMBLE | IEEE80211_C_SHSLOT |
 	    IEEE80211_C_WEP | IEEE80211_C_RSN;
 	ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
