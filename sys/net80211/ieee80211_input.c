@@ -134,19 +134,7 @@ void	ieee80211_recv_bar(struct ieee80211com *, struct mbuf *,
 void	ieee80211_bar_tid(struct ieee80211com *, struct ieee80211_node *,
 	    u_int8_t, u_int16_t);
 
-static int ieee80211_ba_diag_log;
-
-#define IEEE80211_BA_DIAG_LOG_MAX	256
-
-#define IEEE80211_BA_DIAG(_ic, _fmt, ...)					\
-	do {									\
-		if (strncmp((_ic)->ic_if.if_xname, "urtwx", 5) == 0 &&	\
-		    ieee80211_ba_diag_log < IEEE80211_BA_DIAG_LOG_MAX) {	\
-			printf("%s: " _fmt, (_ic)->ic_if.if_xname,		\
-			    ##__VA_ARGS__);					\
-			ieee80211_ba_diag_log++;				\
-		}								\
-	} while (0)
+#define IEEE80211_BA_DIAG(_ic, _fmt, ...)	do { } while (0)
 
 /*
  * Retrieve the length in bytes of an 802.11 header.

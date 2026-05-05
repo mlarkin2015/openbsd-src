@@ -79,6 +79,7 @@
 #define URTWX_FORCE_PASSIVE_SCAN	0
 #define URTWX_FORCE_DATA_MGMT_Q		0
 #define URTWX_REFUSE_RX_ADDBA		0
+#define URTWX_RX_BA_NO_AMSDU		1
 #define URTWX_SCAN_LOG_MAX		64
 #define URTWX_STATE_LOG_MAX		128
 #define URTWX_TX_MGMT_LOG_MAX		32
@@ -164,6 +165,7 @@
 #define URTWX_RXBUFSZ			32768
 #define URTWX_RX_DESC_SIZE		24
 #define URTWX_RX_MGMT_LOG_MAX		64
+#define URTWX_RX_BA_NO_AMSDU		1
 
 #define URTWX_WAIT_COUNT		1000
 #define URTWX_WAIT_DELAY_US		10
@@ -3399,6 +3401,17 @@ urtwx_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
 	    ether_sprintf(ni->ni_macaddr), tid));
 	return (ENOTSUP);
 #else
+#if URTWX_RX_BA_NO_AMSDU
+	/*
+	 * Keep RX BA enabled, but do not advertise A-MSDU inside A-MPDU.
+	 * On this USB path, allowing A-MSDU inside RX BA agreements causes
+	 * severe reverse-direction throughput collapse under load. The most
+	 * likely explanation is that firmware/hardware splits A-MSDU
+	 * subframes before net80211 sees them, so multiple delivered MSDUs
+	 * share a sequence number and collide in the software reorder buffer.
+	 */
+	ni->ni_rx_ba[tid].ba_params &= ~IEEE80211_ADDBA_AMSDU;
+#endif
 	return (0);
 #endif
 }

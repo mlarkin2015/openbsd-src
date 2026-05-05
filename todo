@@ -42,11 +42,11 @@ TX BA negotiation and descriptor aggregation hints are working and give a
 small throughput improvement, but gains are still modest and likely limited
 by the current USB TX model.
 
-[~] 13. Add on-air RX aggregation.
-RX BA is stable enough at `URTWX_RX_LIST_COUNT = 16` for useful testing and
-much better than the non-working baseline, but reverse multi-stream traffic
-still shows occasional 1-second stalls and BA reorder diagnostics still show
-gap/no-buf pressure under load.
+[X] 13. Add on-air RX aggregation.
+RX BA is working at `URTWX_RX_LIST_COUNT = 16` and reverse multi-stream
+throughput is now stable in the ~50 MB/s range. `urtwx` currently disables
+`A-MSDU in A-MPDU` in RX BA agreements because allowing it causes severe
+reorder-path collapse on this USB design.
 
 [ ] 14. Harden USB recovery and error handling.
 Watch timeout recovery, endpoint stall recovery, repeated up/down cycles, and
