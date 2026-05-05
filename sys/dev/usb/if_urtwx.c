@@ -185,35 +185,19 @@
 #define URTWX_EFUSE_POLL_DELAY_US	1
 
 #define URTWX_PAGE_SIZE			128
-#define URTWX_TXFF_SIZE			65536
-#define URTWX_TXFF_PG_NUM		(URTWX_TXFF_SIZE / URTWX_PAGE_SIZE)
-#define URTWX_RXFF_SIZE			16384
 #define URTWX_C2H_PKT_BUF		256
 #define URTWX_PHY_STATUS_SIZE		4
 #define URTWX_USB_TX_AGG_DESC_NUM	3
-#define URTWX_RSVD_DRV_PG_NUM		8
 #define URTWX_RSVD_H2C_EXTRA_PG_NUM	24
 #define URTWX_RSVD_H2C_STATIC_PG_NUM	8
 #define URTWX_RSVD_H2CQ_PG_NUM		8
 #define URTWX_RSVD_CPU_INSTR_PG_NUM	0
 #define URTWX_RSVD_FW_TXBUF_PG_NUM	4
-#define URTWX_RSVD_PG_NUM		52
 #define URTWX_RSVD_PAGE_MARGIN		(URTWX_PAGE_SIZE - URTWX_TXDESC_SIZE)
-#define URTWX_RSVD_BOUNDARY		\
-	((URTWX_TXFF_SIZE / URTWX_PAGE_SIZE) - URTWX_RSVD_PG_NUM)
-#define URTWX_RSVD_DRV_ADDR		(URTWX_RSVD_BOUNDARY - URTWX_RSVD_DRV_PG_NUM)
-#define URTWX_H2CQ_PG_ADDR		\
-	(URTWX_TXFF_PG_NUM - URTWX_RSVD_FW_TXBUF_PG_NUM -	\
-	 URTWX_RSVD_CPU_INSTR_PG_NUM - URTWX_RSVD_H2CQ_PG_NUM)
-#define URTWX_H2CQ_ADDR			(URTWX_H2CQ_PG_ADDR * URTWX_PAGE_SIZE)
-#define URTWX_H2CQ_SIZE			(URTWX_RSVD_H2CQ_PG_NUM * URTWX_PAGE_SIZE)
 #define URTWX_DLFW_HIQ_PGNUM		0x200
 #define URTWX_SYS_FUNC_EN_8821C		0xd8
 #define URTWX_DMA_MAPPING_HIGH		3
 
-#define URTWX_EFUSE_PHY_SIZE		512
-#define URTWX_EFUSE_LOG_SIZE		512
-#define URTWX_EFUSE_PROTECT_SIZE	96
 #define URTWX_EFUSE_MAC_OFFSET		0x107
 
 #define URTWX_WLAN_SLOT_TIME		0x09
@@ -748,6 +732,8 @@ struct urtwx_chip_info {
 	struct urtwx_phy_table		 uc_agc_btg_type2_tbl;
 	struct urtwx_phy_table		 uc_bb_tbl;
 	struct urtwx_phy_table		 uc_rf_tbl[2];
+	uint16_t			 uc_rf_base[2];
+	uint16_t			 uc_rf_sipi[2];
 	uint8_t				 uc_rf_path_count;
 	uint8_t				 uc_sys_func_en;
 	uint8_t				 uc_tx_nss;
@@ -764,6 +750,12 @@ struct urtwx_chip_info {
 	uint32_t			 uc_ic_caps;
 	uint32_t			 uc_htcaps;
 	uint32_t			 uc_vhtcaps;
+	uint32_t			 uc_txff_size;
+	uint32_t			 uc_rxff_size;
+	uint8_t				 uc_rsvd_drv_pg_num;
+	uint16_t			 uc_efuse_phy_size;
+	uint16_t			 uc_efuse_log_size;
+	uint16_t			 uc_efuse_protect_size;
 	uint16_t			 uc_vht_rx_max_lgi_mbit_s;
 	uint16_t			 uc_vht_tx_max_lgi_mbit_s;
 	int				(*uc_parse_efuse)(struct urtwx_softc *,
@@ -831,6 +823,8 @@ static const struct urtwx_chip_info urtwx_chip_8821c = {
 		{ urtwx_rf_a, nitems(urtwx_rf_a) },
 		{ NULL, 0 },
 	},
+	.uc_rf_base = { URTWX_RF_BASE_A, URTWX_RF_BASE_B },
+	.uc_rf_sipi = { URTWX_RF_SIPI_A, URTWX_RF_SIPI_B },
 	.uc_rf_path_count = 1,
 	.uc_sys_func_en = URTWX_SYS_FUNC_EN_8821C,
 	.uc_tx_nss = 1,
@@ -856,12 +850,99 @@ static const struct urtwx_chip_info urtwx_chip_8821c = {
 	    IEEE80211_VHTCAP_SGI80 |
 	    IEEE80211_VHTCAP_RX_ANT_PATTERN |
 	    IEEE80211_VHTCAP_TX_ANT_PATTERN,
+	.uc_txff_size = 65536,
+	.uc_rxff_size = 16384,
+	.uc_rsvd_drv_pg_num = 8,
+	.uc_efuse_phy_size = 512,
+	.uc_efuse_log_size = 512,
+	.uc_efuse_protect_size = 96,
 	.uc_vht_rx_max_lgi_mbit_s = 390,
 	.uc_vht_tx_max_lgi_mbit_s = 390,
 	.uc_parse_efuse = urtwx_parse_efuse_8821c,
 	.uc_get_rx_rssi = urtwx_get_rx_rssi_8821c,
 	.uc_mac_init = urtwx_mac_init_8821c,
 };
+
+static inline uint32_t
+urtwx_txff_size(const struct urtwx_softc *sc)
+{
+	return (sc->sc_chip->uc_txff_size);
+}
+
+static inline uint32_t
+urtwx_txff_pg_num(const struct urtwx_softc *sc)
+{
+	return (urtwx_txff_size(sc) / URTWX_PAGE_SIZE);
+}
+
+static inline uint32_t
+urtwx_rxff_size(const struct urtwx_softc *sc)
+{
+	return (sc->sc_chip->uc_rxff_size);
+}
+
+static inline uint8_t
+urtwx_rsvd_drv_pg_num(const struct urtwx_softc *sc)
+{
+	return (sc->sc_chip->uc_rsvd_drv_pg_num);
+}
+
+static inline uint32_t
+urtwx_rsvd_pg_num(const struct urtwx_softc *sc)
+{
+	return (urtwx_rsvd_drv_pg_num(sc) + URTWX_RSVD_H2C_EXTRA_PG_NUM +
+	    URTWX_RSVD_H2C_STATIC_PG_NUM + URTWX_RSVD_H2CQ_PG_NUM +
+	    URTWX_RSVD_CPU_INSTR_PG_NUM + URTWX_RSVD_FW_TXBUF_PG_NUM);
+}
+
+static inline uint16_t
+urtwx_rsvd_boundary(const struct urtwx_softc *sc)
+{
+	return (urtwx_txff_pg_num(sc) - urtwx_rsvd_pg_num(sc));
+}
+
+static inline uint16_t
+urtwx_rsvd_drv_addr(const struct urtwx_softc *sc)
+{
+	return (urtwx_rsvd_boundary(sc) - urtwx_rsvd_drv_pg_num(sc));
+}
+
+static inline uint16_t
+urtwx_h2cq_pg_addr(const struct urtwx_softc *sc)
+{
+	return (urtwx_txff_pg_num(sc) - URTWX_RSVD_FW_TXBUF_PG_NUM -
+	    URTWX_RSVD_CPU_INSTR_PG_NUM - URTWX_RSVD_H2CQ_PG_NUM);
+}
+
+static inline uint32_t
+urtwx_h2cq_addr(const struct urtwx_softc *sc)
+{
+	return (urtwx_h2cq_pg_addr(sc) * URTWX_PAGE_SIZE);
+}
+
+static inline uint32_t
+urtwx_h2cq_size(const struct urtwx_softc *sc)
+{
+	return (URTWX_RSVD_H2CQ_PG_NUM * URTWX_PAGE_SIZE);
+}
+
+static inline uint16_t
+urtwx_efuse_phy_size(const struct urtwx_softc *sc)
+{
+	return (sc->sc_chip->uc_efuse_phy_size);
+}
+
+static inline uint16_t
+urtwx_efuse_log_size(const struct urtwx_softc *sc)
+{
+	return (sc->sc_chip->uc_efuse_log_size);
+}
+
+static inline uint16_t
+urtwx_efuse_protect_size(const struct urtwx_softc *sc)
+{
+	return (sc->sc_chip->uc_efuse_protect_size);
+}
 
 static const struct urtwx_devspec urtwx_devs[] = {
 	{
@@ -912,7 +993,8 @@ static void	urtwx_download_firmware_reg_restore(struct urtwx_softc *,
 		    const struct urtwx_fw_dl_backup *);
 static void	urtwx_download_firmware_reset_platform(struct urtwx_softc *);
 static int	urtwx_download_firmware_validate(struct urtwx_softc *);
-static int	urtwx_dump_log_efuse_map(const uint8_t *, uint8_t *);
+static int	urtwx_dump_log_efuse_map(struct urtwx_softc *,
+		    const uint8_t *, uint8_t *);
 static int	urtwx_dump_phy_efuse_map(struct urtwx_softc *, uint8_t *);
 static int	urtwx_fw_default_port(struct urtwx_softc *);
 static int	urtwx_fw_download(struct urtwx_softc *);
@@ -1236,16 +1318,12 @@ urtwx_mask2shift(uint32_t mask)
 static uint32_t
 urtwx_read_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr)
 {
-	static const uint16_t rf_base[] = {
-		URTWX_RF_BASE_A,
-		URTWX_RF_BASE_B
-	};
 	uint16_t reg;
 
-	if (path >= nitems(rf_base))
+	if (path >= sc->sc_chip->uc_rf_path_count)
 		return (0xffffffffU);
 
-	reg = rf_base[path] + ((uint16_t)addr << 2);
+	reg = sc->sc_chip->uc_rf_base[path] + ((uint16_t)addr << 2);
 	return (urtwx_read_4(sc, RTW_USB_CMD_REQ, reg, 0) & RFREG_MASK);
 }
 
@@ -1253,13 +1331,9 @@ static int
 urtwx_write_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr,
     uint32_t mask, uint32_t data)
 {
-	static const uint16_t rf_sipi[] = {
-		URTWX_RF_SIPI_A,
-		URTWX_RF_SIPI_B
-	};
 	uint32_t old, shift, value;
 
-	if (path >= nitems(rf_sipi))
+	if (path >= sc->sc_chip->uc_rf_path_count)
 		return (EINVAL);
 
 	mask &= RFREG_MASK;
@@ -1272,7 +1346,8 @@ urtwx_write_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr,
 	}
 
 	value = (((uint32_t)addr << 20) | data) & 0x0fffffffU;
-	if (urtwx_write_4(sc, RTW_USB_CMD_REQ, rf_sipi[path], 0, value) != 0)
+	if (urtwx_write_4(sc, RTW_USB_CMD_REQ, sc->sc_chip->uc_rf_sipi[path],
+	    0, value) != 0)
 		return (EIO);
 	delay(13);
 	return (0);
@@ -1521,13 +1596,14 @@ urtwx_fw_download_sta_rsvd_page(struct urtwx_softc *sc)
 	struct ieee80211_node *ni = sc->sc_ic.ic_bss;
 	struct urtwx_tx_desc *txd;
 	uint8_t frame[sizeof(struct ieee80211_qosframe)];
-	uint8_t buf[URTWX_RSVD_DRV_PG_NUM * URTWX_PAGE_SIZE];
+	uint8_t *buf;
 	uint8_t null_loc, pspoll_loc, qos_null_loc;
 	uint32_t len, off, size;
 	uint8_t page;
 	int qos, ret;
 
-	memset(buf, 0, sizeof(buf));
+	buf = malloc(urtwx_rsvd_drv_pg_num(sc) * URTWX_PAGE_SIZE,
+	    M_TEMP, M_WAITOK | M_ZERO);
 
 	buf[0] = 0;
 	page = 1;
@@ -1557,23 +1633,31 @@ urtwx_fw_download_sta_rsvd_page(struct urtwx_softc *sc)
 	memcpy(buf + off + URTWX_TXDESC_SIZE, frame, len);
 	page += howmany(URTWX_TXDESC_SIZE + len, URTWX_PAGE_SIZE);
 
-	if (page > URTWX_RSVD_DRV_PG_NUM)
+	if (page > urtwx_rsvd_drv_pg_num(sc)) {
+		free(buf, M_TEMP, urtwx_rsvd_drv_pg_num(sc) * URTWX_PAGE_SIZE);
 		return (EFBIG);
+	}
 
 	size = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
-	ret = urtwx_write_data_rsvd_page(sc, URTWX_RSVD_DRV_ADDR, buf, size);
+	ret = urtwx_write_data_rsvd_page(sc, urtwx_rsvd_drv_addr(sc),
+	    buf, size);
 	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_data_rsvd_page(sc, URTWX_RSVD_DRV_ADDR, buf, 1);
+		goto out;
+	ret = urtwx_write_data_rsvd_page(sc, urtwx_rsvd_drv_addr(sc),
+	    buf, 1);
 	if (ret != 0)
-		return (ret);
+		goto out;
 	if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
 		DPRINTF(("%s: rsvd page pspoll %u null %u qosnull %u size %u\n",
 		    DEVNAME(sc), pspoll_loc, null_loc, qos_null_loc, size));
 		sc->sc_state_log++;
 	}
 
-	return (urtwx_fw_rsvd_page(sc, pspoll_loc, null_loc, qos_null_loc));
+	ret = urtwx_fw_rsvd_page(sc, pspoll_loc, null_loc, qos_null_loc);
+
+out:
+	free(buf, M_TEMP, urtwx_rsvd_drv_pg_num(sc) * URTWX_PAGE_SIZE);
+	return (ret);
 }
 
 static int
@@ -2161,7 +2245,7 @@ urtwx_write_data_rsvd_page(struct urtwx_softc *sc, uint16_t pg_addr,
 	    BIT_BCN_VALID_V1, URTWX_WAIT_COUNT, URTWX_WAIT_DELAY_US);
 
 restore:
-	rsvd_pg_head = URTWX_RSVD_BOUNDARY;
+	rsvd_pg_head = urtwx_rsvd_boundary(sc);
 	(void)urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_FIFOPAGE_CTRL_2, 0,
 	    rsvd_pg_head | BIT_BCN_VALID_V1);
 	(void)urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_BCN_CTRL, 0, bcn_ctrl);
@@ -2505,7 +2589,7 @@ urtwx_dump_phy_efuse_map(struct urtwx_softc *sc, uint8_t *phy_map)
 		return (ret);
 
 	efuse_ctl = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_EFUSE_CTRL, 0);
-	for (addr = 0; addr < URTWX_EFUSE_PHY_SIZE; addr++) {
+	for (addr = 0; addr < urtwx_efuse_phy_size(sc); addr++) {
 		efuse_ctl &= ~(BIT_MASK_EF_DATA | BITS_EF_ADDR);
 		efuse_ctl |= (addr & BIT_MASK_EF_ADDR) << BIT_SHIFT_EF_ADDR;
 
@@ -2529,17 +2613,20 @@ urtwx_dump_phy_efuse_map(struct urtwx_softc *sc, uint8_t *phy_map)
 }
 
 static int
-urtwx_dump_log_efuse_map(const uint8_t *phy_map, uint8_t *log_map)
+urtwx_dump_log_efuse_map(struct urtwx_softc *sc, const uint8_t *phy_map,
+    uint8_t *log_map)
 {
 	uint32_t phy_idx;
 	uint32_t log_idx;
 	uint32_t limit;
+	uint32_t log_size;
 	uint8_t hdr1, hdr2;
 	uint8_t blk_idx;
 	uint8_t word_en;
 	int i;
 
-	limit = URTWX_EFUSE_PHY_SIZE - URTWX_EFUSE_PROTECT_SIZE;
+	limit = urtwx_efuse_phy_size(sc) - urtwx_efuse_protect_size(sc);
+	log_size = urtwx_efuse_log_size(sc);
 	for (phy_idx = 0; phy_idx < limit; ) {
 		hdr1 = phy_map[phy_idx];
 		if (hdr1 == 0xff)
@@ -2567,7 +2654,7 @@ urtwx_dump_log_efuse_map(const uint8_t *phy_map, uint8_t *log_map)
 
 			log_idx = (blk_idx << 3) + (i << 1);
 			if (phy_idx + 1 >= limit ||
-			    log_idx + 1 >= URTWX_EFUSE_LOG_SIZE)
+			    log_idx + 1 >= log_size)
 				return (EINVAL);
 
 			log_map[log_idx] = phy_map[phy_idx];
@@ -2647,18 +2734,21 @@ urtwx_read_efuse(struct urtwx_softc *sc, uint8_t *mac_out)
 {
 	uint8_t	*phy_map;
 	uint8_t	*log_map;
+	uint16_t phy_size, log_size;
 	int	 ret;
 
-	phy_map = malloc(URTWX_EFUSE_PHY_SIZE, M_TEMP, M_WAITOK);
-	log_map = malloc(URTWX_EFUSE_LOG_SIZE, M_TEMP, M_WAITOK);
-	memset(phy_map, 0, URTWX_EFUSE_PHY_SIZE);
-	memset(log_map, 0xff, URTWX_EFUSE_LOG_SIZE);
+	phy_size = urtwx_efuse_phy_size(sc);
+	log_size = urtwx_efuse_log_size(sc);
+	phy_map = malloc(phy_size, M_TEMP, M_WAITOK);
+	log_map = malloc(log_size, M_TEMP, M_WAITOK);
+	memset(phy_map, 0, phy_size);
+	memset(log_map, 0xff, log_size);
 
 	ret = urtwx_dump_phy_efuse_map(sc, phy_map);
 	if (ret != 0)
 		goto out;
 
-	ret = urtwx_dump_log_efuse_map(phy_map, log_map);
+	ret = urtwx_dump_log_efuse_map(sc, phy_map, log_map);
 	if (ret != 0)
 		goto out;
 
@@ -2670,8 +2760,8 @@ urtwx_read_efuse(struct urtwx_softc *sc, uint8_t *mac_out)
 	ret = sc->sc_chip->uc_parse_efuse(sc, log_map, mac_out);
 
 out:
-	free(log_map, M_TEMP, URTWX_EFUSE_LOG_SIZE);
-	free(phy_map, M_TEMP, URTWX_EFUSE_PHY_SIZE);
+	free(log_map, M_TEMP, log_size);
+	free(phy_map, M_TEMP, phy_size);
 	return (ret);
 }
 
@@ -5059,7 +5149,7 @@ urtwx_priority_queue_cfg(struct urtwx_softc *sc)
 
 	bulkout = urtwx_bulkout_num(sc);
 	pg = &sc->sc_chip->uc_page_table[bulkout];
-	pubq_num = URTWX_RSVD_BOUNDARY - pg->hq_num - pg->lq_num -
+	pubq_num = urtwx_rsvd_boundary(sc) - pg->hq_num - pg->lq_num -
 	    pg->nq_num - pg->exq_num - pg->gapq_num;
 
 	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_FIFOPAGE_INFO_1, 0,
@@ -5087,26 +5177,26 @@ urtwx_priority_queue_cfg(struct urtwx_softc *sc)
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_FIFOPAGE_CTRL_2, 0,
-	    URTWX_RSVD_BOUNDARY);
+	    urtwx_rsvd_boundary(sc));
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_1_mask(sc, REG_FWHW_TXQ_CTRL + 2, 0x10, 0x10);
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_BCNQ_BDNY_V1, 0,
-	    URTWX_RSVD_BOUNDARY);
+	    urtwx_rsvd_boundary(sc));
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_FIFOPAGE_CTRL_2 + 2, 0,
-	    URTWX_RSVD_BOUNDARY);
+	    urtwx_rsvd_boundary(sc));
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, REG_BCNQ1_BDNY_V1, 0,
-	    URTWX_RSVD_BOUNDARY);
+	    urtwx_rsvd_boundary(sc));
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_RXFF_BNDY, 0,
-	    URTWX_RXFF_SIZE - URTWX_C2H_PKT_BUF - 1);
+	    urtwx_rxff_size(sc) - URTWX_C2H_PKT_BUF - 1);
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_write_1_mask(sc, REG_AUTO_LLT_V1, 0xf0,
@@ -5140,13 +5230,13 @@ urtwx_init_h2c(struct urtwx_softc *sc)
 	int ret;
 
 	value32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_H2C_HEAD, 0);
-	value32 = (value32 & 0xfffc0000U) | URTWX_H2CQ_ADDR;
+	value32 = (value32 & 0xfffc0000U) | urtwx_h2cq_addr(sc);
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_H2C_HEAD, 0, value32);
 	if (ret != 0)
 		return (ret);
 
 	value32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_H2C_READ_ADDR, 0);
-	value32 = (value32 & 0xfffc0000U) | URTWX_H2CQ_ADDR;
+	value32 = (value32 & 0xfffc0000U) | urtwx_h2cq_addr(sc);
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_H2C_READ_ADDR, 0,
 	    value32);
 	if (ret != 0)
@@ -5154,7 +5244,7 @@ urtwx_init_h2c(struct urtwx_softc *sc)
 
 	value32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_H2C_TAIL, 0);
 	value32 = (value32 & 0xfffc0000U) |
-	    (URTWX_H2CQ_ADDR + URTWX_H2CQ_SIZE);
+	    (urtwx_h2cq_addr(sc) + urtwx_h2cq_size(sc));
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_H2C_TAIL, 0, value32);
 	if (ret != 0)
 		return (ret);
@@ -5180,10 +5270,10 @@ urtwx_init_h2c(struct urtwx_softc *sc)
 	rp = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_H2C_PKT_READADDR, 0) &
 	    0x3ffff;
 	if (wp >= rp)
-		freeq = URTWX_H2CQ_SIZE - (wp - rp);
+		freeq = urtwx_h2cq_size(sc) - (wp - rp);
 	else
 		freeq = rp - wp;
-	if (freeq != URTWX_H2CQ_SIZE) {
+	if (freeq != urtwx_h2cq_size(sc)) {
 		DPRINTF(("%s: H2C queue mismatch wp=%#x rp=%#x free=%#x\n",
 		    DEVNAME(sc), wp, rp, freeq));
 	}
