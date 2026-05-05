@@ -48,14 +48,20 @@ throughput is now stable in the ~50 MB/s range. `urtwx` currently disables
 `A-MSDU in A-MPDU` in RX BA agreements because allowing it causes severe
 reorder-path collapse on this USB design.
 
-[ ] 14. Harden USB recovery and error handling.
-Exercise and harden:
+[~] 14. Harden USB recovery and error handling.
+Validation is mostly good: repeated `down/up`, open<->WPA2 churn, and unplug
+during scan/assoc/traffic all recovered cleanly in testing. One rare
+unplug-during-scan case failed to detach, but that may be generic OpenBSD USB
+stack behavior rather than a `urtwx`-specific bug. Still not explicitly
+validated:
 - watchdog-triggered TX timeout recovery
 - RX/TX endpoint stall recovery under load
-- repeated `ifconfig down/up` and mode-switch churn under traffic
-- unplug during scan/assoc/traffic and clean replug recovery
-- bad-state recovery without requiring a physical replug
 - any suspend/resume style stale-state path that shows up on USB
+
+[ ] 21. Add DFS station-channel support.
+Useful mainly for compatibility and usability on 5GHz networks which auto-pick
+DFS channels. This should be treated as a station-mode regulatory/channel
+exposure task, not a throughput feature.
 
 [ ] 15. Add support for other RTL88xx USB parts.
 Start with closely related 8821/8822 variants after 8821CU is stable enough
@@ -71,9 +77,9 @@ The current RTL8821CU work is 1T1R; MIMO likely belongs with item 14.
 [ ] 18. Improve comments and function preambles in `if_urtwx.c` and
 `if_urtwxreg.h`.
 
-[ ] 19. Write `walkthrough.md`.
+[X] 19. Write `walkthrough.md`.
 Document firmware loading, reserved pages, the security engine, scan/assoc
 bring-up, and the main differences from the Linux `rtw88` path.
 
-[ ] 20. Write `urtwx(4)`.
+[X] 20. Write `urtwx(4)`.
 Follow the same pattern and style as other OpenBSD USB Wi-Fi driver manpages.
