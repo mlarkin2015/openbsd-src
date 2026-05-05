@@ -134,6 +134,20 @@ void	ieee80211_recv_bar(struct ieee80211com *, struct mbuf *,
 void	ieee80211_bar_tid(struct ieee80211com *, struct ieee80211_node *,
 	    u_int8_t, u_int16_t);
 
+static int ieee80211_ba_diag_log;
+
+#define IEEE80211_BA_DIAG_LOG_MAX	256
+
+#define IEEE80211_BA_DIAG(_ic, _fmt, ...)					\
+	do {									\
+		if (strncmp((_ic)->ic_if.if_xname, "urtwx", 5) == 0 &&	\
+		    ieee80211_ba_diag_log < IEEE80211_BA_DIAG_LOG_MAX) {	\
+			printf("%s: " _fmt, (_ic)->ic_if.if_xname,		\
+			    ##__VA_ARGS__);					\
+			ieee80211_ba_diag_log++;				\
+		}								\
+	} while (0)
+
 /*
  * Retrieve the length in bytes of an 802.11 header.
  */
@@ -851,11 +865,15 @@ ieee80211_input_ba(struct ieee80211com *ic, struct mbuf *m,
 
 	if (SEQ_LT(sn, ba->ba_winstart)) {	/* SN < WinStartB */
 		ic->ic_stats.is_ht_rx_frame_below_ba_winstart++;
+		IEEE80211_BA_DIAG(ic, "RX BA below tid %u sn %u winstart %u "
+		    "winend %u\n", tid, sn, ba->ba_winstart, ba->ba_winend);
 		m_freem(m);	/* discard the MPDU */
 		return;
 	}
 	if (SEQ_LT(ba->ba_winend, sn)) {	/* WinEndB < SN */
 		ic->ic_stats.is_ht_rx_frame_above_ba_winend++;
+		IEEE80211_BA_DIAG(ic, "RX BA above tid %u sn %u winstart %u "
+		    "winend %u\n", tid, sn, ba->ba_winstart, ba->ba_winend);
 		count = (sn - ba->ba_winend) & 0xfff;
 		if (count > ba->ba_winsize) {
 			/* 
@@ -875,11 +893,17 @@ ieee80211_input_ba(struct ieee80211com *ic, struct mbuf *m,
 
 			/* It appears the window has moved for real. */
 			ic->ic_stats.is_ht_rx_ba_window_jump++;
+			IEEE80211_BA_DIAG(ic, "RX BA jump tid %u sn %u "
+			    "winstart %u winend %u count %d\n", tid, sn,
+			    ba->ba_winstart, ba->ba_winend, count);
 			ba->ba_winmiss = 0;
 			ba->ba_missedsn = 0;
 			ieee80211_ba_move_window(ic, ni, tid, sn, ml);
 		} else {
 			ic->ic_stats.is_ht_rx_ba_window_slide++;
+			IEEE80211_BA_DIAG(ic, "RX BA slide tid %u sn %u "
+			    "winstart %u winend %u count %d\n", tid, sn,
+			    ba->ba_winstart, ba->ba_winend, count);
 			ieee80211_input_ba_seq(ic, ni, tid,
 			    (ba->ba_winstart + count) & 0xfff, ml);
 			ieee80211_input_ba_flush(ic, ni, ba, ml);
@@ -895,6 +919,9 @@ ieee80211_input_ba(struct ieee80211com *ic, struct mbuf *m,
 	if (ba->ba_buf[idx].m != NULL) {
 		ifp->if_ierrors++;
 		ic->ic_stats.is_ht_rx_ba_no_buf++;
+		IEEE80211_BA_DIAG(ic, "RX BA no-buf tid %u sn %u idx %d "
+		    "head %d winstart %u winend %u\n", tid, sn, idx,
+		    ba->ba_head, ba->ba_winstart, ba->ba_winend);
 		m_freem(m);
 		return;
 	}
@@ -1015,6 +1042,9 @@ ieee80211_input_ba_gap_timeout(void *arg)
 
 	skipped = ieee80211_input_ba_gap_skip(ba);
 	ic->ic_stats.is_ht_rx_ba_frame_lost += skipped;
+	IEEE80211_BA_DIAG(ic, "RX BA gap timeout tid ? skipped %d "
+	    "winstart %u winend %u gapwait %u\n", skipped, ba->ba_winstart,
+	    ba->ba_winend, ba->ba_gapwait);
 	if (skipped) {
 		struct mbuf_list ml = MBUF_LIST_INITIALIZER();
 		ieee80211_input_ba_flush(ic, ni, ba, &ml);
@@ -3026,6 +3056,9 @@ ieee80211_recv_addba_req(struct ieee80211com *ic, struct mbuf *m,
 	    IEEE80211_ADDBA_BUFSZ_SHIFT;
 	timeout = LE_READ_2(&frm[5]);
 	ssn = LE_READ_2(&frm[7]) >> 4;
+	IEEE80211_BA_DIAG(ic, "ADDBA req from %s tid %u token %u bufsz %u "
+	    "timeout %u ssn %u state %u\n", ether_sprintf(ni->ni_macaddr),
+	    tid, token, bufsz, timeout, ssn, ni->ni_rx_ba[tid].ba_state);
 
 	ba = &ni->ni_rx_ba[tid];
 	/* The driver is still processing an ADDBA request for this tid. */
@@ -3102,13 +3135,19 @@ ieee80211_recv_addba_req(struct ieee80211com *ic, struct mbuf *m,
 	if (ic->ic_ampdu_rx_start != NULL)
 		err = ic->ic_ampdu_rx_start(ic, ni, tid);
 	if (err == EBUSY) {
+		IEEE80211_BA_DIAG(ic, "ADDBA req defer tid %u\n", tid);
 		/* driver will accept or refuse agreement when done */
 		return;
 	} else if (err) {
+		IEEE80211_BA_DIAG(ic, "ADDBA req refuse tid %u err %d\n",
+		    tid, err);
 		/* driver failed to setup, rollback */
 		ieee80211_addba_req_refuse(ic, ni, tid);
-	} else
+	} else {
+		IEEE80211_BA_DIAG(ic, "ADDBA req accept tid %u winstart %u "
+		    "winsize %u\n", tid, ba->ba_winstart, ba->ba_winsize);
 		ieee80211_addba_req_accept(ic, ni, tid);
+	}
 	return;
 
  refuse:
@@ -3126,6 +3165,9 @@ ieee80211_addba_req_accept(struct ieee80211com *ic, struct ieee80211_node *ni,
 
 	ba->ba_state = IEEE80211_BA_AGREED;
 	ic->ic_stats.is_ht_rx_ba_agreements++;
+	IEEE80211_BA_DIAG(ic, "RX BA agreed tid %u winstart %u winsize %u "
+	    "timeout %u\n", tid, ba->ba_winstart, ba->ba_winsize,
+	    ba->ba_timeout_val);
 	/* start Block Ack inactivity timer */
 	if (ba->ba_timeout_val != 0)
 		timeout_add_usec(&ba->ba_to, ba->ba_timeout_val);
@@ -3146,6 +3188,7 @@ ieee80211_addba_req_refuse(struct ieee80211com *ic, struct ieee80211_node *ni,
 	    IEEE80211_BA_MAX_WINSZ * sizeof(*ba->ba_buf));
 	ba->ba_buf = NULL;
 	ba->ba_state = IEEE80211_BA_INIT;
+	IEEE80211_BA_DIAG(ic, "RX BA refused tid %u\n", tid);
 
 	/* MLME-ADDBA.response */
 	IEEE80211_SEND_ACTION(ic, ni, IEEE80211_CATEG_BA,
@@ -3189,6 +3232,10 @@ ieee80211_recv_addba_resp(struct ieee80211com *ic, struct mbuf *m,
 
 	DPRINTF(("received ADDBA resp from %s, TID %d, status %d\n",
 	    ether_sprintf(ni->ni_macaddr), tid, status));
+	IEEE80211_BA_DIAG(ic, "ADDBA resp from %s tid %u status %u token %u "
+	    "bufsz %u timeout %u state %u\n",
+	    ether_sprintf(ni->ni_macaddr), tid, status, token, bufsz,
+	    timeout, ni->ni_tx_ba[tid].ba_state);
 
 	/*
 	 * Ignore if no ADDBA request has been sent for this RA/TID or
@@ -3229,14 +3276,19 @@ ieee80211_recv_addba_resp(struct ieee80211com *ic, struct mbuf *m,
 		err = ic->ic_ampdu_tx_start(ic, ni, tid);
 
 	if (err == EBUSY) {
+		IEEE80211_BA_DIAG(ic, "ADDBA resp defer tid %u\n", tid);
 		/* driver will accept or refuse agreement when done */
 		return;
 	} else if (err) {
+		IEEE80211_BA_DIAG(ic, "ADDBA resp refuse tid %u err %d\n",
+		    tid, err);
 		/* driver failed to setup, rollback */
 		ieee80211_addba_resp_refuse(ic, ni, tid,
 		    IEEE80211_STATUS_UNSPECIFIED);
-	} else
+	} else {
+		IEEE80211_BA_DIAG(ic, "ADDBA resp accept tid %u\n", tid);
 		ieee80211_addba_resp_accept(ic, ni, tid);
+	}
 }
 
 void
@@ -3248,6 +3300,9 @@ ieee80211_addba_resp_accept(struct ieee80211com *ic,
 	/* MLME-ADDBA.confirm(Success) */
 	ba->ba_state = IEEE80211_BA_AGREED;
 	ic->ic_stats.is_ht_tx_ba_agreements++;
+	IEEE80211_BA_DIAG(ic, "TX BA agreed tid %u winstart %u winsize %u "
+	    "timeout %u\n", tid, ba->ba_winstart, ba->ba_winsize,
+	    ba->ba_timeout_val);
 
 	/* Reset ADDBA request interval. */
 	ni->ni_addba_req_intval[tid] = 1;
@@ -3267,6 +3322,8 @@ ieee80211_addba_resp_refuse(struct ieee80211com *ic,
 
 	/* MLME-ADDBA.confirm(Failure) */
 	ba->ba_state = IEEE80211_BA_INIT;
+	IEEE80211_BA_DIAG(ic, "TX BA refused tid %u status %u\n", tid,
+	    status);
 }
 
 /*-
@@ -3299,6 +3356,9 @@ ieee80211_recv_delba(struct ieee80211com *ic, struct mbuf *m,
 
 	DPRINTF(("received DELBA from %s, TID %d, reason %d\n",
 	    ether_sprintf(ni->ni_macaddr), tid, reason));
+	IEEE80211_BA_DIAG(ic, "DELBA from %s tid %u reason %u initiator %u\n",
+	    ether_sprintf(ni->ni_macaddr), tid, reason,
+	    (params & IEEE80211_DELBA_INITIATOR) != 0);
 
 	if (params & IEEE80211_DELBA_INITIATOR) {
 		/* MLME-DELBA.indication(Originator) */
@@ -3622,6 +3682,8 @@ ieee80211_recv_bar(struct ieee80211com *ic, struct mbuf *m,
 	} else {
 		/* Basic or Compressed BlockAckReq variants */
 		ssn = LE_READ_2(&frm[2]) >> 4;
+		IEEE80211_BA_DIAG(ic, "BAR from %s tid %u ssn %u\n",
+		    ether_sprintf(ni->ni_macaddr), tid, ssn);
 		ieee80211_bar_tid(ic, ni, tid, ssn);
 	}
 }
@@ -3659,6 +3721,8 @@ ieee80211_bar_tid(struct ieee80211com *ic, struct ieee80211_node *ni,
 		timeout_add_usec(&ba->ba_to, ba->ba_timeout_val);
 
 	if (SEQ_LT(ba->ba_winstart, ssn)) {
+		IEEE80211_BA_DIAG(ic, "BAR move tid %u ssn %u winstart %u "
+		    "winend %u\n", tid, ssn, ba->ba_winstart, ba->ba_winend);
 		struct mbuf_list ml = MBUF_LIST_INITIALIZER();
 		ieee80211_ba_move_window(ic, ni, tid, ssn, &ml);
 		if_input(&ic->ic_if, &ml);

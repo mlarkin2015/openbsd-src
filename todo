@@ -37,9 +37,16 @@ still depends on on-air aggregation work.
 This likely means explicit driver support for BIP/IGTK key install/delete and
 advertising `IEEE80211_C_MFP` once tested.
 
-[ ] 12. Add on-air TX aggregation.
+[~] 12. Add on-air TX aggregation.
+TX BA negotiation and descriptor aggregation hints are working and give a
+small throughput improvement, but gains are still modest and likely limited
+by the current USB TX model.
 
-[ ] 13. Add on-air RX aggregation.
+[~] 13. Add on-air RX aggregation.
+RX BA is stable enough at `URTWX_RX_LIST_COUNT = 16` for useful testing and
+much better than the non-working baseline, but reverse multi-stream traffic
+still shows occasional 1-second stalls and BA reorder diagnostics still show
+gap/no-buf pressure under load.
 
 [ ] 14. Harden USB recovery and error handling.
 Watch timeout recovery, endpoint stall recovery, repeated up/down cycles, and
