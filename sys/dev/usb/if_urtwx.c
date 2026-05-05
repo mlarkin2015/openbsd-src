@@ -109,12 +109,19 @@
 #define URTWX_TXDESC_W8_EN_HWSEQ	0x00008000U
 #define URTWX_TXDESC_W9_SWSEQ_SHIFT	12
 #define URTWX_HTCAP_BASE		IEEE80211_HTCAP_SGI20
+#define URTWX_RATEID_BGN_40M_2SS	0
 #define URTWX_RATEID_BGN_40M_1SS	1
+#define URTWX_RATEID_BGN_20M_2SS	2
 #define URTWX_RATEID_BGN_20M_1SS	3
+#define URTWX_RATEID_GN_N2SS		4
+#define URTWX_RATEID_GN_N1SS		5
 #define URTWX_RATEID_BG			6
 #define URTWX_RATEID_G			7
 #define URTWX_RATEID_B_20M		8
+#define URTWX_RATEID_ARFR0_AC_2SS	9
 #define URTWX_RATEID_ARFR1_AC_1SS	10
+#define URTWX_RATEID_ARFR2_AC_2G_1SS	11
+#define URTWX_RATEID_ARFR3_AC_2G_2SS	12
 #define URTWX_CHANNEL_WIDTH_20		0
 #define URTWX_CHANNEL_WIDTH_40		1
 #define URTWX_CHANNEL_WIDTH_80		2
@@ -130,7 +137,9 @@
 #define URTWX_DESC_RATE6M		0x04
 #define URTWX_DESC_RATE54M		0x0b
 #define URTWX_DESC_RATEMCS7		0x13
+#define URTWX_DESC_RATEMCS15		0x1b
 #define URTWX_DESC_RATEVHT1SS_MCS9	0x35
+#define URTWX_DESC_RATEVHT2SS_MCS9	0x3f
 #define URTWX_SEC_TYPE_WEP40		0x01
 #define URTWX_SEC_TYPE_TKIP		0x01
 #define URTWX_SEC_TYPE_WEP104		0x01
@@ -159,7 +168,9 @@
 #define URTWX_RA_MASK_CCK_RATES		0x0000000fU
 #define URTWX_RA_MASK_OFDM_RATES	0x00000ff0U
 #define URTWX_RA_MASK_HT_RATES_1SS	0x000ff000U
+#define URTWX_RA_MASK_HT_RATES_2SS	0x0ff00000U
 #define URTWX_RA_MASK_VHT_RATES_1SS	0x3ff000U
+#define URTWX_RA_MASK_VHT_RATES_2SS	0xffc00000U
 
 #define URTWX_RX_LIST_COUNT		16
 #define URTWX_RXBUFSZ			32768
@@ -234,7 +245,9 @@
 #define URTWX_RX_AGG_SIZE		0x05
 #define URTWX_RX_AGG_TIMEOUT		0x20
 #define URTWX_RF_BASE_A			0x2800
+#define URTWX_RF_BASE_B			0x2c00
 #define URTWX_RF_SIPI_A			0x0c90
+#define URTWX_RF_SIPI_B			0x0e90
 #define URTWX_RFE_OPTION_BTG_MASK	0x1f
 #define URTWX_RFE_OPTION_PKG_MASK	0x20
 #define URTWX_XTAL_CAP_MASK		0x3f
@@ -536,6 +549,88 @@ urtwx_legacy_rate_index(struct ieee80211_node *ni, uint8_t desc_rate)
 	return -1;
 }
 
+static int
+urtwx_desc_rate_is_vht(uint8_t desc_rate)
+{
+	return (desc_rate >= 0x2c && desc_rate <= 0x53);
+}
+
+static int
+urtwx_desc_rate_is_ht(uint8_t desc_rate)
+{
+	return (desc_rate >= 0x0c && desc_rate <= 0x2b);
+}
+
+static int
+urtwx_desc_rate_vht_nss(uint8_t desc_rate)
+{
+	if (!urtwx_desc_rate_is_vht(desc_rate))
+		return (0);
+	return (1 + ((desc_rate - 0x2c) / 10));
+}
+
+static int
+urtwx_desc_rate_vht_mcs(uint8_t desc_rate)
+{
+	if (!urtwx_desc_rate_is_vht(desc_rate))
+		return (-1);
+	return ((desc_rate - 0x2c) % 10);
+}
+
+static int
+urtwx_desc_rate_ht_mcs(uint8_t desc_rate)
+{
+	if (!urtwx_desc_rate_is_ht(desc_rate))
+		return (-1);
+	return (desc_rate - 0x0c);
+}
+
+static uint16_t
+urtwx_vht_mcs_map(uint8_t nss, uint8_t max_mcs)
+{
+	uint16_t map;
+	uint16_t code;
+	int ss;
+
+	switch (max_mcs) {
+	case 7:
+		code = IEEE80211_VHT_MCS_0_7;
+		break;
+	case 8:
+		code = IEEE80211_VHT_MCS_0_8;
+		break;
+	default:
+		code = IEEE80211_VHT_MCS_0_9;
+		break;
+	}
+
+	map = 0;
+	for (ss = 1; ss <= 8; ss++) {
+		map |= (uint16_t)((ss <= nss) ? code :
+		    IEEE80211_VHT_MCS_SS_NOT_SUPP)
+		    << IEEE80211_VHT_MCS_FOR_SS_SHIFT(ss);
+	}
+
+	return (map);
+}
+
+static void
+urtwx_build_sup_mcs(uint8_t *sup_mcs, size_t sup_mcs_len, uint8_t nss,
+    uint8_t max_mcs)
+{
+	int ss, mcs, bit;
+
+	memset(sup_mcs, 0, sup_mcs_len);
+	for (ss = 0; ss < nss; ss++) {
+		for (mcs = 0; mcs <= max_mcs; mcs++) {
+			bit = ss * 8 + mcs;
+			if (bit / NBBY >= sup_mcs_len)
+				return;
+			sup_mcs[bit / NBBY] |= 1U << (bit % NBBY);
+		}
+	}
+}
+
 static uint8_t
 urtwx_tx_ampdu_num(const struct ieee80211_node *ni)
 {
@@ -562,16 +657,16 @@ urtwx_update_ra_node(struct urtwx_softc *sc, uint8_t desc_rate)
 	if (ic->ic_state != IEEE80211_S_RUN || ni == NULL)
 		return;
 
-	if (desc_rate >= 0x2c && desc_rate <= 0x53) {
-		nss = 1 + ((desc_rate - 0x2c) / 10);
-		mcs = (desc_rate - 0x2c) % 10;
+	if (urtwx_desc_rate_is_vht(desc_rate)) {
+		nss = urtwx_desc_rate_vht_nss(desc_rate);
+		mcs = urtwx_desc_rate_vht_mcs(desc_rate);
 		ni->ni_txmcs = mcs;
 		ni->ni_vht_ss = nss;
 		return;
 	}
 
-	if (desc_rate >= 0x0c && desc_rate <= 0x2b) {
-		ni->ni_txmcs = desc_rate - 0x0c;
+	if (urtwx_desc_rate_is_ht(desc_rate)) {
+		ni->ni_txmcs = urtwx_desc_rate_ht_mcs(desc_rate);
 		return;
 	}
 
@@ -606,6 +701,11 @@ struct urtwx_page_table {
 	uint16_t	lq_num;
 	uint16_t	exq_num;
 	uint16_t	gapq_num;
+};
+
+struct urtwx_phy_table {
+	const uint32_t	*ut_data;
+	size_t		 ut_size;
 };
 
 enum urtwx_rf_set {
@@ -643,13 +743,27 @@ struct urtwx_chip_info {
 	uint16_t			 uc_fw_signature;
 	const struct urtwx_page_table	*uc_page_table;
 	const struct urtwx_rqpn		*uc_rqpn;
+	struct urtwx_phy_table		 uc_mac_tbl;
+	struct urtwx_phy_table		 uc_agc_tbl;
+	struct urtwx_phy_table		 uc_agc_btg_type2_tbl;
+	struct urtwx_phy_table		 uc_bb_tbl;
+	struct urtwx_phy_table		 uc_rf_tbl[2];
+	uint8_t				 uc_rf_path_count;
 	uint8_t				 uc_sys_func_en;
+	uint8_t				 uc_tx_nss;
+	uint8_t				 uc_ht_mcs_max;
+	uint8_t				 uc_vht_mcs_max;
+	uint8_t				 uc_rateid_ht_20m;
+	uint8_t				 uc_rateid_ht_40m;
+	uint8_t				 uc_rateid_vht_5g;
+	uint8_t				 uc_rateid_vht_2g;
+	uint8_t				 uc_desc_rate_ht_max;
+	uint8_t				 uc_desc_rate_vht_max;
+	uint32_t			 uc_ra_mask_ht;
+	uint32_t			 uc_ra_mask_vht;
 	uint32_t			 uc_ic_caps;
 	uint32_t			 uc_htcaps;
-	uint8_t				 uc_sup_mcs[howmany(80, NBBY)];
 	uint32_t			 uc_vhtcaps;
-	uint16_t			 uc_vht_rxmcs;
-	uint16_t			 uc_vht_txmcs;
 	uint16_t			 uc_vht_rx_max_lgi_mbit_s;
 	uint16_t			 uc_vht_tx_max_lgi_mbit_s;
 	int				(*uc_parse_efuse)(struct urtwx_softc *,
@@ -708,12 +822,32 @@ static const struct urtwx_chip_info urtwx_chip_8821c = {
 	.uc_fw_signature = 0x8821,
 	.uc_page_table = urtwx_page_table_8821c,
 	.uc_rqpn = urtwx_rqpn_8821c,
+	.uc_mac_tbl = { urtwx_mac, nitems(urtwx_mac) },
+	.uc_agc_tbl = { urtwx_agc, nitems(urtwx_agc) },
+	.uc_agc_btg_type2_tbl = { urtwx_agc_btg_type2,
+	    nitems(urtwx_agc_btg_type2) },
+	.uc_bb_tbl = { urtwx_bb, nitems(urtwx_bb) },
+	.uc_rf_tbl = {
+		{ urtwx_rf_a, nitems(urtwx_rf_a) },
+		{ NULL, 0 },
+	},
+	.uc_rf_path_count = 1,
 	.uc_sys_func_en = URTWX_SYS_FUNC_EN_8821C,
+	.uc_tx_nss = 1,
+	.uc_ht_mcs_max = 7,
+	.uc_vht_mcs_max = 9,
+	.uc_rateid_ht_20m = URTWX_RATEID_BGN_20M_1SS,
+	.uc_rateid_ht_40m = URTWX_RATEID_BGN_40M_1SS,
+	.uc_rateid_vht_5g = URTWX_RATEID_ARFR1_AC_1SS,
+	.uc_rateid_vht_2g = URTWX_RATEID_ARFR2_AC_2G_1SS,
+	.uc_desc_rate_ht_max = URTWX_DESC_RATEMCS7,
+	.uc_desc_rate_vht_max = URTWX_DESC_RATEVHT1SS_MCS9,
+	.uc_ra_mask_ht = URTWX_RA_MASK_HT_RATES_1SS,
+	.uc_ra_mask_vht = URTWX_RA_MASK_VHT_RATES_1SS,
 	.uc_ic_caps = IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
 	    IEEE80211_C_MFP | IEEE80211_C_SHPREAMBLE |
 	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN,
 	.uc_htcaps = URTWX_HTCAP_BASE,
-	.uc_sup_mcs = { 0xff },
 	.uc_vhtcaps = IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
 	    (IEEE80211_VHTCAP_MAX_AMPDU_LEN_64K <<
 	    IEEE80211_VHTCAP_MAX_AMPDU_LEN_SHIFT) |
@@ -722,38 +856,6 @@ static const struct urtwx_chip_info urtwx_chip_8821c = {
 	    IEEE80211_VHTCAP_SGI80 |
 	    IEEE80211_VHTCAP_RX_ANT_PATTERN |
 	    IEEE80211_VHTCAP_TX_ANT_PATTERN,
-	.uc_vht_rxmcs = (IEEE80211_VHT_MCS_0_9 <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(1)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(2)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(3)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(4)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(5)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(6)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(7)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(8)),
-	.uc_vht_txmcs = (IEEE80211_VHT_MCS_0_9 <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(1)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(2)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(3)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(4)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(5)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(6)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(7)) |
-	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(8)),
 	.uc_vht_rx_max_lgi_mbit_s = 390,
 	.uc_vht_tx_max_lgi_mbit_s = 390,
 	.uc_parse_efuse = urtwx_parse_efuse_8821c,
@@ -851,7 +953,7 @@ static void	urtwx_parse_c2h(struct urtwx_softc *, const uint8_t *, int);
 static void	urtwx_parse_rx_desc(const struct urtwx_rx_desc *,
 		    struct urtwx_rx_stat *);
 static int	urtwx_phy_cfg(struct urtwx_softc *, enum urtwx_phy_cfg,
-		    uint32_t, uint32_t);
+		    uint8_t, uint32_t, uint32_t);
 static void	urtwx_update_htcaps(struct urtwx_softc *,
 		    struct ieee80211_channel *);
 static void	urtwx_get_chan_params(struct urtwx_softc *,
@@ -859,10 +961,11 @@ static void	urtwx_get_chan_params(struct urtwx_softc *,
 		    uint8_t *);
 static int	urtwx_phy_init_runtime(struct urtwx_softc *);
 static int	urtwx_phy_load_table(struct urtwx_softc *,
-		    const uint32_t *, size_t, enum urtwx_phy_cfg);
+		    const uint32_t *, size_t, enum urtwx_phy_cfg, uint8_t);
 static int	urtwx_phy_load_tables(struct urtwx_softc *);
 static int	urtwx_phy_match_cond(struct urtwx_softc *, uint32_t,
 		    uint32_t);
+static uint32_t	urtwx_read_rf_path(struct urtwx_softc *, uint8_t, uint8_t);
 static uint32_t	urtwx_read_rf(struct urtwx_softc *, uint8_t);
 static int	urtwx_power_on(struct urtwx_softc *);
 static int	urtwx_priority_queue_cfg(struct urtwx_softc *);
@@ -921,6 +1024,8 @@ static uint32_t	urtwx_build_null_frame(struct urtwx_softc *, uint8_t *, int);
 static uint32_t	urtwx_build_pspoll_frame(struct urtwx_softc *, uint8_t *);
 static void	urtwx_fill_rsvd_page_desc(struct urtwx_tx_desc *, uint32_t,
 		    int, int);
+static int	urtwx_write_rf_path(struct urtwx_softc *, uint8_t, uint8_t,
+		    uint32_t, uint32_t);
 static int	urtwx_write_rf(struct urtwx_softc *, uint8_t, uint32_t,
 		    uint32_t);
 static int	urtwx_write_1(struct urtwx_softc *, uint8_t, uint16_t,
@@ -1129,34 +1234,61 @@ urtwx_mask2shift(uint32_t mask)
 }
 
 static uint32_t
-urtwx_read_rf(struct urtwx_softc *sc, uint8_t addr)
+urtwx_read_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr)
 {
+	static const uint16_t rf_base[] = {
+		URTWX_RF_BASE_A,
+		URTWX_RF_BASE_B
+	};
 	uint16_t reg;
 
-	reg = URTWX_RF_BASE_A + ((uint16_t)addr << 2);
+	if (path >= nitems(rf_base))
+		return (0xffffffffU);
+
+	reg = rf_base[path] + ((uint16_t)addr << 2);
 	return (urtwx_read_4(sc, RTW_USB_CMD_REQ, reg, 0) & RFREG_MASK);
+}
+
+static int
+urtwx_write_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr,
+    uint32_t mask, uint32_t data)
+{
+	static const uint16_t rf_sipi[] = {
+		URTWX_RF_SIPI_A,
+		URTWX_RF_SIPI_B
+	};
+	uint32_t old, shift, value;
+
+	if (path >= nitems(rf_sipi))
+		return (EINVAL);
+
+	mask &= RFREG_MASK;
+	data &= RFREG_MASK;
+
+	if (mask != RFREG_MASK) {
+		old = urtwx_read_rf_path(sc, path, addr);
+		shift = urtwx_mask2shift(mask);
+		data = (old & ~mask) | ((data << shift) & mask);
+	}
+
+	value = (((uint32_t)addr << 20) | data) & 0x0fffffffU;
+	if (urtwx_write_4(sc, RTW_USB_CMD_REQ, rf_sipi[path], 0, value) != 0)
+		return (EIO);
+	delay(13);
+	return (0);
+}
+
+static uint32_t
+urtwx_read_rf(struct urtwx_softc *sc, uint8_t addr)
+{
+	return (urtwx_read_rf_path(sc, 0, addr));
 }
 
 static int
 urtwx_write_rf(struct urtwx_softc *sc, uint8_t addr, uint32_t mask,
     uint32_t data)
 {
-	uint32_t old, shift, value;
-
-	mask &= RFREG_MASK;
-	data &= RFREG_MASK;
-
-	if (mask != RFREG_MASK) {
-		old = urtwx_read_rf(sc, addr);
-		shift = urtwx_mask2shift(mask);
-		data = (old & ~mask) | ((data << shift) & mask);
-	}
-
-	value = (((uint32_t)addr << 20) | data) & 0x0fffffffU;
-	if (urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_RF_SIPI_A, 0, value) != 0)
-		return (EIO);
-	delay(13);
-	return (0);
+	return (urtwx_write_rf_path(sc, 0, addr, mask, data));
 }
 
 static int
@@ -2660,8 +2792,8 @@ urtwx_phy_match_cond(struct urtwx_softc *sc, uint32_t cond, uint32_t cond2)
 }
 
 static int
-urtwx_phy_cfg(struct urtwx_softc *sc, enum urtwx_phy_cfg cfg, uint32_t addr,
-    uint32_t data)
+urtwx_phy_cfg(struct urtwx_softc *sc, enum urtwx_phy_cfg cfg, uint8_t rf_path,
+    uint32_t addr, uint32_t data)
 {
 	switch (cfg) {
 	case URTWX_PHY_CFG_MAC:
@@ -2701,7 +2833,8 @@ urtwx_phy_cfg(struct urtwx_softc *sc, enum urtwx_phy_cfg cfg, uint32_t addr,
 			delay(100);
 			return (0);
 		default:
-			if (urtwx_write_rf(sc, addr, RFREG_MASK, data) != 0)
+			if (urtwx_write_rf_path(sc, rf_path, addr, RFREG_MASK,
+			    data) != 0)
 				return (EIO);
 			delay(1);
 			return (0);
@@ -2713,7 +2846,7 @@ urtwx_phy_cfg(struct urtwx_softc *sc, enum urtwx_phy_cfg cfg, uint32_t addr,
 
 static int
 urtwx_phy_load_table(struct urtwx_softc *sc, const uint32_t *tbl, size_t size,
-    enum urtwx_phy_cfg cfg)
+    enum urtwx_phy_cfg cfg, uint8_t rf_path)
 {
 	uint32_t addr, cond, cond2, data;
 	int i, is_matched, is_skipped, ret;
@@ -2769,7 +2902,7 @@ urtwx_phy_load_table(struct urtwx_softc *sc, const uint32_t *tbl, size_t size,
 		if (!is_matched)
 			continue;
 
-		ret = urtwx_phy_cfg(sc, cfg, addr, data);
+		ret = urtwx_phy_cfg(sc, cfg, rf_path, addr, data);
 		if (ret != 0)
 			return (ret);
 	}
@@ -2780,29 +2913,40 @@ urtwx_phy_load_table(struct urtwx_softc *sc, const uint32_t *tbl, size_t size,
 static int
 urtwx_phy_load_tables(struct urtwx_softc *sc)
 {
+	const struct urtwx_chip_info *chip = sc->sc_chip;
+	int path;
 	int ret;
 
-	ret = urtwx_phy_load_table(sc, urtwx_mac, nitems(urtwx_mac),
-	    URTWX_PHY_CFG_MAC);
+	ret = urtwx_phy_load_table(sc, chip->uc_mac_tbl.ut_data,
+	    chip->uc_mac_tbl.ut_size, URTWX_PHY_CFG_MAC, 0);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_phy_load_table(sc, urtwx_bb, nitems(urtwx_bb),
-	    URTWX_PHY_CFG_BB);
+	ret = urtwx_phy_load_table(sc, chip->uc_bb_tbl.ut_data,
+	    chip->uc_bb_tbl.ut_size, URTWX_PHY_CFG_BB, 0);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_phy_load_table(sc, urtwx_agc, nitems(urtwx_agc),
-	    URTWX_PHY_CFG_AGC);
+	ret = urtwx_phy_load_table(sc, chip->uc_agc_tbl.ut_data,
+	    chip->uc_agc_tbl.ut_size, URTWX_PHY_CFG_AGC, 0);
 	if (ret != 0)
 		return (ret);
 	if (sc->sc_rfe_option == 0x02 || sc->sc_rfe_option == 0x04) {
-		ret = urtwx_phy_load_table(sc, urtwx_agc_btg_type2,
-		    nitems(urtwx_agc_btg_type2), URTWX_PHY_CFG_AGC);
+		ret = urtwx_phy_load_table(sc, chip->uc_agc_btg_type2_tbl.ut_data,
+		    chip->uc_agc_btg_type2_tbl.ut_size, URTWX_PHY_CFG_AGC, 0);
 		if (ret != 0)
 			return (ret);
 	}
 
-	return (urtwx_phy_load_table(sc, urtwx_rf_a, nitems(urtwx_rf_a),
-	    URTWX_PHY_CFG_RF));
+	for (path = 0; path < chip->uc_rf_path_count; path++) {
+		if (chip->uc_rf_tbl[path].ut_data == NULL ||
+		    chip->uc_rf_tbl[path].ut_size == 0)
+			continue;
+		ret = urtwx_phy_load_table(sc, chip->uc_rf_tbl[path].ut_data,
+		    chip->uc_rf_tbl[path].ut_size, URTWX_PHY_CFG_RF, path);
+		if (ret != 0)
+			return (ret);
+	}
+
+	return (0);
 }
 
 static int
@@ -3358,11 +3502,11 @@ urtwx_sta_enter_run(struct urtwx_softc *sc)
 	    ((uint16_t)ni->ni_bssid[5] << 8);
 	intval = ni->ni_intval;
 	urtwx_node_tx_info(ni, &rate_id, &desc_rate, &sgi, &ldpc, &ra_mask);
-	if (desc_rate >= 0x2c && desc_rate <= 0x53) {
-		ni->ni_vht_ss = 1 + ((desc_rate - 0x2c) / 10);
-		ni->ni_txmcs = (desc_rate - 0x2c) % 10;
-	} else if (desc_rate >= 0x0c && desc_rate <= 0x2b)
-		ni->ni_txmcs = desc_rate - 0x0c;
+	if (urtwx_desc_rate_is_vht(desc_rate)) {
+		ni->ni_vht_ss = urtwx_desc_rate_vht_nss(desc_rate);
+		ni->ni_txmcs = urtwx_desc_rate_vht_mcs(desc_rate);
+	} else if (urtwx_desc_rate_is_ht(desc_rate))
+		ni->ni_txmcs = urtwx_desc_rate_ht_mcs(desc_rate);
 	else if ((ret = urtwx_legacy_rate_index(ni, desc_rate)) >= 0)
 		ni->ni_txrate = ret;
 	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_BSSID, 0, bssid0);
@@ -3419,6 +3563,7 @@ static void
 urtwx_node_tx_info(struct ieee80211_node *ni, uint8_t *rate_id,
     uint8_t *desc_rate, uint8_t *sgi, uint8_t *ldpc, uint32_t *ra_mask)
 {
+	struct urtwx_softc *sc = ni->ni_ic->ic_if.if_softc;
 	const struct ieee80211_rateset *rs = &ni->ni_rates;
 	int has_cck, has_ofdm;
 	int i;
@@ -3450,14 +3595,14 @@ urtwx_node_tx_info(struct ieee80211_node *ni, uint8_t *rate_id,
 	}
 
 	if ((ni->ni_flags & IEEE80211_NODE_HT) != 0) {
-		*rate_id = URTWX_RATEID_BGN_20M_1SS;
-		*desc_rate = URTWX_DESC_RATEMCS7;
+		*rate_id = sc->sc_chip->uc_rateid_ht_20m;
+		*desc_rate = sc->sc_chip->uc_desc_rate_ht_max;
 		*ra_mask = URTWX_RA_MASK_CCK_RATES |
 		    URTWX_RA_MASK_OFDM_RATES |
-		    URTWX_RA_MASK_HT_RATES_1SS;
+		    sc->sc_chip->uc_ra_mask_ht;
 		if (IEEE80211_CHAN_40MHZ_ALLOWED(ni->ni_chan) &&
 		    ieee80211_node_supports_ht_chan40(ni)) {
-			*rate_id = URTWX_RATEID_BGN_40M_1SS;
+			*rate_id = sc->sc_chip->uc_rateid_ht_40m;
 			if ((ni->ni_flags & IEEE80211_NODE_HT_SGI40) != 0)
 				*sgi = 1;
 		} else if ((ni->ni_flags & IEEE80211_NODE_HT_SGI20) != 0)
@@ -3466,11 +3611,14 @@ urtwx_node_tx_info(struct ieee80211_node *ni, uint8_t *rate_id,
 			*ldpc = 1;
 	}
 	if ((ni->ni_flags & IEEE80211_NODE_VHT) != 0) {
-		*rate_id = URTWX_RATEID_ARFR1_AC_1SS;
-		*desc_rate = URTWX_DESC_RATEVHT1SS_MCS9;
+		if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))
+			*rate_id = sc->sc_chip->uc_rateid_vht_2g;
+		else
+			*rate_id = sc->sc_chip->uc_rateid_vht_5g;
+		*desc_rate = sc->sc_chip->uc_desc_rate_vht_max;
 		*sgi = 0;
 		*ldpc = 0;
-		*ra_mask = URTWX_RA_MASK_VHT_RATES_1SS;
+		*ra_mask = sc->sc_chip->uc_ra_mask_vht;
 		if (ieee80211_node_supports_vht_sgi80(ni))
 			*sgi = 1;
 		if ((ni->ni_vhtcaps & IEEE80211_VHTCAP_RX_LDPC) != 0)
@@ -5417,11 +5565,13 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_state = IEEE80211_S_INIT;
 	ic->ic_max_rssi = 100;
 	ic->ic_htcaps = sc->sc_chip->uc_htcaps;
-	memcpy(ic->ic_sup_mcs, sc->sc_chip->uc_sup_mcs,
-	    sizeof(ic->ic_sup_mcs));
+	urtwx_build_sup_mcs(ic->ic_sup_mcs, sizeof(ic->ic_sup_mcs),
+	    sc->sc_chip->uc_tx_nss, sc->sc_chip->uc_ht_mcs_max);
 	ic->ic_vhtcaps = sc->sc_chip->uc_vhtcaps;
-	ic->ic_vht_rxmcs = sc->sc_chip->uc_vht_rxmcs;
-	ic->ic_vht_txmcs = sc->sc_chip->uc_vht_txmcs;
+	ic->ic_vht_rxmcs = urtwx_vht_mcs_map(sc->sc_chip->uc_tx_nss,
+	    sc->sc_chip->uc_vht_mcs_max);
+	ic->ic_vht_txmcs = urtwx_vht_mcs_map(sc->sc_chip->uc_tx_nss,
+	    sc->sc_chip->uc_vht_mcs_max);
 	ic->ic_vht_rx_max_lgi_mbit_s = sc->sc_chip->uc_vht_rx_max_lgi_mbit_s;
 	ic->ic_vht_tx_max_lgi_mbit_s = sc->sc_chip->uc_vht_tx_max_lgi_mbit_s;
 	ic->ic_caps = sc->sc_chip->uc_ic_caps;

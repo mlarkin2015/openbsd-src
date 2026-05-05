@@ -41,6 +41,12 @@ deauthentication no longer disconnects the station.
 TX BA negotiation and descriptor aggregation hints are working and give a
 small throughput improvement, but gains are still modest and likely limited
 by the current USB TX model.
+If this is revisited, the next likely step is a per-node/per-TID TX scheduler
+rather than more USB batching tweaks. OpenBSD `net80211` currently exposes BA
+state but not a generic `mac80211`-style TXQ framework, so the practical first
+implementation would likely live in `urtwx`; if that proves useful, the more
+general queueing/scheduling pieces could be considered for promotion into
+`net80211` later.
 
 [X] 13. Add on-air RX aggregation.
 RX BA is working at `URTWX_RX_LIST_COUNT = 16` and reverse multi-stream
