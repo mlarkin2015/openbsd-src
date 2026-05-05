@@ -165,7 +165,6 @@
 #define URTWX_RXBUFSZ			32768
 #define URTWX_RX_DESC_SIZE		24
 #define URTWX_RX_MGMT_LOG_MAX		64
-#define URTWX_RX_BA_NO_AMSDU		1
 
 #define URTWX_WAIT_COUNT		1000
 #define URTWX_WAIT_DELAY_US		10
@@ -3533,7 +3532,7 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
 				    REG_CR, 0)));
 				sc->sc_tx_data_log = 0;
-					sc->sc_txeof_data_log = 0;
+				sc->sc_txeof_data_log = 0;
 			}
 		}
 		break;
@@ -3875,7 +3874,6 @@ urtwx_close_pipes(struct urtwx_softc *sc)
 		usbd_close_pipe(sc->sc_ep[URTWX_ENDPT_INTR]);
 		sc->sc_ep[URTWX_ENDPT_INTR] = NULL;
 	}
-	sc->sc_tx_data_pipe = NULL;
 }
 
 static void
@@ -4559,6 +4557,10 @@ urtwx_stop(struct ifnet *ifp)
 
 	sc->sc_tx_active = 0;
 	sc->sc_tx_data_pipe = NULL;
+	if (sc->sc_tx_ni != NULL) {
+		ieee80211_release_node(ic, sc->sc_tx_ni);
+		sc->sc_tx_ni = NULL;
+	}
 	sc->sc_key_tasks = 0;
 }
 

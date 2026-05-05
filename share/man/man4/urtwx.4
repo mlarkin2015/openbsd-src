@@ -1,0 +1,122 @@
+.\" $OpenBSD$
+.\"
+.Dd $Mdocdate: May 5 2026 $
+.Dt URTWX 4
+.Os
+.Sh NAME
+.Nm urtwx
+.Nd Realtek RTL8821CU USB IEEE 802.11a/ac/b/g/n wireless network device
+.Sh SYNOPSIS
+.Cd "urtwx* at uhub? port ?"
+.Sh DESCRIPTION
+The
+.Nm
+driver supports USB wireless network devices based on the Realtek RTL8821CU
+chipset.
+.Pp
+The RTL8821CU is a highly integrated dual-band 802.11ac adapter that combines
+a MAC, a 1T1R capable baseband, an RF, and a USB interface in a single chip.
+It can operate in the 2GHz and 5GHz bands.
+.Pp
+The
+.Nm
+driver supports 802.11n high throughput (HT) operation, including 40MHz
+channels in both the 2GHz and 5GHz bands, and 802.11ac very high throughput
+(VHT) operation with 80MHz channels in the 5GHz band on non-DFS channels.
+.Pp
+The
+.Nm
+driver can be configured to use
+Wired Equivalent Privacy (WEP) or
+Wi-Fi Protected Access (WPA1 and WPA2).
+WPA2 is currently the most secure encryption standard for wireless networks
+supported by
+.Ox .
+It is strongly recommended that neither WEP nor WPA1
+are used as the sole mechanism to secure wireless communication,
+due to serious weaknesses.
+WPA1 is disabled by default and may be enabled using the option
+.Qq Cm wpaprotos Ar wpa1,wpa2 .
+For standard WPA networks which use pre-shared keys (PSK),
+keys are configured using the
+.Qq Cm wpakey
+option.
+WPA-Enterprise networks require use of the wpa_supplicant package.
+The
+.Nm
+driver offloads encryption and decryption of data frames to the hardware for
+the CCMP cipher.
+.Pp
+The
+.Nm
+driver supports protected management frames (PMF) on WPA2/RSN networks,
+which prevents spoofing of management frames such as deauthentication and
+disassociation.
+.Pp
+The
+.Nm
+driver can be configured at runtime with
+.Xr ifconfig 8
+or on boot with
+.Xr hostname.if 5 .
+.Sh FILES
+The adapter needs the following firmware file to run, which is loaded when an
+interface is brought up:
+.Pp
+.Bl -tag -width Ds -offset indent -compact
+.It Pa /etc/firmware/rtw8821c_fw.bin
+.El
+.Sh EXAMPLES
+The following example scans for available networks:
+.Pp
+.Dl # ifconfig urtwx0 scan
+.Pp
+The following
+.Xr hostname.if 5
+example configures urtwx0 to join network
+.Dq mynwid ,
+using WPA key
+.Dq mywpakey ,
+obtaining an IP address using DHCP:
+.Bd -literal -offset indent
+join mynwid wpakey mywpakey
+inet autoconf
+.Ed
+.Sh DIAGNOSTICS
+.Bl -diag
+.It "urtwx0: firmware download failed"
+The driver was unable to load or start the firmware needed by the adapter.
+The firmware file may be missing, corrupted, or incompatible with the device.
+.It "urtwx0: power-on/system init failed"
+The adapter did not complete low-level hardware initialization.
+The interface will remain unusable until initialization succeeds.
+.It "urtwx0: could not start RX path"
+The receive path could not be started.
+This should not happen.
+.It "urtwx0: device timeout"
+A frame dispatched to the hardware for transmission did not complete in time.
+The driver will stop transmitting until the interface is reset.
+This should not happen.
+.El
+.Sh SEE ALSO
+.Xr arp 4 ,
+.Xr ifmedia 4 ,
+.Xr intro 4 ,
+.Xr netintro 4 ,
+.Xr usb 4 ,
+.Xr hostname.if 5 ,
+.Xr ifconfig 8
+.Sh HISTORY
+The
+.Nm
+driver first appeared in
+.Ox 8.0 .
+.Sh CAVEATS
+The
+.Nm
+driver currently supports station mode operation.
+Host AP mode is not supported.
+.Pp
+5GHz operation is limited to non-DFS channels.
+.Pp
+Support for additional RTL88xx USB chipsets is not yet implemented.
