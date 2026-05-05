@@ -349,6 +349,7 @@ struct urtwx_c2h_ra_rpt {
 } __packed;
 
 struct urtwx_softc;
+struct urtwx_chip_info;
 
 struct urtwx_host_cmd {
 	void	(*cb)(struct urtwx_softc *, void *);
@@ -397,6 +398,7 @@ struct urtwx_softc {
 	struct usbd_xfer	*sc_tx_xfer;
 	uint8_t			*sc_tx_buf;
 	struct ieee80211_node	*sc_tx_ni;
+	const struct urtwx_chip_info *sc_chip;
 	uint8_t			 sc_crystal_cap;
 	uint8_t			 sc_macaddr[ETHER_ADDR_LEN];
 	uint8_t			 sc_tx_bb_swing_2g;
@@ -578,12 +580,7 @@ urtwx_update_ra_node(struct urtwx_softc *sc, uint8_t desc_rate)
 		ni->ni_txrate = idx;
 }
 
-static const struct usb_devno urtwx_devs[] = {
-	{ USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8821CU_1 },
-	{ USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8821CU_2 },
-};
-
-static const char *urtwx_fw_names[] = {
+static const char *const urtwx_fw_names_8821c[] = {
 	"rtw8821c_fw.bin",
 };
 
@@ -633,6 +630,41 @@ struct urtwx_rqpn {
 	uint8_t		dma_map_hi;
 };
 
+static int	urtwx_mac_init_8821c(struct urtwx_softc *);
+static int	urtwx_parse_efuse_8821c(struct urtwx_softc *,
+		    const uint8_t *, uint8_t *);
+static uint8_t	urtwx_get_rx_rssi_8821c(struct urtwx_softc *,
+		    const uint8_t *, const struct urtwx_rx_stat *);
+
+struct urtwx_chip_info {
+	const char			*uc_name;
+	const char *const		*uc_fw_names;
+	size_t				 uc_fw_name_count;
+	uint16_t			 uc_fw_signature;
+	const struct urtwx_page_table	*uc_page_table;
+	const struct urtwx_rqpn		*uc_rqpn;
+	uint8_t				 uc_sys_func_en;
+	uint32_t			 uc_ic_caps;
+	uint32_t			 uc_htcaps;
+	uint8_t				 uc_sup_mcs[howmany(80, NBBY)];
+	uint32_t			 uc_vhtcaps;
+	uint16_t			 uc_vht_rxmcs;
+	uint16_t			 uc_vht_txmcs;
+	uint16_t			 uc_vht_rx_max_lgi_mbit_s;
+	uint16_t			 uc_vht_tx_max_lgi_mbit_s;
+	int				(*uc_parse_efuse)(struct urtwx_softc *,
+					    const uint8_t *, uint8_t *);
+	uint8_t				(*uc_get_rx_rssi)(struct urtwx_softc *,
+					    const uint8_t *,
+					    const struct urtwx_rx_stat *);
+	int				(*uc_mac_init)(struct urtwx_softc *);
+};
+
+struct urtwx_devspec {
+	struct usb_devno			 ud_dev;
+	const struct urtwx_chip_info		*ud_chip;
+};
+
 static const struct urtwx_page_table urtwx_page_table_8821c[] = {
 	{ 16, 16, 16, 14, 1 },
 	{ 16, 16, 16, 14, 1 },
@@ -668,6 +700,91 @@ static const struct urtwx_rqpn urtwx_rqpn_8821c[] = {
 		URTWX_PQ_MAPPING_EXTRA, URTWX_PQ_MAPPING_HIGH
 	},
 };
+
+static const struct urtwx_chip_info urtwx_chip_8821c = {
+	.uc_name = "rtl8821c",
+	.uc_fw_names = urtwx_fw_names_8821c,
+	.uc_fw_name_count = nitems(urtwx_fw_names_8821c),
+	.uc_fw_signature = 0x8821,
+	.uc_page_table = urtwx_page_table_8821c,
+	.uc_rqpn = urtwx_rqpn_8821c,
+	.uc_sys_func_en = URTWX_SYS_FUNC_EN_8821C,
+	.uc_ic_caps = IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
+	    IEEE80211_C_MFP | IEEE80211_C_SHPREAMBLE |
+	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN,
+	.uc_htcaps = URTWX_HTCAP_BASE,
+	.uc_sup_mcs = { 0xff },
+	.uc_vhtcaps = IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
+	    (IEEE80211_VHTCAP_MAX_AMPDU_LEN_64K <<
+	    IEEE80211_VHTCAP_MAX_AMPDU_LEN_SHIFT) |
+	    (IEEE80211_VHTCAP_CHAN_WIDTH_80 <<
+	    IEEE80211_VHTCAP_CHAN_WIDTH_SHIFT) |
+	    IEEE80211_VHTCAP_SGI80 |
+	    IEEE80211_VHTCAP_RX_ANT_PATTERN |
+	    IEEE80211_VHTCAP_TX_ANT_PATTERN,
+	.uc_vht_rxmcs = (IEEE80211_VHT_MCS_0_9 <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(1)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(2)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(3)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(4)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(5)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(6)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(7)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(8)),
+	.uc_vht_txmcs = (IEEE80211_VHT_MCS_0_9 <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(1)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(2)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(3)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(4)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(5)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(6)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(7)) |
+	    (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
+	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(8)),
+	.uc_vht_rx_max_lgi_mbit_s = 390,
+	.uc_vht_tx_max_lgi_mbit_s = 390,
+	.uc_parse_efuse = urtwx_parse_efuse_8821c,
+	.uc_get_rx_rssi = urtwx_get_rx_rssi_8821c,
+	.uc_mac_init = urtwx_mac_init_8821c,
+};
+
+static const struct urtwx_devspec urtwx_devs[] = {
+	{
+		.ud_dev = { USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8821CU_1 },
+		.ud_chip = &urtwx_chip_8821c,
+	},
+	{
+		.ud_dev = { USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8821CU_2 },
+		.ud_chip = &urtwx_chip_8821c,
+	},
+};
+
+static const struct urtwx_devspec *
+urtwx_lookup_devspec(uint16_t vendor, uint16_t product)
+{
+	size_t i;
+
+	for (i = 0; i < nitems(urtwx_devs); i++) {
+		if (urtwx_devs[i].ud_dev.ud_vendor == vendor &&
+		    urtwx_devs[i].ud_dev.ud_product == product)
+			return (&urtwx_devs[i]);
+	}
+
+	return (NULL);
+}
 
 int	urtwx_match(struct device *, void *, void *);
 void	urtwx_attach(struct device *, struct device *, void *);
@@ -711,7 +828,6 @@ static int	urtwx_init_h2c(struct urtwx_softc *);
 static int	urtwx_init(struct ifnet *);
 static int	urtwx_is_powered_on(struct urtwx_softc *);
 static int	urtwx_ioctl(struct ifnet *, u_long, caddr_t);
-static int	urtwx_mac_init_8821c(struct urtwx_softc *);
 static int	urtwx_mac_init_runtime(struct urtwx_softc *);
 static int	urtwx_mac_init_system_cfg(struct urtwx_softc *);
 static int	urtwx_mask2shift(uint32_t);
@@ -1353,7 +1469,7 @@ urtwx_mac_init_system_cfg(struct urtwx_softc *sc)
 		return (ret);
 
 	val8 = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN + 1, 0);
-	val8 |= URTWX_SYS_FUNC_EN_8821C;
+	val8 |= sc->sc_chip->uc_sys_func_en;
 	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN + 1, 0,
 	    val8);
 	if (ret != 0)
@@ -2164,8 +2280,8 @@ urtwx_fw_download(struct urtwx_softc *sc)
 	backed_up = 0;
 
 	ret = ENOENT;
-	for (i = 0; i < nitems(urtwx_fw_names); i++) {
-		ret = loadfirmware(urtwx_fw_names[i], &fw, &fw_size);
+	for (i = 0; i < sc->sc_chip->uc_fw_name_count; i++) {
+		ret = loadfirmware(sc->sc_chip->uc_fw_names[i], &fw, &fw_size);
 		if (ret == 0)
 			break;
 	}
@@ -2178,7 +2294,7 @@ urtwx_fw_download(struct urtwx_softc *sc)
 	}
 
 	hdr = (const struct rtw_fw_hdr *)fw;
-	if (letoh16(hdr->signature) != 0x8821) {
+	if (letoh16(hdr->signature) != sc->sc_chip->uc_fw_signature) {
 		printf("%s: unexpected firmware signature %#x\n", DEVNAME(sc),
 		    letoh16(hdr->signature));
 		ret = EINVAL;
@@ -2350,24 +2466,12 @@ urtwx_valid_etheraddr(const uint8_t *addr)
 }
 
 static int
-urtwx_read_efuse(struct urtwx_softc *sc, uint8_t *mac_out)
+urtwx_parse_efuse_8821c(struct urtwx_softc *sc, const uint8_t *log_map,
+    uint8_t *mac_out)
 {
-	uint8_t	*phy_map;
-	uint8_t	*log_map;
-	int	 ret;
+	int ret;
 
-	phy_map = malloc(URTWX_EFUSE_PHY_SIZE, M_TEMP, M_WAITOK);
-	log_map = malloc(URTWX_EFUSE_LOG_SIZE, M_TEMP, M_WAITOK);
-	memset(phy_map, 0, URTWX_EFUSE_PHY_SIZE);
-	memset(log_map, 0xff, URTWX_EFUSE_LOG_SIZE);
-
-	ret = urtwx_dump_phy_efuse_map(sc, phy_map);
-	if (ret != 0)
-		goto out;
-
-	ret = urtwx_dump_log_efuse_map(phy_map, log_map);
-	if (ret != 0)
-		goto out;
+	ret = 0;
 
 	if (log_map[URTWX_EFUSE_XTAL_K_OFFSET] != 0xff)
 		sc->sc_crystal_cap =
@@ -2402,6 +2506,36 @@ urtwx_read_efuse(struct urtwx_softc *sc, uint8_t *mac_out)
 	memcpy(mac_out, log_map + URTWX_EFUSE_MAC_OFFSET, ETHER_ADDR_LEN);
 	if (!urtwx_valid_etheraddr(mac_out))
 		ret = ENOENT;
+
+	return (ret);
+}
+
+static int
+urtwx_read_efuse(struct urtwx_softc *sc, uint8_t *mac_out)
+{
+	uint8_t	*phy_map;
+	uint8_t	*log_map;
+	int	 ret;
+
+	phy_map = malloc(URTWX_EFUSE_PHY_SIZE, M_TEMP, M_WAITOK);
+	log_map = malloc(URTWX_EFUSE_LOG_SIZE, M_TEMP, M_WAITOK);
+	memset(phy_map, 0, URTWX_EFUSE_PHY_SIZE);
+	memset(log_map, 0xff, URTWX_EFUSE_LOG_SIZE);
+
+	ret = urtwx_dump_phy_efuse_map(sc, phy_map);
+	if (ret != 0)
+		goto out;
+
+	ret = urtwx_dump_log_efuse_map(phy_map, log_map);
+	if (ret != 0)
+		goto out;
+
+	if (sc->sc_chip->uc_parse_efuse == NULL) {
+		ret = ENODEV;
+		goto out;
+	}
+
+	ret = sc->sc_chip->uc_parse_efuse(sc, log_map, mac_out);
 
 out:
 	free(log_map, M_TEMP, URTWX_EFUSE_LOG_SIZE);
@@ -2444,7 +2578,7 @@ urtwx_qsel_to_pipe(struct urtwx_softc *sc, uint8_t qsel)
 	uint8_t mapping;
 	int out;
 
-	rqpn = &urtwx_rqpn_8821c[urtwx_bulkout_num(sc)];
+	rqpn = &sc->sc_chip->uc_rqpn[urtwx_bulkout_num(sc)];
 	switch (qsel) {
 	case URTWX_TXDESC_QSEL_BEACON:
 	case URTWX_TXDESC_QSEL_HIGH:
@@ -4044,26 +4178,42 @@ static void
 urtwx_get_rx_rssi(struct urtwx_softc *sc, const uint8_t *phy_status,
     struct urtwx_rx_stat *stat)
 {
-	uint32_t dw1;
-	int8_t rx_power;
-
 	stat->rssi = 0;
 	if (!stat->phy_status || stat->drvinfosz == 0 || phy_status == NULL)
 		return;
-
-	if (stat->rate <= URTWX_DESC_RATE11M) {
-		if (stat->drvinfosz < 16)
-			return;
-		rx_power = urtwx_cck_rx_power(sc, phy_status);
-		stat->rssi = urtwx_rx_power_to_rssi(rx_power);
+	if (sc->sc_chip->uc_get_rx_rssi == NULL)
 		return;
+
+	stat->rssi = sc->sc_chip->uc_get_rx_rssi(sc, phy_status, stat);
+}
+
+static uint8_t
+urtwx_get_rx_rssi_8821c(struct urtwx_softc *sc, const uint8_t *phy_status,
+    const struct urtwx_rx_stat *stat)
+{
+	uint32_t dw0;
+	int8_t rx_power;
+	uint8_t page;
+
+	page = phy_status[0] & 0x0f;
+	if (page == 0 || stat->rate <= URTWX_DESC_RATE11M) {
+		if (stat->drvinfosz < 16)
+			return (0);
+		rx_power = urtwx_cck_rx_power(sc, phy_status);
+		return (urtwx_rx_power_to_rssi(rx_power));
 	}
 
 	if (stat->drvinfosz < 8)
-		return;
-	dw1 = UGETDW(phy_status + 4);
-	rx_power = ((dw1 >> 8) & 0xff) - 110;
-	stat->rssi = urtwx_rx_power_to_rssi(rx_power);
+		return (0);
+
+	/*
+	 * 8821C OFDM/HT/VHT PHY status uses page 1, where PWDB_A lives in
+	 * dword 0 bits 15:8.  The old code was reading from dword 1, which
+	 * left 5 GHz RSSI effectively at zero.
+	 */
+	dw0 = UGETDW(phy_status);
+	rx_power = ((dw0 >> 8) & 0xff) - 110;
+	return (urtwx_rx_power_to_rssi(rx_power));
 }
 
 static void
@@ -4724,7 +4874,7 @@ urtwx_txdma_queue_mapping(struct urtwx_softc *sc)
 	int bulkout, ret;
 
 	bulkout = urtwx_bulkout_num(sc);
-	rqpn = &urtwx_rqpn_8821c[bulkout];
+	rqpn = &sc->sc_chip->uc_rqpn[bulkout];
 
 	pq_map = BIT_TXDMA_HIQ_MAP(rqpn->dma_map_hi) |
 	    BIT_TXDMA_MGQ_MAP(rqpn->dma_map_mg) |
@@ -4760,7 +4910,7 @@ urtwx_priority_queue_cfg(struct urtwx_softc *sc)
 	int bulkout, ret;
 
 	bulkout = urtwx_bulkout_num(sc);
-	pg = &urtwx_page_table_8821c[bulkout];
+	pg = &sc->sc_chip->uc_page_table[bulkout];
 	pubq_num = URTWX_RSVD_BOUNDARY - pg->hq_num - pg->lq_num -
 	    pg->nq_num - pg->exq_num - pg->gapq_num;
 
@@ -5119,7 +5269,7 @@ urtwx_mac_init_runtime(struct urtwx_softc *sc)
 	ret = urtwx_init_h2c(sc);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_mac_init_8821c(sc);
+	ret = sc->sc_chip->uc_mac_init(sc);
 	if (ret != 0)
 		return (ret);
 	ret = urtwx_phy_init_runtime(sc);
@@ -5147,7 +5297,7 @@ urtwx_match(struct device *parent, void *match, void *aux)
 	if (uaa->iface == NULL || uaa->configno != 1)
 		return (UMATCH_NONE);
 
-	if (usb_lookup(urtwx_devs, uaa->vendor, uaa->product) == NULL)
+	if (urtwx_lookup_devspec(uaa->vendor, uaa->product) == NULL)
 		return (UMATCH_NONE);
 
 	return (UMATCH_VENDOR_PRODUCT_CONF_IFACE);
@@ -5160,6 +5310,7 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	struct ieee80211com		*ic;
 	struct ifnet			*ifp;
 	struct usb_attach_arg		*uaa;
+	const struct urtwx_devspec	*devspec;
 	usb_interface_descriptor_t	*id;
 	usb_endpoint_descriptor_t	*ed;
 	usbd_status			 err;
@@ -5167,12 +5318,20 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 
 	sc = (struct urtwx_softc *)self;
 	uaa = aux;
+	devspec = urtwx_lookup_devspec(uaa->vendor, uaa->product);
 	ic = &sc->sc_ic;
 	ifp = &ic->ic_if;
 	ifp_attached = 0;
 
+	if (devspec == NULL) {
+		printf("%s: unsupported device %#x:%#x\n", DEVNAME(sc),
+		    uaa->vendor, uaa->product);
+		return;
+	}
+
 	sc->sc_udev = uaa->device;
 	sc->sc_iface = uaa->iface;
+	sc->sc_chip = devspec->ud_chip;
 	sc->sc_nbulkout = 0;
 	usb_init_task(&sc->sc_task, urtwx_task, sc, USB_TASK_TYPE_GENERIC);
 	timeout_set(&sc->sc_scan_to, urtwx_scan_to, sc);
@@ -5257,29 +5416,15 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_opmode = IEEE80211_M_STA;
 	ic->ic_state = IEEE80211_S_INIT;
 	ic->ic_max_rssi = 100;
-	ic->ic_htcaps = URTWX_HTCAP_BASE;
-	ic->ic_sup_mcs[0] = 0xff;
-	ic->ic_vhtcaps = IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
-	    (IEEE80211_VHTCAP_MAX_AMPDU_LEN_64K <<
-	    IEEE80211_VHTCAP_MAX_AMPDU_LEN_SHIFT) |
-	    (IEEE80211_VHTCAP_CHAN_WIDTH_80 <<
-	    IEEE80211_VHTCAP_CHAN_WIDTH_SHIFT) |
-	    IEEE80211_VHTCAP_SGI80 |
-	    IEEE80211_VHTCAP_RX_ANT_PATTERN |
-	    IEEE80211_VHTCAP_TX_ANT_PATTERN;
-	ic->ic_vht_rxmcs = (IEEE80211_VHT_MCS_0_9 <<
-	    IEEE80211_VHT_MCS_FOR_SS_SHIFT(1));
-	for (i = 2; i <= IEEE80211_VHT_NUM_SS; i++) {
-		ic->ic_vht_rxmcs |= (IEEE80211_VHT_MCS_SS_NOT_SUPP <<
-		    IEEE80211_VHT_MCS_FOR_SS_SHIFT(i));
-	}
-	ic->ic_vht_txmcs = ic->ic_vht_rxmcs;
-	ic->ic_vht_rx_max_lgi_mbit_s = 390;
-	ic->ic_vht_tx_max_lgi_mbit_s = 390;
-	ic->ic_caps = IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
-	    IEEE80211_C_MFP |
-	    IEEE80211_C_SHPREAMBLE | IEEE80211_C_SHSLOT |
-	    IEEE80211_C_WEP | IEEE80211_C_RSN;
+	ic->ic_htcaps = sc->sc_chip->uc_htcaps;
+	memcpy(ic->ic_sup_mcs, sc->sc_chip->uc_sup_mcs,
+	    sizeof(ic->ic_sup_mcs));
+	ic->ic_vhtcaps = sc->sc_chip->uc_vhtcaps;
+	ic->ic_vht_rxmcs = sc->sc_chip->uc_vht_rxmcs;
+	ic->ic_vht_txmcs = sc->sc_chip->uc_vht_txmcs;
+	ic->ic_vht_rx_max_lgi_mbit_s = sc->sc_chip->uc_vht_rx_max_lgi_mbit_s;
+	ic->ic_vht_tx_max_lgi_mbit_s = sc->sc_chip->uc_vht_tx_max_lgi_mbit_s;
+	ic->ic_caps = sc->sc_chip->uc_ic_caps;
 	ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
 	ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
 	ic->ic_sup_rates[IEEE80211_MODE_11G] = ieee80211_std_rateset_11g;
