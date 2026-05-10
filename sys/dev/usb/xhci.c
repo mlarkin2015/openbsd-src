@@ -2932,6 +2932,9 @@ xhci_device_ctrl_start(struct usbd_xfer *xfer)
 
 	KASSERT(xfer->rqflags & URQ_REQUEST);
 
+	usbd_8822c_usbtrace_log("xhci", xfer->device, &xfer->request,
+	    xfer->buffer, len);
+
 	if (sc->sc_bus.dying || xp->halted)
 		return (USBD_IOERROR);
 
@@ -2979,6 +2982,11 @@ xhci_device_ctrl_start(struct usbd_xfer *xfer)
 		bus_dmamap_sync(xp->ring.dma.tag, xp->ring.dma.map,
 		    TRBOFF(&xp->ring, trb), sizeof(struct xhci_trb),
 		    BUS_DMASYNC_PREWRITE);
+
+		usbd_8822c_usbtrace_log_xhci(xfer->device, &xfer->request,
+		    xfer->buffer, KERNADDR(&xfer->dmabuf, 0), len,
+		    letoh64(trb->trb_paddr), letoh32(trb->trb_status),
+		    letoh32(trb->trb_flags));
 	}
 
 	/* Status TRB */

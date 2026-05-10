@@ -53,10 +53,174 @@ extern int usbdebug;
 #define DPRINTFN(n,x)
 #endif
 
+#define USBD_8822C_TRACE_VENDOR		0x0bda
+#define USBD_8822C_TRACE_PRODUCT	0xc812
+#define USBD_8822C_TRACE_MAX		64
+
+struct usbd_8822c_usbtrace_evt {
+	char		stage[5];
+	uint8_t		req;
+	uint16_t	val;
+	uint16_t	idx;
+	uint8_t		len;
+	uint8_t		data[4];
+	uint8_t		dma_data[4];
+	uint8_t		has_dma;
+	uint64_t	paddr;
+	uint32_t	status;
+	uint32_t	flags;
+};
+
+static int usbd_8822c_usbtrace_active;
+static int usbd_8822c_usbtrace_cnt;
+static int usbd_8822c_usbtrace_sync_pending;
+static struct usbd_8822c_usbtrace_evt
+    usbd_8822c_usbtrace[USBD_8822C_TRACE_MAX];
+
 void usbd_request_async_cb(struct usbd_xfer *, void *, usbd_status);
 void usbd_start_next(struct usbd_pipe *pipe);
 usbd_status usbd_open_pipe_ival(struct usbd_interface *, u_int8_t, u_int8_t,
     struct usbd_pipe **, int);
+
+void
+usbd_8822c_usbtrace_reset(void)
+{
+	usbd_8822c_usbtrace_active = 0;
+	usbd_8822c_usbtrace_cnt = 0;
+	usbd_8822c_usbtrace_sync_pending = 0;
+}
+
+void
+usbd_8822c_usbtrace_start(void)
+{
+	usbd_8822c_usbtrace_active = 1;
+	usbd_8822c_usbtrace_sync_pending = 0;
+}
+
+void
+usbd_8822c_usbtrace_stop(void)
+{
+	usbd_8822c_usbtrace_active = 0;
+	usbd_8822c_usbtrace_sync_pending = 0;
+}
+
+void
+usbd_8822c_usbtrace_log(const char *stage, struct usbd_device *dev,
+    const usb_device_request_t *req, const void *buf, u_int32_t len)
+{
+	struct usbd_8822c_usbtrace_evt *evt;
+	uint16_t val;
+
+	if (!usbd_8822c_usbtrace_active || dev == NULL || req == NULL)
+		return;
+	if (UGETW(dev->ddesc.idVendor) != USBD_8822C_TRACE_VENDOR ||
+	    UGETW(dev->ddesc.idProduct) != USBD_8822C_TRACE_PRODUCT)
+		return;
+	if (req->bmRequestType != UT_WRITE_VENDOR_DEVICE ||
+	    req->bRequest != 0x05)
+		return;
+
+	val = UGETW(req->wValue);
+	if (val == 0x1808 || val == 0x4108)
+		usbd_8822c_usbtrace_sync_pending = 1;
+	else if (val == 0x04e0) {
+		if (!usbd_8822c_usbtrace_sync_pending)
+			return;
+		usbd_8822c_usbtrace_sync_pending = 0;
+	} else
+		return;
+
+	if (len > 4)
+		len = 4;
+	if (usbd_8822c_usbtrace_cnt >= USBD_8822C_TRACE_MAX)
+		return;
+
+	evt = &usbd_8822c_usbtrace[usbd_8822c_usbtrace_cnt++];
+	strlcpy(evt->stage, stage, sizeof(evt->stage));
+	evt->req = req->bRequest;
+	evt->val = val;
+	evt->idx = UGETW(req->wIndex);
+	evt->len = len;
+	memset(evt->data, 0, sizeof(evt->data));
+	if (buf != NULL && len != 0)
+		memcpy(evt->data, buf, len);
+	memset(evt->dma_data, 0, sizeof(evt->dma_data));
+	evt->has_dma = 0;
+	evt->paddr = 0;
+	evt->status = 0;
+	evt->flags = 0;
+}
+
+void
+usbd_8822c_usbtrace_log_xhci(struct usbd_device *dev,
+    const usb_device_request_t *req, const void *buf, const void *dmabuf,
+    u_int32_t len, uint64_t paddr, uint32_t status, uint32_t flags)
+{
+	struct usbd_8822c_usbtrace_evt *evt;
+	uint16_t val;
+
+	if (!usbd_8822c_usbtrace_active || dev == NULL || req == NULL)
+		return;
+	if (UGETW(dev->ddesc.idVendor) != USBD_8822C_TRACE_VENDOR ||
+	    UGETW(dev->ddesc.idProduct) != USBD_8822C_TRACE_PRODUCT)
+		return;
+	if (req->bmRequestType != UT_WRITE_VENDOR_DEVICE ||
+	    req->bRequest != 0x05)
+		return;
+
+	val = UGETW(req->wValue);
+	if (val != 0x1808 && val != 0x4108)
+		return;
+	if (len > 4)
+		len = 4;
+	if (usbd_8822c_usbtrace_cnt >= USBD_8822C_TRACE_MAX)
+		return;
+
+	evt = &usbd_8822c_usbtrace[usbd_8822c_usbtrace_cnt++];
+	strlcpy(evt->stage, "xhc2", sizeof(evt->stage));
+	evt->req = req->bRequest;
+	evt->val = val;
+	evt->idx = UGETW(req->wIndex);
+	evt->len = len;
+	memset(evt->data, 0, sizeof(evt->data));
+	memset(evt->dma_data, 0, sizeof(evt->dma_data));
+	if (buf != NULL && len != 0)
+		memcpy(evt->data, buf, len);
+	if (dmabuf != NULL && len != 0)
+		memcpy(evt->dma_data, dmabuf, len);
+	evt->has_dma = 1;
+	evt->paddr = paddr;
+	evt->status = status;
+	evt->flags = flags;
+}
+
+void
+usbd_8822c_usbtrace_dump(void)
+{
+	const struct usbd_8822c_usbtrace_evt *evt;
+	int i;
+
+	for (i = 0; i < usbd_8822c_usbtrace_cnt; i++) {
+		evt = &usbd_8822c_usbtrace[i];
+		if (evt->has_dma) {
+			printf("usb: 8822c usbstack %-4s W req=%#x val=%#x "
+			    "idx=%#x len=%u data=%02x %02x %02x %02x dma=%02x "
+			    "%02x %02x %02x paddr=%#llx status=%#x flags=%#x\n",
+			    evt->stage, evt->req, evt->val, evt->idx,
+			    evt->len, evt->data[0], evt->data[1], evt->data[2],
+			    evt->data[3], evt->dma_data[0], evt->dma_data[1],
+			    evt->dma_data[2], evt->dma_data[3],
+			    (unsigned long long)evt->paddr, evt->status,
+			    evt->flags);
+		} else {
+			printf("usb: 8822c usbstack %-4s W req=%#x val=%#x "
+			    "idx=%#x len=%u data=%02x %02x %02x %02x\n",
+			    evt->stage, evt->req, evt->val, evt->idx,
+			    evt->len, evt->data[0], evt->data[1], evt->data[2],
+			    evt->data[3]);
+		}
+	}
+}
 
 int
 usbd_is_dying(struct usbd_device *dev)
@@ -469,6 +633,8 @@ usbd_setup_default_xfer(struct usbd_xfer *xfer, struct usbd_device *dev,
 	xfer->request = *req;
 	xfer->rqflags |= URQ_REQUEST;
 	xfer->nframes = 0;
+
+	usbd_8822c_usbtrace_log("usbdi", dev, req, buffer, length);
 }
 
 void

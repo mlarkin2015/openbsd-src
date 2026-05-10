@@ -5986,4 +5986,7 @@ static const uint32_t urtwx_rf_a[] = {
 
 };
 
+#include <dev/usb/if_urtwxtbl_8822c.h>
+#include <dev/usb/if_urtwxtbl_8822c_rfk.h>
+
 #endif

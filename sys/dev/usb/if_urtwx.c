@@ -65,7 +65,6 @@
 
 #define URTWX_MAX_FW_CHUNK		0x1000
 #define URTWX_TXDESC_SIZE		48
-#define URTWX_TXDESC_CSUM_WORDS		16
 #define URTWX_TXDESC_CSUM_IDX		14
 #define URTWX_TXDESC_QSEL_BE		0
 #define URTWX_TXDESC_QSEL_BEACON	16
@@ -87,6 +86,19 @@
 #define URTWX_C2H_LOG_MAX		16
 #define URTWX_C2H_TX_RPT_MAX		16
 #define URTWX_TX_RPT_REQ_MAX		8
+#define URTWX_8822C_FORCE_MGMT_OUT	-1
+#define URTWX_8822C_FORCE_TRX_B_ONLY	0
+#define URTWX_8822C_USBCTL_LOG_MAX	0
+#define URTWX_8822C_RFIO_LOG_MAX	0
+#define URTWX_8822C_RF_DELAY_US		1
+#define URTWX_8822C_RF_SIPI_DELAY_US	13
+#define URTWX_8822C_TBLWRITE_PACE_US	5000
+#define URTWX_8822C_RF0_RETRY_MAX	50
+#define URTWX_8822C_RF0_RETRY_DELAY_US	5000
+#define URTWX_8822C_RFWRITE_RAW_MAX	64
+#define URTWX_8822C_RFBLOCK_MAX		128
+#define URTWX_8822C_RFBLOCK_SHIFT	8
+#define URTWX_8822C_USBTRACE_MAX	64
 #define URTWX_TXDESC_W0_BMC		0x01000000U
 #define URTWX_TXDESC_W0_LS		0x04000000U
 #define URTWX_TXDESC_W0_DISQSELSEQ	0x80000000U
@@ -94,6 +106,8 @@
 #define URTWX_TXDESC_W1_QSEL_SHIFT	8
 #define URTWX_TXDESC_W1_RATEID_SHIFT	16
 #define URTWX_TXDESC_W1_SEC_TYPE_SHIFT	22
+#define URTWX_TXDESC_W1_PKT_OFFSET_SHIFT 24
+#define URTWX_TXDESC_W1_PKT_OFFSET_MASK	0x1f000000U
 #define URTWX_TXDESC_W1_MORE_DATA	0x20000000U
 #define URTWX_TXDESC_W2_AGG_EN		0x00001000U
 #define URTWX_TXDESC_W2_SPE_RPT		0x00080000U
@@ -148,6 +162,19 @@
 #define URTWX_H2C_CMD_MEDIA_STATUS_RPT	0x01
 #define URTWX_H2C_CMD_DEFAULT_PORT	0x2c
 #define URTWX_H2C_CMD_RA_INFO		0x40
+
+#define URTWX_H2C_PKT_SIZE		32
+#define URTWX_H2C_PKT_HDR_SIZE		8
+#define URTWX_H2C_PKT_CATEGORY		0x01
+#define URTWX_H2C_PKT_CMD_ID		0xff
+#define URTWX_H2C_PKT_GENERAL_INFO	0x0d
+#define URTWX_H2C_PKT_PHYDM_INFO	0x11
+
+#define URTWX_FW_RF_2T2R		2
+#define URTWX_FW_RF_1T1R		4
+#define URTWX_BB_PATH_A			0x01
+#define URTWX_BB_PATH_B			0x02
+#define URTWX_BB_PATH_AB		(URTWX_BB_PATH_A | URTWX_BB_PATH_B)
 #define URTWX_CAM_ENTRY_WORDS		8
 #define URTWX_CAM_ENTRY_SHIFT		3
 #define URTWX_CAM_PAIRWISE_ENTRY	4
@@ -160,7 +187,10 @@
 #define URTWX_C2H_WLAN_INFO		0x27
 #define URTWX_C2H_BCN_FILTER_NOTIFY	0x36
 #define URTWX_C2H_SCAN_RESULT		0x38
+#define URTWX_C2H_HW_FEATURE_REPORT	0x19
+#define URTWX_C2H_HW_FEATURE_DUMP	0xfd
 #define URTWX_C2H_HALMAC		0xff
+#define URTWX_HW_FEATURE_LEN		13
 #define URTWX_GET_CCX_RPT_SN_V0(p)	((p)[6] & 0xfc)
 #define URTWX_GET_CCX_RPT_ST_V0(p)	((p)[0] & 0xc0)
 #define URTWX_MACID_STA			0
@@ -199,6 +229,35 @@
 #define URTWX_DMA_MAPPING_HIGH		3
 
 #define URTWX_EFUSE_MAC_OFFSET		0x107
+#define URTWX_EFUSE_8822C_USB_MODE	0x006
+#define URTWX_EFUSE_8822C_TXPWR_IDX	0x010
+#define URTWX_EFUSE_8822C_CHANNEL_PLAN	0x0b8
+#define URTWX_EFUSE_8822C_XTAL_K	0x0b9
+#define URTWX_EFUSE_8822C_RF_BOARD_OPT	0x0c1
+#define URTWX_EFUSE_8822C_RF_BT_SETTING 0x0c3
+#define URTWX_EFUSE_8822C_TX_BB_SWING_2G 0x0c6
+#define URTWX_EFUSE_8822C_TX_BB_SWING_5G 0x0c7
+#define URTWX_EFUSE_8822C_RFE_OPTION	0x0ca
+#define URTWX_EFUSE_8822C_PPG_THERMAL_B	0x1b0
+#define URTWX_EFUSE_8822C_PPG_2GH_TXAB	0x1d2
+#define URTWX_EFUSE_8822C_PPG_2GL_TXAB	0x1d4
+#define URTWX_EFUSE_8822C_PPG_PABIAS_2GB 0x1d5
+#define URTWX_EFUSE_8822C_PPG_PABIAS_2GA 0x1d6
+#define URTWX_EFUSE_8822C_PPG_PABIAS_5GB 0x1d7
+#define URTWX_EFUSE_8822C_PPG_PABIAS_5GA 0x1d8
+#define URTWX_EFUSE_8822C_PPG_5GH1_TXB	0x1db
+#define URTWX_EFUSE_8822C_PPG_5GH1_TXA	0x1dc
+#define URTWX_EFUSE_8822C_PPG_5GM2_TXB	0x1df
+#define URTWX_EFUSE_8822C_PPG_5GM2_TXA	0x1e0
+#define URTWX_EFUSE_8822C_PPG_5GM1_TXB	0x1e3
+#define URTWX_EFUSE_8822C_PPG_5GM1_TXA	0x1e4
+#define URTWX_EFUSE_8822C_PPG_5GL2_TXB	0x1e7
+#define URTWX_EFUSE_8822C_PPG_5GL2_TXA	0x1e8
+#define URTWX_EFUSE_8822C_PPG_5GL1_TXB	0x1eb
+#define URTWX_EFUSE_8822C_PPG_5GL1_TXA	0x1ec
+#define URTWX_EFUSE_8822C_PPG_2GM_TXAB	0x1ee
+#define URTWX_EFUSE_8822C_PPG_THERMAL_A	0x1ef
+#define URTWX_EFUSE_8822CU_MAC_OFFSET	0x157
 
 #define URTWX_WLAN_SLOT_TIME		0x09
 #define URTWX_WLAN_PIFS_TIME		0x19
@@ -223,6 +282,152 @@
 #define URTWX_WLAN_TX_FUNC_CFG2		0x30
 #define URTWX_WLAN_MAC_OPT_NORM_FUNC1	0x98
 #define URTWX_WLAN_MAC_OPT_FUNC2	0xb0810041U
+#define URTWX_8822C_REG_INT_MIG		0x0304
+#define URTWX_8822C_REG_SPEC_SIFS	0x0428
+#define URTWX_8822C_REG_DARFRC		0x0430
+#define URTWX_8822C_REG_DARFRCH		0x0434
+#define URTWX_8822C_REG_RARFRCH		0x043c
+#define URTWX_8822C_REG_RRSR		0x0440
+#define URTWX_8822C_REG_ARFR0		0x0444
+#define URTWX_8822C_DACK_PATHS		2
+#define URTWX_8822C_DACK_REGS		16
+#define URTWX_8822C_DACK_RF_REGS	1
+#define URTWX_8822C_DACK_MSBK_NUM	15
+#define URTWX_8822C_DACK_DCK_NUM	2
+#define URTWX_8822C_RF_TABLE_TRACE_MAX	8
+#define URTWX_8822C_ABORT_AFTER_TABLES	1
+#define URTWX_8822C_ABORT_AFTER_TRXMODE	0
+#define URTWX_8822C_ABORT_BEFORE_DACK	0
+#define URTWX_8822C_ABORT_AFTER_DACK_BB	0
+#define URTWX_8822C_ABORT_AFTER_ADCK_PREP	0
+#define URTWX_8822C_ABORT_AFTER_PHYINIT	0
+#define URTWX_8822C_ABORT_AFTER_CONFIG_TRX	0
+#define URTWX_8822C_ABORT_AFTER_PHYON	0
+#define URTWX_8822C_DACK_VERBOSE	0
+#define URTWX_8822C_DACK_SAMPLES	100
+#define URTWX_8822C_DACK_TRIES		10
+#define URTWX_8822C_REG_DCKA_I_0	0x18bc
+#define URTWX_8822C_REG_DCKA_I_1	0x18c0
+#define URTWX_8822C_REG_DCKA_Q_0	0x18d8
+#define URTWX_8822C_REG_DCKA_Q_1	0x18dc
+#define URTWX_8822C_REG_DCKB_I_0	0x41bc
+#define URTWX_8822C_REG_DCKB_I_1	0x41c0
+#define URTWX_8822C_REG_DCKB_Q_0	0x41d8
+#define URTWX_8822C_REG_DCKB_Q_1	0x41dc
+#define URTWX_8822C_REG_ARFRH0		0x0448
+#define URTWX_8822C_REG_ARFR1_V1	0x044c
+#define URTWX_8822C_REG_ARFRH1_V1	0x0450
+#define URTWX_8822C_REG_ARFR4		0x049c
+#define URTWX_8822C_REG_ARFRH4		0x04a0
+#define URTWX_8822C_REG_ARFR5		0x04a4
+#define URTWX_8822C_REG_ARFRH5		0x04a8
+#define URTWX_8822C_REG_EDCA_BE_PARAM	0x0508
+#define URTWX_8822C_REG_EDCA_BK_PARAM	0x050c
+#define URTWX_8822C_REG_RD_CTRL		0x0524
+#define URTWX_8822C_REG_BCN_CTRL_CLINT0	0x0551
+#define URTWX_8822C_REG_BCN_MAX_ERR	0x055d
+#define URTWX_8822C_REG_MISC_CTRL	0x0577
+#define URTWX_8822C_REG_MAR		0x0620
+#define URTWX_8822C_REG_RESP_SIFS_CCK	0x063c
+#define URTWX_8822C_REG_RESP_SIFS_OFDM	0x063e
+#define URTWX_8822C_REG_ACKTO		0x0640
+#define URTWX_8822C_REG_EIFS		0x0642
+#define URTWX_8822C_REG_NAV_CTRL	0x0650
+#define URTWX_8822C_REG_BBPSF_CTRL	0x06dc
+#define URTWX_8822C_REG_RXPSF_CTRL	0x1610
+#define URTWX_8822C_REG_RXPSF_TYPE_CTRL	0x1614
+#define URTWX_8822C_REG_GENERAL_OPTION	0x1664
+#define URTWX_8822C_REG_ANTMAP0		0x0820
+#define URTWX_8822C_REG_ANTMAP		0x0824
+#define URTWX_8822C_REG_DIS_DPD		0x0a70
+#define URTWX_8822C_REG_MRCM		0x0c38
+#define URTWX_8822C_REG_AGCSWSH		0x0c44
+#define URTWX_8822C_REG_ANTWTPD		0x0c54
+#define URTWX_8822C_REG_ORITXCODE	0x1800
+#define URTWX_8822C_REG_3WIRE		0x180c
+#define URTWX_8822C_REG_ANAPAR_A	0x1830
+#define URTWX_8822C_REG_RXCCKSEL	0x1a04
+#define URTWX_8822C_REG_CCANRX		0x1a2c
+#define URTWX_8822C_REG_ENCCK		0x1c3c
+#define URTWX_8822C_REG_RSTB		0x1c90
+#define URTWX_8822C_REG_RXFNCTL		0x1d30
+#define URTWX_8822C_REG_RXIGI		0x1d70
+#define URTWX_8822C_REG_TXLGMAP		0x1e2c
+#define URTWX_8822C_REG_TXPWR_REF_A_CCK	0x18a0
+#define URTWX_8822C_REG_TXPWR_REF_B_CCK	0x41a0
+#define URTWX_8822C_REG_TXPWR_REF_A_OFDM 0x18e8
+#define URTWX_8822C_REG_TXPWR_REF_B_OFDM 0x41e8
+#define URTWX_8822C_REG_TXAGC_BASE	0x3a00
+#define URTWX_8822C_REG_ORITXCODE2	0x4100
+#define URTWX_8822C_REG_3WIRE2		0x410c
+#define URTWX_8822C_REG_ANAPAR_B	0x4130
+#define URTWX_8822C_WLAN_TXQ_RPT_EN	0x1f
+#define URTWX_8822C_WLAN_PIFS_TIME	0x1c
+#define URTWX_8822C_WLAN_SPEC_SIFS	0x100a
+#define URTWX_8822C_WLAN_RESP_SIFS_CCK	0x0a0a
+#define URTWX_8822C_WLAN_RESP_SIFS_OFDM 0x0e0e
+#define URTWX_8822C_WLAN_DARFRC		0x01000000U
+#define URTWX_8822C_WLAN_DARFRCH	0x08070504U
+#define URTWX_8822C_WLAN_RARFRCH	0x08070504U
+#define URTWX_8822C_WLAN_ARFR0		0xfe01f010U
+#define URTWX_8822C_WLAN_ARFRH0		0x40000000U
+#define URTWX_8822C_WLAN_ARFR1		0x003ff010U
+#define URTWX_8822C_WLAN_ARFRH1		0x40000000U
+#define URTWX_8822C_WLAN_ARFR4		0x0600f010U
+#define URTWX_8822C_WLAN_ARFRH4		0x400003e0U
+#define URTWX_8822C_WLAN_ARFR5		0x0600f015U
+#define URTWX_8822C_WLAN_ARFRH5		0x000000e0U
+#define URTWX_8822C_WLAN_PROT_MODE_CTRL	0x3f3f08ffU
+#define URTWX_8822C_WLAN_EDCA_BE_PARAM	0x005ea42bU
+#define URTWX_8822C_WLAN_EDCA_BK_PARAM	0x0000a44fU
+#define URTWX_8822C_WLAN_BCN_CTRL_CLT0	0x10
+#define URTWX_8822C_WLAN_BCN_MAX_ERR	0xff
+#define URTWX_8822C_WLAN_MULTI_ADDR	0xffffffffU
+#define URTWX_8822C_WLAN_RESP_TXRATE	0x84
+#define URTWX_8822C_WLAN_ACKTO		0x21
+#define URTWX_8822C_WLAN_ACKTO_CCK	0x6a
+#define URTWX_8822C_WLAN_EIFS		0x40
+#define URTWX_8822C_WLAN_NAV_MAX	0xc8
+#define URTWX_8822C_WLAN_MAC_INT_MIG	0x33330000U
+#define URTWX_8822C_BIT_BA_PARSER_EN	0x20
+#define URTWX_8822C_BITS_RRSR_RSC	0x00600000U
+#define URTWX_8822C_MISC_CTRL		0x0b
+#define URTWX_8822C_RD_CTRL1		0x07
+#define URTWX_8822C_BAR_ACK_TYPE	0x05
+#define URTWX_8822C_RXPSF_CTRL2_MASK	0xf00fU
+#define URTWX_8822C_RXPSF_CTRL2_VAL	0x15500000U
+#define URTWX_8822C_RXPSF_CTRL_VAL	0x1f87U
+#define URTWX_8822C_RXPSF_CTRL_MASK	0x0070U
+#define URTWX_8822C_RXPSF_CTRL_FIXUP	0x0007U
+#define URTWX_8822C_GENERAL_OPTION	0x00000200U
+#define URTWX_8822C_GNT_HW_PTA		0x0
+#define URTWX_8822C_GNT_SW_LOW		0x1
+#define URTWX_8822C_GNT_SW_HIGH		0x3
+#define URTWX_8822C_DIS_DPD_MASK	0x000003ffU
+#define URTWX_8822C_DIS_DPD_RATEALL	0x000003ffU
+#define URTWX_8822C_BIT_WLRF1_BBRF_EN	0x07000000U
+#define URTWX_8822C_BITS_RFC_DIRECT	0xc0000000U
+#define URTWX_8822C_RFC_DIRECT_OFF	0x0
+#define URTWX_8822C_RFC_DIRECT_PI	0x2
+#define URTWX_8822C_BIT_3WIRE_TX_EN	0x00000001U
+#define URTWX_8822C_BIT_3WIRE_RX_EN	0x00000002U
+#define URTWX_8822C_BIT_3WIRE_PI_ON	0x10000000U
+#define URTWX_8822C_BIT_ANAPAR_UPDATE	0x20000000U
+#define URTWX_8822C_BIT_CCK_OFDM_BLK_EN 0x00000003U
+#define URTWX_8822C_BIT_RSTB_3WIRE	0x00000100U
+#define URTWX_8822C_BIT_TXAGC_RSTB	0x00008000U
+#define URTWX_8822C_BB_PATH_A		0x01
+#define URTWX_8822C_BB_PATH_B		0x02
+#define URTWX_8822C_BB_PATH_AB		0x03
+#define URTWX_8822C_TXPWR_REF_DEFAULT	0x48
+#define URTWX_RF_THEMAL_MASK		0x000f0000U
+#define URTWX_RF_PABIAS_2G_MASK		0x0000f000U
+#define URTWX_RF_PABIAS_5G_MASK		0x000f0000U
+#define URTWX_8822C_PPG_2G_A_MASK	0x0f
+#define URTWX_8822C_PPG_2G_B_MASK	0xf0
+#define URTWX_8822C_PPG_5G_MASK		0x1f
+#define URTWX_8822C_PPG_PABIAS_MASK	0x0f
+#define URTWX_RF_PA			0x60
 
 #define URTWX_FIXED_CHANNEL		1
 #define URTWX_MAC_CLK_SPEED		80
@@ -345,6 +550,97 @@ struct urtwx_c2h_ra_rpt {
 	uint8_t		bw;
 } __packed;
 
+struct urtwx_8822c_2g_1s_pwr_idx_diff {
+	uint8_t		val;
+} __packed;
+
+struct urtwx_8822c_2g_ns_pwr_idx_diff {
+	uint16_t	val;
+} __packed;
+
+struct urtwx_8822c_2g_txpwr_idx {
+	uint8_t		cck_base[6];
+	uint8_t		bw40_base[5];
+	struct urtwx_8822c_2g_1s_pwr_idx_diff ht_1s_diff;
+	struct urtwx_8822c_2g_ns_pwr_idx_diff ht_2s_diff;
+	struct urtwx_8822c_2g_ns_pwr_idx_diff ht_3s_diff;
+	struct urtwx_8822c_2g_ns_pwr_idx_diff ht_4s_diff;
+} __packed;
+
+struct urtwx_8822c_5g_ht_1s_pwr_idx_diff {
+	uint8_t		val;
+} __packed;
+
+struct urtwx_8822c_5g_ht_ns_pwr_idx_diff {
+	uint8_t		val;
+} __packed;
+
+struct urtwx_8822c_5g_ofdm_ns_pwr_idx_diff {
+	uint16_t	val;
+} __packed;
+
+struct urtwx_8822c_5g_vht_ns_pwr_idx_diff {
+	uint8_t		val;
+} __packed;
+
+struct urtwx_8822c_5g_txpwr_idx {
+	uint8_t		bw40_base[14];
+	struct urtwx_8822c_5g_ht_1s_pwr_idx_diff ht_1s_diff;
+	struct urtwx_8822c_5g_ht_ns_pwr_idx_diff ht_2s_diff;
+	struct urtwx_8822c_5g_ht_ns_pwr_idx_diff ht_3s_diff;
+	struct urtwx_8822c_5g_ht_ns_pwr_idx_diff ht_4s_diff;
+	struct urtwx_8822c_5g_ofdm_ns_pwr_idx_diff ofdm_diff;
+	struct urtwx_8822c_5g_vht_ns_pwr_idx_diff vht_1s_diff;
+	struct urtwx_8822c_5g_vht_ns_pwr_idx_diff vht_2s_diff;
+	struct urtwx_8822c_5g_vht_ns_pwr_idx_diff vht_3s_diff;
+	struct urtwx_8822c_5g_vht_ns_pwr_idx_diff vht_4s_diff;
+} __packed;
+
+struct urtwx_8822c_txpwr_idx {
+	struct urtwx_8822c_2g_txpwr_idx pwr_idx_2g;
+	struct urtwx_8822c_5g_txpwr_idx pwr_idx_5g;
+} __packed;
+
+struct urtwx_8822c_bbpg {
+	uint8_t		band;
+	uint8_t		rf_path;
+	uint8_t		tx_num;
+	uint32_t	addr;
+	uint32_t	bitmask;
+	uint32_t	data;
+};
+
+struct urtwx_backup_info {
+	uint8_t		len;
+	uint32_t	reg;
+	uint32_t	val;
+};
+
+struct urtwx_8822c_rfwrite_evt {
+	uint8_t		path;
+	uint16_t	idx;
+	uint16_t	val;
+	uint16_t	idxreg;
+	uint32_t	tbl_addr;
+	uint32_t	tbl_data;
+	uint8_t		len;
+	uint8_t		data[4];
+};
+
+struct urtwx_8822c_rfblock_evt {
+	uint8_t		path;
+	uint16_t	blk;
+	uint16_t	count;
+	uint32_t	hash;
+};
+
+struct urtwx_8822c_usbtrace_evt {
+	uint16_t	val;
+	uint16_t	idx;
+	uint8_t		len;
+	uint8_t		data[4];
+};
+
 struct urtwx_softc;
 struct urtwx_chip_info;
 
@@ -396,13 +692,22 @@ struct urtwx_softc {
 	uint8_t			*sc_tx_buf;
 	struct ieee80211_node	*sc_tx_ni;
 	const struct urtwx_chip_info *sc_chip;
+	uint32_t		 sc_chip_version;
 	uint8_t			 sc_crystal_cap;
 	uint8_t			 sc_macaddr[ETHER_ADDR_LEN];
 	uint8_t			 sc_tx_bb_swing_2g;
 	uint8_t			 sc_tx_bb_swing_5g;
+	uint8_t			 sc_cut_version;
 	uint8_t			 sc_pkg_type;
 	uint8_t			 sc_rfe_option;
+	uint8_t			 sc_rf_board_option;
+	uint8_t			 sc_bt_setting;
+	uint8_t			 sc_usb_mode_switch;
+	uint8_t			 sc_8822c_have_txpwr_idx;
+	uint8_t			 sc_8822c_have_bb_pg;
+	uint8_t			 sc_8822c_have_power_trim;
 	uint8_t			 sc_h2c_box;
+	uint16_t		 sc_h2c_pkt_seq;
 	int			 sc_have_macaddr;
 	int			 sc_fw_loaded;
 	int			 sc_rfe_btg;
@@ -413,6 +718,8 @@ struct urtwx_softc {
 	int			 sc_scan_log;
 	int			 sc_state_log;
 	int			 sc_tx_mgmt_log;
+	int			 sc_rfio_log;
+	int			 sc_usbctl_log;
 	int			 sc_tx_data_log;
 	int			 sc_tx_report_req;
 	int			 sc_txeof_log;
@@ -425,6 +732,42 @@ struct urtwx_softc {
 	unsigned int		 sc_rx_desc_log;
 	unsigned int		 sc_rx_err;
 	int			 sc_key_tasks;
+	uint32_t		 sc_rf18_want;
+	uint32_t		 sc_rf_cache[2][256];
+	uint8_t			 sc_rf_cache_valid[2][256];
+	int			 sc_rfset_log;
+	struct urtwx_8822c_txpwr_idx sc_8822c_txpwr_idx[4];
+	uint8_t			 sc_8822c_power_trim[2][8];
+	uint8_t			 sc_8822c_thermal_trim[2];
+	uint8_t			 sc_8822c_pa_bias_2g[2];
+	uint8_t			 sc_8822c_pa_bias_5g[2];
+	uint16_t		 sc_8822c_dack_msbk[2][2]
+				    [URTWX_8822C_DACK_MSBK_NUM];
+	uint8_t			 sc_8822c_dack_dck[2][2]
+				    [URTWX_8822C_DACK_DCK_NUM];
+	int8_t			 sc_8822c_txpwr_ofs_2g[2]
+				    [URTWX_DESC_RATEVHT2SS_MCS9 + 1];
+	int8_t			 sc_8822c_txpwr_ofs_5g[2]
+				    [URTWX_DESC_RATEVHT2SS_MCS9 + 1];
+	int			 sc_phy_cond_log;
+	int			 sc_rfchan_log;
+	int			 sc_rfinit_log;
+	int			 sc_rfinit_prestage_log;
+	int			 sc_rfwrite_active;
+	uint8_t			 sc_rfwrite_path;
+	uint16_t		 sc_rfwrite_idx;
+	uint32_t		 sc_rfwrite_tbl_addr;
+	uint32_t		 sc_rfwrite_tbl_data;
+	int			 sc_rfwrite_raw_cnt;
+	struct urtwx_8822c_rfwrite_evt
+			    sc_rfwrite_raw[URTWX_8822C_RFWRITE_RAW_MAX];
+	int			 sc_rfblock_cnt;
+	struct urtwx_8822c_rfblock_evt
+			    sc_rfblock[URTWX_8822C_RFBLOCK_MAX];
+	int			 sc_usbtrace_active;
+	int			 sc_usbtrace_sync_pending;
+	int			 sc_usbtrace_cnt;
+	struct urtwx_8822c_usbtrace_evt sc_usbtrace[URTWX_8822C_USBTRACE_MAX];
 };
 
 static const char *
@@ -480,6 +823,30 @@ urtwx_ra_bw_name(uint8_t bw)
 		return "160";
 	default:
 		return "?";
+	}
+}
+
+static void
+urtwx_format_mac(const uint8_t *addr, char *buf, size_t len)
+{
+	snprintf(buf, len, "%02x:%02x:%02x:%02x:%02x:%02x",
+	    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+}
+
+static void
+urtwx_hexbuf(const uint8_t *buf, size_t len, char *out, size_t outlen)
+{
+	size_t i, off;
+
+	if (outlen == 0)
+		return;
+	out[0] = '\0';
+	off = 0;
+	for (i = 0; i < len && off + 3 < outlen; i++) {
+		off += snprintf(out + off, outlen - off, "%02x%s",
+		    buf[i], (i + 1 == len) ? "" : " ");
+		if (off >= outlen)
+			break;
 	}
 }
 
@@ -663,6 +1030,10 @@ static const char *const urtwx_fw_names_8821c[] = {
 	"rtw8821c_fw.bin",
 };
 
+static const char *const urtwx_fw_names_8822c[] = {
+	"rtw8822c_fw.bin",
+};
+
 static const int8_t urtwx_lna_gain_table_0[] = {
 	22, 8, -6, -22, -31, -40, -46, -52
 };
@@ -715,9 +1086,15 @@ struct urtwx_rqpn {
 };
 
 static int	urtwx_mac_init_8821c(struct urtwx_softc *);
+static int	urtwx_mac_init_8822c(struct urtwx_softc *);
+static int	urtwx_8822c_coex_cfg_init(struct urtwx_softc *);
 static int	urtwx_parse_efuse_8821c(struct urtwx_softc *,
 		    const uint8_t *, uint8_t *);
+static int	urtwx_parse_efuse_8822cu(struct urtwx_softc *,
+		    const uint8_t *, uint8_t *);
 static uint8_t	urtwx_get_rx_rssi_8821c(struct urtwx_softc *,
+		    const uint8_t *, const struct urtwx_rx_stat *);
+static uint8_t	urtwx_get_rx_rssi_8822c(struct urtwx_softc *,
 		    const uint8_t *, const struct urtwx_rx_stat *);
 
 struct urtwx_chip_info {
@@ -731,8 +1108,10 @@ struct urtwx_chip_info {
 	struct urtwx_phy_table		 uc_agc_tbl;
 	struct urtwx_phy_table		 uc_agc_btg_type2_tbl;
 	struct urtwx_phy_table		 uc_bb_tbl;
+	struct urtwx_phy_table		 uc_rfk_init_tbl;
 	struct urtwx_phy_table		 uc_rf_tbl[2];
-	uint16_t			 uc_rf_base[2];
+	uint16_t			 uc_rf_read_base[2];
+	uint16_t			 uc_rf_write_base[2];
 	uint16_t			 uc_rf_sipi[2];
 	uint8_t				 uc_rf_path_count;
 	uint8_t				 uc_sys_func_en;
@@ -779,7 +1158,43 @@ static const struct urtwx_page_table urtwx_page_table_8821c[] = {
 	{ 16, 16, 16, 14, 1 },
 };
 
+static const struct urtwx_page_table urtwx_page_table_8822c[] = {
+	{ 64, 64, 64, 64, 1 },
+	{ 64, 64, 64, 64, 1 },
+	{ 64, 64,  0,  0, 1 },
+	{ 64, 64, 64,  0, 1 },
+	{ 64, 64, 64, 64, 1 },
+};
+
 static const struct urtwx_rqpn urtwx_rqpn_8821c[] = {
+	{
+		URTWX_PQ_MAPPING_NORMAL, URTWX_PQ_MAPPING_NORMAL,
+		URTWX_PQ_MAPPING_LOW, URTWX_PQ_MAPPING_LOW,
+		URTWX_PQ_MAPPING_EXTRA, URTWX_PQ_MAPPING_HIGH
+	},
+	{
+		URTWX_PQ_MAPPING_NORMAL, URTWX_PQ_MAPPING_NORMAL,
+		URTWX_PQ_MAPPING_LOW, URTWX_PQ_MAPPING_LOW,
+		URTWX_PQ_MAPPING_EXTRA, URTWX_PQ_MAPPING_HIGH
+	},
+	{
+		URTWX_PQ_MAPPING_NORMAL, URTWX_PQ_MAPPING_NORMAL,
+		URTWX_PQ_MAPPING_NORMAL, URTWX_PQ_MAPPING_HIGH,
+		URTWX_PQ_MAPPING_HIGH, URTWX_PQ_MAPPING_HIGH
+	},
+	{
+		URTWX_PQ_MAPPING_NORMAL, URTWX_PQ_MAPPING_NORMAL,
+		URTWX_PQ_MAPPING_LOW, URTWX_PQ_MAPPING_LOW,
+		URTWX_PQ_MAPPING_HIGH, URTWX_PQ_MAPPING_HIGH
+	},
+	{
+		URTWX_PQ_MAPPING_NORMAL, URTWX_PQ_MAPPING_NORMAL,
+		URTWX_PQ_MAPPING_LOW, URTWX_PQ_MAPPING_LOW,
+		URTWX_PQ_MAPPING_EXTRA, URTWX_PQ_MAPPING_HIGH
+	},
+};
+
+static const struct urtwx_rqpn urtwx_rqpn_8822c[] = {
 	{
 		URTWX_PQ_MAPPING_NORMAL, URTWX_PQ_MAPPING_NORMAL,
 		URTWX_PQ_MAPPING_LOW, URTWX_PQ_MAPPING_LOW,
@@ -819,11 +1234,13 @@ static const struct urtwx_chip_info urtwx_chip_8821c = {
 	.uc_agc_btg_type2_tbl = { urtwx_agc_btg_type2,
 	    nitems(urtwx_agc_btg_type2) },
 	.uc_bb_tbl = { urtwx_bb, nitems(urtwx_bb) },
+	.uc_rfk_init_tbl = { NULL, 0 },
 	.uc_rf_tbl = {
 		{ urtwx_rf_a, nitems(urtwx_rf_a) },
 		{ NULL, 0 },
 	},
-	.uc_rf_base = { URTWX_RF_BASE_A, URTWX_RF_BASE_B },
+	.uc_rf_read_base = { URTWX_RF_BASE_A, URTWX_RF_BASE_B },
+	.uc_rf_write_base = { URTWX_RF_BASE_A, URTWX_RF_BASE_B },
 	.uc_rf_sipi = { URTWX_RF_SIPI_A, URTWX_RF_SIPI_B },
 	.uc_rf_path_count = 1,
 	.uc_sys_func_en = URTWX_SYS_FUNC_EN_8821C,
@@ -861,6 +1278,116 @@ static const struct urtwx_chip_info urtwx_chip_8821c = {
 	.uc_parse_efuse = urtwx_parse_efuse_8821c,
 	.uc_get_rx_rssi = urtwx_get_rx_rssi_8821c,
 	.uc_mac_init = urtwx_mac_init_8821c,
+};
+
+static const struct urtwx_chip_info urtwx_chip_8822c = {
+	.uc_name = "rtl8822c",
+	.uc_fw_names = urtwx_fw_names_8822c,
+	.uc_fw_name_count = nitems(urtwx_fw_names_8822c),
+	.uc_fw_signature = 0x8822,
+	.uc_page_table = urtwx_page_table_8822c,
+	.uc_rqpn = urtwx_rqpn_8822c,
+	.uc_mac_tbl = { urtwx_8822c_mac, nitems(urtwx_8822c_mac) },
+	.uc_agc_tbl = { urtwx_8822c_agc, nitems(urtwx_8822c_agc) },
+	.uc_agc_btg_type2_tbl = { NULL, 0 },
+	.uc_bb_tbl = { urtwx_8822c_bb, nitems(urtwx_8822c_bb) },
+	.uc_rfk_init_tbl = {
+		urtwx_8822c_rfk_init, nitems(urtwx_8822c_rfk_init)
+	},
+	.uc_rf_tbl = {
+		{ urtwx_8822c_rf_a, nitems(urtwx_8822c_rf_a) },
+		{ urtwx_8822c_rf_b, nitems(urtwx_8822c_rf_b) },
+	},
+	.uc_rf_read_base = { 0x3c00, 0x4c00 },
+	.uc_rf_write_base = { 0x3c00, 0x4c00 },
+	.uc_rf_sipi = { 0x1808, 0x4108 },
+	.uc_rf_path_count = 2,
+	.uc_sys_func_en = URTWX_SYS_FUNC_EN_8821C,
+	.uc_tx_nss = 2,
+	.uc_ht_mcs_max = 7,
+	.uc_vht_mcs_max = 9,
+	.uc_rateid_ht_20m = URTWX_RATEID_BGN_20M_2SS,
+	.uc_rateid_ht_40m = URTWX_RATEID_BGN_40M_2SS,
+	.uc_rateid_vht_5g = URTWX_RATEID_ARFR0_AC_2SS,
+	.uc_rateid_vht_2g = URTWX_RATEID_ARFR3_AC_2G_2SS,
+	.uc_desc_rate_ht_max = URTWX_DESC_RATEMCS15,
+	.uc_desc_rate_vht_max = URTWX_DESC_RATEVHT2SS_MCS9,
+	.uc_ra_mask_ht = URTWX_RA_MASK_HT_RATES_1SS |
+	    URTWX_RA_MASK_HT_RATES_2SS,
+	.uc_ra_mask_vht = URTWX_RA_MASK_VHT_RATES_1SS |
+	    URTWX_RA_MASK_VHT_RATES_2SS,
+	.uc_ic_caps = IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
+	    IEEE80211_C_MFP | IEEE80211_C_SHPREAMBLE |
+	    IEEE80211_C_SHSLOT | IEEE80211_C_WEP | IEEE80211_C_RSN,
+	.uc_htcaps = URTWX_HTCAP_BASE,
+	.uc_vhtcaps = IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
+	    (IEEE80211_VHTCAP_MAX_AMPDU_LEN_64K <<
+	    IEEE80211_VHTCAP_MAX_AMPDU_LEN_SHIFT) |
+	    (IEEE80211_VHTCAP_CHAN_WIDTH_80 <<
+	    IEEE80211_VHTCAP_CHAN_WIDTH_SHIFT) |
+	    IEEE80211_VHTCAP_SGI80 |
+	    IEEE80211_VHTCAP_RX_ANT_PATTERN |
+	    IEEE80211_VHTCAP_TX_ANT_PATTERN,
+	.uc_txff_size = 262144,
+	.uc_rxff_size = 24576,
+	.uc_rsvd_drv_pg_num = 16,
+	.uc_efuse_phy_size = 512,
+	.uc_efuse_log_size = 768,
+	.uc_efuse_protect_size = 124,
+	.uc_vht_rx_max_lgi_mbit_s = 780,
+	.uc_vht_tx_max_lgi_mbit_s = 780,
+	.uc_parse_efuse = urtwx_parse_efuse_8822cu,
+	.uc_get_rx_rssi = urtwx_get_rx_rssi_8822c,
+	.uc_mac_init = urtwx_mac_init_8822c,
+};
+
+static const struct urtwx_8822c_bbpg urtwx_8822c_bb_pg_type0[] = {
+	{ 0, 0, 0, 0x00000c20, 0xffffffff, 0x484c5054 },
+	{ 0, 0, 0, 0x00000c24, 0xffffffff, 0x54585858 },
+	{ 0, 0, 0, 0x00000c28, 0xffffffff, 0x44484c50 },
+	{ 0, 0, 0, 0x00000c2c, 0xffffffff, 0x50545858 },
+	{ 0, 0, 0, 0x00000c30, 0xffffffff, 0x4044484c },
+	{ 0, 0, 1, 0x00000c34, 0xffffffff, 0x50545858 },
+	{ 0, 0, 1, 0x00000c38, 0xffffffff, 0x4044484c },
+	{ 0, 0, 0, 0x00000c3c, 0xffffffff, 0x50545858 },
+	{ 0, 0, 0, 0x00000c40, 0xffffffff, 0x4044484c },
+	{ 0, 0, 0, 0x00000c44, 0xffffffff, 0x5858383c },
+	{ 0, 0, 1, 0x00000c48, 0xffffffff, 0x484c5054 },
+	{ 0, 0, 1, 0x00000c4c, 0xffffffff, 0x383c4044 },
+	{ 0, 1, 0, 0x00000e20, 0xffffffff, 0x484c5054 },
+	{ 0, 1, 0, 0x00000e24, 0xffffffff, 0x54585858 },
+	{ 0, 1, 0, 0x00000e28, 0xffffffff, 0x44484c50 },
+	{ 0, 1, 0, 0x00000e2c, 0xffffffff, 0x50545858 },
+	{ 0, 1, 0, 0x00000e30, 0xffffffff, 0x4044484c },
+	{ 0, 1, 1, 0x00000e34, 0xffffffff, 0x50545858 },
+	{ 0, 1, 1, 0x00000e38, 0xffffffff, 0x4044484c },
+	{ 0, 1, 0, 0x00000e3c, 0xffffffff, 0x50545858 },
+	{ 0, 1, 0, 0x00000e40, 0xffffffff, 0x4044484c },
+	{ 0, 1, 0, 0x00000e44, 0xffffffff, 0x5858383c },
+	{ 0, 1, 1, 0x00000e48, 0xffffffff, 0x484c5054 },
+	{ 0, 1, 1, 0x00000e4c, 0xffffffff, 0x383c4044 },
+	{ 1, 0, 0, 0x00000c24, 0xffffffff, 0x54585858 },
+	{ 1, 0, 0, 0x00000c28, 0xffffffff, 0x44484c50 },
+	{ 1, 0, 0, 0x00000c2c, 0xffffffff, 0x50545858 },
+	{ 1, 0, 0, 0x00000c30, 0xffffffff, 0x4044484c },
+	{ 1, 0, 1, 0x00000c34, 0xffffffff, 0x50545858 },
+	{ 1, 0, 1, 0x00000c38, 0xffffffff, 0x4044484c },
+	{ 1, 0, 0, 0x00000c3c, 0xffffffff, 0x50545858 },
+	{ 1, 0, 0, 0x00000c40, 0xffffffff, 0x4044484c },
+	{ 1, 0, 0, 0x00000c44, 0xffffffff, 0x5858383c },
+	{ 1, 0, 1, 0x00000c48, 0xffffffff, 0x484c5054 },
+	{ 1, 0, 1, 0x00000c4c, 0xffffffff, 0x383c4044 },
+	{ 1, 1, 0, 0x00000e24, 0xffffffff, 0x54585858 },
+	{ 1, 1, 0, 0x00000e28, 0xffffffff, 0x44484c50 },
+	{ 1, 1, 0, 0x00000e2c, 0xffffffff, 0x50545858 },
+	{ 1, 1, 0, 0x00000e30, 0xffffffff, 0x4044484c },
+	{ 1, 1, 1, 0x00000e34, 0xffffffff, 0x50545858 },
+	{ 1, 1, 1, 0x00000e38, 0xffffffff, 0x4044484c },
+	{ 1, 1, 0, 0x00000e3c, 0xffffffff, 0x50545858 },
+	{ 1, 1, 0, 0x00000e40, 0xffffffff, 0x4044484c },
+	{ 1, 1, 0, 0x00000e44, 0xffffffff, 0x5858383c },
+	{ 1, 1, 1, 0x00000e48, 0xffffffff, 0x484c5054 },
+	{ 1, 1, 1, 0x00000e4c, 0xffffffff, 0x383c4044 },
 };
 
 static inline uint32_t
@@ -953,6 +1480,10 @@ static const struct urtwx_devspec urtwx_devs[] = {
 		.ud_dev = { USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8821CU_2 },
 		.ud_chip = &urtwx_chip_8821c,
 	},
+	{
+		.ud_dev = { USB_VENDOR_REALTEK, USB_PRODUCT_REALTEK_RTL8822CU },
+		.ud_chip = &urtwx_chip_8822c,
+	},
 };
 
 static const struct urtwx_devspec *
@@ -1005,6 +1536,10 @@ static int	urtwx_fw_ra_info(struct urtwx_softc *,
 static int	urtwx_fw_rsvd_page(struct urtwx_softc *, uint8_t, uint8_t,
 		    uint8_t);
 static int	urtwx_fw_send_h2c(struct urtwx_softc *, uint32_t, uint32_t);
+static int	urtwx_fw_send_general_info(struct urtwx_softc *);
+static int	urtwx_fw_send_h2c_pkt(struct urtwx_softc *, const uint8_t *,
+		    size_t);
+static int	urtwx_fw_send_phydm_info(struct urtwx_softc *);
 static void	urtwx_free_rx_list(struct urtwx_softc *);
 static int	urtwx_iddma_download_firmware(struct urtwx_softc *,
 		    uint32_t, uint32_t, uint32_t, int);
@@ -1012,6 +1547,15 @@ static int	urtwx_init_h2c(struct urtwx_softc *);
 static int	urtwx_init(struct ifnet *);
 static int	urtwx_is_powered_on(struct urtwx_softc *);
 static int	urtwx_ioctl(struct ifnet *, u_long, caddr_t);
+static int	urtwx_8822c_ltecoex_read(struct urtwx_softc *, uint16_t,
+		    uint32_t *);
+static int	urtwx_8822c_ltecoex_write(struct urtwx_softc *, uint16_t,
+		    uint32_t);
+static int	urtwx_8822c_ltecoex_write_mask(struct urtwx_softc *,
+		    uint16_t, uint32_t, uint32_t);
+static int	urtwx_8822c_wifi_only_coex(struct urtwx_softc *);
+static int	urtwx_8822c_rf_init(struct urtwx_softc *);
+static int	urtwx_8822c_phy_init(struct urtwx_softc *);
 static int	urtwx_mac_init_runtime(struct urtwx_softc *);
 static int	urtwx_mac_init_system_cfg(struct urtwx_softc *);
 static int	urtwx_mask2shift(uint32_t);
@@ -1045,8 +1589,44 @@ static int	urtwx_phy_init_runtime(struct urtwx_softc *);
 static int	urtwx_phy_load_table(struct urtwx_softc *,
 		    const uint32_t *, size_t, enum urtwx_phy_cfg, uint8_t);
 static int	urtwx_phy_load_tables(struct urtwx_softc *);
+static void	urtwx_8822c_tbltime_enter(struct urtwx_softc *,
+		    const char *, struct timeval *);
+static void	urtwx_8822c_tbltime_exit(struct urtwx_softc *,
+		    const char *, const struct timeval *);
+static int	urtwx_8822c_rf0_retry(struct urtwx_softc *, uint8_t, uint32_t);
 static int	urtwx_phy_match_cond(struct urtwx_softc *, uint32_t,
 		    uint32_t);
+#if URTWX_8822C_ABORT_AFTER_TABLES
+static void	urtwx_8822c_rfwrite_reset(struct urtwx_softc *);
+static void	urtwx_8822c_rfwrite_start(struct urtwx_softc *);
+static void	urtwx_8822c_rfwrite_stop(struct urtwx_softc *);
+static void	urtwx_8822c_rfwrite_dump(struct urtwx_softc *);
+static void	urtwx_8822c_usbtrace_reset(struct urtwx_softc *);
+static void	urtwx_8822c_usbtrace_start(struct urtwx_softc *);
+static void	urtwx_8822c_usbtrace_stop(struct urtwx_softc *);
+static void	urtwx_8822c_usbtrace_dump(struct urtwx_softc *);
+#endif
+static void	urtwx_8822c_rfwrite_set_entry(struct urtwx_softc *, uint8_t,
+		    uint16_t, uint32_t, uint32_t);
+static void	urtwx_8822c_rfwrite_clear_entry(struct urtwx_softc *);
+static void	urtwx_8822c_rfwrite_log(struct urtwx_softc *, uint16_t,
+		    uint16_t, const void *, int);
+static void	urtwx_8822c_usbtrace_log(struct urtwx_softc *, uint16_t,
+		    uint16_t, const void *, int);
+static void	urtwx_8822c_dump_phy_stage(struct urtwx_softc *, const char *);
+static int	urtwx_8822c_set_tx_power_default(struct urtwx_softc *,
+		    uint8_t, uint8_t);
+static void	urtwx_8822c_parse_bb_pg(struct urtwx_softc *);
+static void	urtwx_8822c_board_info_setup(struct urtwx_softc *);
+static void	urtwx_8822c_dump_chan_regs(struct urtwx_softc *, uint8_t);
+static void	urtwx_8822c_header_file_init(struct urtwx_softc *, int);
+static void	urtwx_8822c_log_usb_mode(struct urtwx_softc *);
+static void	urtwx_8822c_dac_cal_backup(struct urtwx_softc *);
+static int	urtwx_8822c_dac_cal_restore(struct urtwx_softc *);
+static int	urtwx_8822c_trace_ctl_reg(uint16_t);
+static int	urtwx_8822c_thermal_trim(struct urtwx_softc *);
+static int	urtwx_8822c_power_trim(struct urtwx_softc *);
+static int	urtwx_8822c_pa_bias(struct urtwx_softc *);
 static uint32_t	urtwx_read_rf_path(struct urtwx_softc *, uint8_t, uint8_t);
 static uint32_t	urtwx_read_rf(struct urtwx_softc *, uint8_t);
 static int	urtwx_power_on(struct urtwx_softc *);
@@ -1055,11 +1635,14 @@ static int	urtwx_sta_enter_run(struct urtwx_softc *);
 static void	urtwx_sta_leave_run(struct urtwx_softc *);
 static struct usbd_pipe *urtwx_qsel_to_pipe(struct urtwx_softc *, uint8_t);
 static uint8_t	urtwx_tx_data_qsel(struct ieee80211_frame *);
+static void	urtwx_8822c_dump_hw_feature(struct urtwx_softc *);
 static int	urtwx_read_efuse(struct urtwx_softc *, uint8_t *);
 static uint8_t	urtwx_read_1(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t);
 static uint16_t	urtwx_read_2(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t);
+static uint32_t	urtwx_read_4_mask(struct urtwx_softc *, uint16_t,
+		    uint32_t);
 static uint32_t	urtwx_read_4(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t);
 static int	urtwx_read_mem(struct urtwx_softc *, uint8_t, uint16_t,
@@ -1083,7 +1666,8 @@ static int	urtwx_rx_set_dma(struct urtwx_softc *);
 static int	urtwx_start_download_firmware(struct urtwx_softc *,
 		    const uint8_t *, size_t);
 static int	urtwx_txdma_queue_mapping(struct urtwx_softc *);
-static void	urtwx_txdesc_checksum(struct urtwx_tx_desc *);
+static void	urtwx_txdesc_checksum(struct urtwx_softc *,
+		    struct urtwx_tx_desc *);
 static int	urtwx_usb_interface_cfg(struct urtwx_softc *);
 static int	urtwx_usb_rx_agg_cfg(struct urtwx_softc *);
 static int	urtwx_sec_enable(struct urtwx_softc *);
@@ -1104,12 +1688,10 @@ static int	urtwx_wait_4(struct urtwx_softc *, uint16_t, uint32_t,
 static void	urtwx_wlan_cpu_enable(struct urtwx_softc *, int);
 static uint32_t	urtwx_build_null_frame(struct urtwx_softc *, uint8_t *, int);
 static uint32_t	urtwx_build_pspoll_frame(struct urtwx_softc *, uint8_t *);
-static void	urtwx_fill_rsvd_page_desc(struct urtwx_tx_desc *, uint32_t,
-		    int, int);
+static void	urtwx_fill_rsvd_page_desc(struct urtwx_softc *,
+		    struct urtwx_tx_desc *, uint32_t, int, int);
 static int	urtwx_write_rf_path(struct urtwx_softc *, uint8_t, uint8_t,
 		    uint32_t, uint32_t);
-static int	urtwx_write_rf(struct urtwx_softc *, uint8_t, uint32_t,
-		    uint32_t);
 static int	urtwx_write_1(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t, uint32_t);
 static int	urtwx_write_1_mask(struct urtwx_softc *, uint16_t,
@@ -1120,12 +1702,18 @@ static int	urtwx_write_2_mask(struct urtwx_softc *, uint16_t,
 		    uint16_t, uint16_t);
 static int	urtwx_write_4(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t, uint32_t);
+static int	urtwx_write_4_field(struct urtwx_softc *, uint16_t,
+		    uint32_t, uint32_t);
 static int	urtwx_write_4_mask(struct urtwx_softc *, uint16_t,
 		    uint32_t, uint32_t);
+static int	urtwx_write_data_h2c(struct urtwx_softc *, const uint8_t *,
+		    uint32_t);
 static int	urtwx_write_data_rsvd_page(struct urtwx_softc *, uint16_t,
 		    const uint8_t *, uint32_t);
 static int	urtwx_write_mem(struct urtwx_softc *, uint8_t, uint16_t,
 		    uint16_t, void *, int);
+static int	urtwx_8822c_rstb_3wire(struct urtwx_softc *, int);
+static int	urtwx_8822c_trace_reg(uint16_t);
 static void	urtwx_do_async(struct urtwx_softc *,
 		    void (*)(struct urtwx_softc *, void *), void *, int);
 
@@ -1138,11 +1726,71 @@ const struct cfattach urtwx_ca = {
 };
 
 static int
+urtwx_8822c_trace_reg(uint16_t reg)
+{
+	switch (reg) {
+	case 0x1808:
+	case 0x4108:
+	case 0x3c00:
+	case 0x4c00:
+	case 0x1c90:
+	case 0x1830:
+	case 0x4130:
+	case 0x180c:
+	case 0x1810:
+	case 0x410c:
+	case 0x4110:
+	case 0x1c3c:
+	case 0x1c24:
+	case 0x1868:
+	case 0x4168:
+		return (1);
+	default:
+		return (0);
+	}
+}
+
+static int
+urtwx_8822c_trace_ctl_reg(uint16_t reg)
+{
+	switch (reg) {
+	case REG_SYS_FUNC_EN:
+	case REG_RSV_CTRL:
+	case REG_RF_CTRL:
+	case REG_WLRF1:
+	case REG_ANAPAR_XTAL_0:
+	case 0x1808:
+	case 0x4108:
+		return (1);
+	default:
+		return (0);
+	}
+}
+
+static int
+urtwx_8822c_trace_ctl_write_reg(uint16_t reg)
+{
+	switch (reg) {
+	case REG_SYS_FUNC_EN:
+	case REG_RSV_CTRL:
+	case REG_RF_CTRL:
+	case REG_WLRF1:
+	case REG_ANAPAR_XTAL_0:
+	case 0x1808:
+	case 0x4108:
+		return (1);
+	default:
+		return (0);
+	}
+}
+
+static int
 urtwx_ctl(struct urtwx_softc *sc, uint8_t rw, uint8_t cmd, uint16_t val,
     uint16_t index, void *buf, int len)
 {
 	usb_device_request_t	req;
 	usbd_status		err;
+	uint8_t			bytes[4];
 
 	if (usbd_is_dying(sc->sc_udev))
 		return (EIO);
@@ -1159,6 +1807,26 @@ urtwx_ctl(struct urtwx_softc *sc, uint8_t rw, uint8_t cmd, uint16_t val,
 		DPRINTF(("%s: reg %#x failed: %s\n", DEVNAME(sc), val,
 		    usbd_errstr(err)));
 		return (EIO);
+	}
+
+	if (sc->sc_chip == &urtwx_chip_8822c && rw == URTWX_CTL_WRITE &&
+	    cmd == RTW_USB_CMD_REQ) {
+		urtwx_8822c_rfwrite_log(sc, val, index, buf, len);
+		urtwx_8822c_usbtrace_log(sc, val, index, buf, len);
+	}
+
+	if (sc->sc_chip == &urtwx_chip_8822c && cmd == RTW_USB_CMD_REQ &&
+	    ((rw == URTWX_CTL_READ && urtwx_8822c_trace_ctl_reg(val)) ||
+	    (rw == URTWX_CTL_WRITE && urtwx_8822c_trace_ctl_write_reg(val))) &&
+	    sc->sc_usbctl_log < URTWX_8822C_USBCTL_LOG_MAX &&
+	    len > 0 && len <= (int)sizeof(bytes)) {
+		memset(bytes, 0, sizeof(bytes));
+		memcpy(bytes, buf, len);
+		printf("%s: 8822c usb ctl %c req=%#x val=%#x idx=%#x len=%d "
+		    "data=%02x %02x %02x %02x\n",
+		    DEVNAME(sc), (rw == URTWX_CTL_WRITE) ? 'W' : 'R', cmd,
+		    val, index, len, bytes[0], bytes[1], bytes[2], bytes[3]);
+		sc->sc_usbctl_log++;
 	}
 
 	return (0);
@@ -1225,13 +1893,22 @@ static uint32_t
 urtwx_read_4(struct urtwx_softc *sc, uint8_t cmd, uint16_t reg, uint16_t index)
 {
 	uint8_t	val[4];
+	uint32_t out;
 
 	val[0] = 0xff;
 	val[1] = 0xff;
 	val[2] = 0xff;
 	val[3] = 0xff;
 	(void)urtwx_read_mem(sc, cmd, reg, index, val, sizeof(val));
-	return (UGETDW(val));
+	out = UGETDW(val);
+	if (sc->sc_chip == &urtwx_chip_8822c && cmd == RTW_USB_CMD_REQ &&
+	    urtwx_8822c_trace_reg(reg) &&
+	    sc->sc_rfio_log < URTWX_8822C_RFIO_LOG_MAX) {
+		printf("%s: 8822c usb rd reg %#x = %#x\n",
+		    DEVNAME(sc), reg, out);
+		sc->sc_rfio_log++;
+	}
+	return (out);
 }
 
 static int
@@ -1261,6 +1938,13 @@ urtwx_write_4(struct urtwx_softc *sc, uint8_t cmd, uint16_t reg, uint16_t index,
 	uint8_t	buf[4];
 
 	USETDW(buf, val);
+	if (sc->sc_chip == &urtwx_chip_8822c && cmd == RTW_USB_CMD_REQ &&
+	    urtwx_8822c_trace_reg(reg) &&
+	    sc->sc_rfio_log < URTWX_8822C_RFIO_LOG_MAX) {
+		printf("%s: 8822c usb wr reg %#x = %#x\n",
+		    DEVNAME(sc), reg, val);
+		sc->sc_rfio_log++;
+	}
 	return (urtwx_write_mem(sc, cmd, reg, index, buf, sizeof(buf)));
 }
 
@@ -1316,6 +2000,242 @@ urtwx_mask2shift(uint32_t mask)
 }
 
 static uint32_t
+urtwx_read_4_mask(struct urtwx_softc *sc, uint16_t reg, uint32_t mask)
+{
+	uint32_t regval;
+
+	regval = urtwx_read_4(sc, RTW_USB_CMD_REQ, reg, 0);
+	return ((regval & mask) >> urtwx_mask2shift(mask));
+}
+
+static int
+urtwx_write_4_field(struct urtwx_softc *sc, uint16_t reg, uint32_t mask,
+    uint32_t val)
+{
+	return (urtwx_write_4_mask(sc, reg, mask,
+	    (val << urtwx_mask2shift(mask)) & mask));
+}
+
+static int
+urtwx_check_hw_ready(struct urtwx_softc *sc, uint16_t reg, uint32_t mask,
+    uint32_t target)
+{
+	int cnt;
+
+	for (cnt = 0; cnt < 1000; cnt++) {
+		if (urtwx_read_4_mask(sc, reg, mask) == target)
+			return (1);
+		delay(10);
+	}
+
+	return (0);
+}
+
+static int
+urtwx_restore_regs(struct urtwx_softc *sc, struct urtwx_backup_info *bckp,
+    size_t num)
+{
+	size_t i;
+	int ret;
+
+	for (i = 0; i < num; i++, bckp++) {
+		switch (bckp->len) {
+		case 1:
+			ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, bckp->reg, 0,
+			    bckp->val);
+			break;
+		case 2:
+			ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, bckp->reg, 0,
+			    bckp->val);
+			break;
+		case 4:
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, bckp->reg, 0,
+			    bckp->val);
+			break;
+		default:
+			ret = EINVAL;
+			break;
+		}
+		if (ret != 0)
+			return (ret);
+	}
+
+	return (0);
+}
+
+static int
+urtwx_8822c_ltecoex_read(struct urtwx_softc *sc, uint16_t offset, uint32_t *val)
+{
+	int ret;
+
+	ret = urtwx_wait_4(sc, LTECOEX_ACCESS_CTRL, LTECOEX_READY,
+	    LTECOEX_READY, URTWX_WAIT_COUNT, URTWX_WAIT_DELAY_US);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, LTECOEX_ACCESS_CTRL, 0,
+	    0x800f0000U | offset);
+	if (ret != 0)
+		return (ret);
+	*val = urtwx_read_4(sc, RTW_USB_CMD_REQ, LTECOEX_READ_DATA, 0);
+	return (0);
+}
+
+static int
+urtwx_8822c_ltecoex_write(struct urtwx_softc *sc, uint16_t offset,
+    uint32_t val)
+{
+	int ret;
+
+	ret = urtwx_wait_4(sc, LTECOEX_ACCESS_CTRL, LTECOEX_READY,
+	    LTECOEX_READY, URTWX_WAIT_COUNT, URTWX_WAIT_DELAY_US);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, LTECOEX_WRITE_DATA, 0, val);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_4(sc, RTW_USB_CMD_REQ, LTECOEX_ACCESS_CTRL, 0,
+	    0xc00f0000U | offset));
+}
+
+static int
+urtwx_8822c_ltecoex_write_mask(struct urtwx_softc *sc, uint16_t offset,
+    uint32_t mask, uint32_t val)
+{
+	uint32_t shift, tmp;
+	int ret;
+
+	ret = urtwx_8822c_ltecoex_read(sc, offset, &tmp);
+	if (ret != 0)
+		return (ret);
+	shift = urtwx_mask2shift(mask);
+	tmp = (tmp & ~mask) | ((val << shift) & mask);
+	return (urtwx_8822c_ltecoex_write(sc, offset, tmp));
+}
+
+static int
+urtwx_8822c_wifi_only_coex(struct urtwx_softc *sc)
+{
+	uint32_t ctrl;
+	uint32_t wl_trx;
+	uint32_t bt_trx;
+	uint32_t rf_0x1;
+	int share_ant;
+	int ret;
+
+	/*
+	 * Follow Linux's Wi-Fi-only ownership/grant setup for 8822C:
+	 * force Wi-Fi control of the shared mux, GNT_BT low, and GNT_WL high.
+	 * This is a focused bring-up step, not full coexistence support.
+	 */
+	ret = urtwx_write_1_mask(sc, REG_SYS_SDIO_CTRL + 3,
+	    BIT_LTE_MUX_CTRL_PATH >> 24, BIT_LTE_MUX_CTRL_PATH >> 24);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_write_mask(sc, LTE_COEX_CTRL,
+	    BIT_LTE_COEX_EN, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_write_mask(sc, LTE_WL_TRX_CTRL, 0x0000ffffU,
+	    0xffffU);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_write_mask(sc, LTE_BT_TRX_CTRL, 0x0000ffffU,
+	    0xffffU);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_write_mask(sc, LTE_COEX_CTRL, 0xc000,
+	    URTWX_8822C_GNT_SW_LOW);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_write_mask(sc, LTE_COEX_CTRL, 0x0c00,
+	    URTWX_8822C_GNT_SW_LOW);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_write_mask(sc, LTE_COEX_CTRL, 0x3000,
+	    URTWX_8822C_GNT_SW_HIGH);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_write_mask(sc, LTE_COEX_CTRL, 0x0300,
+	    URTWX_8822C_GNT_SW_HIGH);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_PAD_CTRL1 + 2,
+	    BIT_BTGP_SPI_EN >> 16, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_PAD_CTRL1 + 3,
+	    BIT_BTGP_JTAG_EN >> 24, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_GPIO_MUXCFG + 2,
+	    BIT_FSPI_EN >> 16, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_PAD_CTRL1 + 1,
+	    BIT_LED1DIS >> 8, 0);
+	if (ret != 0)
+		return (ret);
+	share_ant = !!(sc->sc_bt_setting & 0x01);
+	rf_0x1 = 0x40000;
+	if (share_ant)
+		rf_0x1 |= 1U << 13;
+	ret = urtwx_write_rf_path(sc, 1, 0x01, RFREG_MASK, rf_0x1);
+	if (ret != 0)
+		return (ret);
+	if (share_ant) {
+		ret = urtwx_write_1_mask(sc, REG_ANAPAR + 2,
+		    BIT_ANAPAR_BTPS >> 16, 0);
+		if (ret != 0)
+			return (ret);
+	} else {
+		ret = urtwx_write_1_mask(sc, REG_ANAPAR + 2,
+		    BIT_ANAPAR_BTPS >> 16, BIT_ANAPAR_BTPS >> 16);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_1_mask(sc, REG_RSTB_SEL + 1,
+		    BIT_DAC_OFF_ENABLE, 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_1_mask(sc, REG_RSTB_SEL + 3,
+		    BIT_DAC_OFF_ENABLE, BIT_DAC_OFF_ENABLE);
+		if (ret != 0)
+			return (ret);
+	}
+	ret = urtwx_write_1_mask(sc, REG_IGN_GNTBT4,
+	    BIT_PI_IGNORE_GNT_BT, BIT_PI_IGNORE_GNT_BT);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_IGN_GNT_BT1,
+	    BIT_PI_IGNORE_GNT_BT, BIT_PI_IGNORE_GNT_BT);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_NOMASK_TXBT,
+	    BIT_NOMASK_TXBT_ENABLE, BIT_NOMASK_TXBT_ENABLE);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_read(sc, LTE_COEX_CTRL, &ctrl);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_read(sc, LTE_WL_TRX_CTRL, &wl_trx);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_ltecoex_read(sc, LTE_BT_TRX_CTRL, &bt_trx);
+	if (ret != 0)
+		return (ret);
+	if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+		printf("%s: 8822c ltecoex ctrl %#x wl_trx %#x bt_trx %#x "
+		    "share_ant %d rf1 %#x ign1 %#x ign4 %#x nomask %#x\n",
+		    DEVNAME(sc), ctrl, wl_trx, bt_trx, share_ant,
+		    urtwx_read_rf_path(sc, 1, 0x01),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_IGN_GNT_BT1, 0),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_IGN_GNTBT4, 0),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_NOMASK_TXBT, 0));
+		sc->sc_state_log++;
+	}
+	return (0);
+}
+
+static uint32_t
 urtwx_read_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr)
 {
 	uint16_t reg;
@@ -1323,7 +2243,7 @@ urtwx_read_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr)
 	if (path >= sc->sc_chip->uc_rf_path_count)
 		return (0xffffffffU);
 
-	reg = sc->sc_chip->uc_rf_base[path] + ((uint16_t)addr << 2);
+	reg = sc->sc_chip->uc_rf_read_base[path] + ((uint16_t)addr << 2);
 	return (urtwx_read_4(sc, RTW_USB_CMD_REQ, reg, 0) & RFREG_MASK);
 }
 
@@ -1332,6 +2252,7 @@ urtwx_write_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr,
     uint32_t mask, uint32_t data)
 {
 	uint32_t old, shift, value;
+	uint16_t reg;
 
 	if (path >= sc->sc_chip->uc_rf_path_count)
 		return (EINVAL);
@@ -1345,11 +2266,50 @@ urtwx_write_rf_path(struct urtwx_softc *sc, uint8_t path, uint8_t addr,
 		data = (old & ~mask) | ((data << shift) & mask);
 	}
 
+	if (sc->sc_chip == &urtwx_chip_8822c && addr != 0x00) {
+		reg = sc->sc_chip->uc_rf_write_base[path] +
+		    ((uint16_t)addr << 2);
+		/*
+		 * rtw88/8822c writes full-width RF registers directly through
+		 * the USB RF window.  Using a masked RMW here leaves stale
+		 * upper bits behind in the write window, and RF18 has been
+		 * observed to stay wedged at 0x1400 across all channels.
+		 */
+		if (mask == RFREG_MASK) {
+			if (urtwx_write_4(sc, RTW_USB_CMD_REQ, reg, 0, data) != 0)
+				return (EIO);
+		} else {
+			if (urtwx_write_4_mask(sc, reg, RFREG_MASK, data) != 0)
+				return (EIO);
+		}
+		if (URTWX_8822C_RFIO_LOG_MAX > 0 &&
+		    (addr == 0xee || addr == 0x33 || addr == 0x3f ||
+		    addr == 0x18) &&
+		    sc->sc_rfchan_log < URTWX_8822C_RFIO_LOG_MAX) {
+			printf("%s: 8822c rf wr path %u addr %#x reg %#x "
+			    "data %#x peek %#x\n", DEVNAME(sc), path, addr,
+			    reg, data,
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ, reg, 0) &
+			    RFREG_MASK);
+			sc->sc_rfchan_log++;
+		}
+		delay(URTWX_8822C_RF_DELAY_US);
+		return (0);
+	}
+
 	value = (((uint32_t)addr << 20) | data) & 0x0fffffffU;
 	if (urtwx_write_4(sc, RTW_USB_CMD_REQ, sc->sc_chip->uc_rf_sipi[path],
 	    0, value) != 0)
 		return (EIO);
-	delay(13);
+	if (URTWX_8822C_RFIO_LOG_MAX > 0 &&
+	    sc->sc_chip == &urtwx_chip_8822c && addr == 0x00 &&
+	    sc->sc_rfchan_log < URTWX_8822C_RFIO_LOG_MAX) {
+		printf("%s: 8822c rf sipi path %u reg %#x data %#x rf0 %#x/%#x\n",
+		    DEVNAME(sc), path, sc->sc_chip->uc_rf_sipi[path], data,
+		    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+		sc->sc_rfchan_log++;
+	}
+	delay(URTWX_8822C_RF_SIPI_DELAY_US);
 	return (0);
 }
 
@@ -1357,13 +2317,6 @@ static uint32_t
 urtwx_read_rf(struct urtwx_softc *sc, uint8_t addr)
 {
 	return (urtwx_read_rf_path(sc, 0, addr));
-}
-
-static int
-urtwx_write_rf(struct urtwx_softc *sc, uint8_t addr, uint32_t mask,
-    uint32_t data)
-{
-	return (urtwx_write_rf_path(sc, 0, addr, mask, data));
 }
 
 static int
@@ -1509,6 +2462,71 @@ urtwx_fw_rsvd_page(struct urtwx_softc *sc, uint8_t pspoll, uint8_t null,
 	return (urtwx_fw_send_h2c(sc, w0, w1));
 }
 
+static int
+urtwx_fw_send_h2c_pkt(struct urtwx_softc *sc, const uint8_t *pkt, size_t len)
+{
+	uint8_t buf[URTWX_H2C_PKT_SIZE];
+	uint32_t seq;
+
+	if (len > sizeof(buf))
+		return (EFBIG);
+
+	memset(buf, 0, sizeof(buf));
+	memcpy(buf, pkt, len);
+
+	seq = sc->sc_h2c_pkt_seq++;
+	((uint32_t *)buf)[1] = htole32((letoh32(((uint32_t *)buf)[1]) &
+	    0x0000ffffU) | (seq << 16));
+
+	return (urtwx_write_data_h2c(sc, buf, sizeof(buf)));
+}
+
+static int
+urtwx_fw_send_general_info(struct urtwx_softc *sc)
+{
+	uint32_t pkt[URTWX_H2C_PKT_SIZE / sizeof(uint32_t)];
+
+	memset(pkt, 0, sizeof(pkt));
+	pkt[0] = htole32(URTWX_H2C_PKT_CATEGORY |
+	    (URTWX_H2C_PKT_CMD_ID << 8) |
+	    (URTWX_H2C_PKT_GENERAL_INFO << 16));
+	pkt[1] = htole32(URTWX_H2C_PKT_HDR_SIZE + 4);
+	pkt[2] = htole32((uint32_t)URTWX_RSVD_FW_TXBUF_PG_NUM << 16);
+
+	return (urtwx_fw_send_h2c_pkt(sc, (const uint8_t *)pkt,
+	    sizeof(pkt)));
+}
+
+static int
+urtwx_fw_send_phydm_info(struct urtwx_softc *sc)
+{
+	uint32_t pkt[URTWX_H2C_PKT_SIZE / sizeof(uint32_t)];
+	uint8_t fw_rf_type;
+	uint8_t ant;
+
+	memset(pkt, 0, sizeof(pkt));
+	if (sc->sc_chip->uc_tx_nss >= 2) {
+		fw_rf_type = URTWX_FW_RF_2T2R;
+		ant = URTWX_BB_PATH_AB;
+	} else {
+		fw_rf_type = URTWX_FW_RF_1T1R;
+		ant = URTWX_BB_PATH_A;
+	}
+
+	pkt[0] = htole32(URTWX_H2C_PKT_CATEGORY |
+	    (URTWX_H2C_PKT_CMD_ID << 8) |
+	    (URTWX_H2C_PKT_PHYDM_INFO << 16));
+	pkt[1] = htole32(URTWX_H2C_PKT_HDR_SIZE + 8);
+	pkt[2] = htole32((uint32_t)sc->sc_rfe_option |
+	    ((uint32_t)fw_rf_type << 8) |
+	    ((uint32_t)0 << 16) |
+	    ((uint32_t)ant << 24) |
+	    ((uint32_t)ant << 28));
+
+	return (urtwx_fw_send_h2c_pkt(sc, (const uint8_t *)pkt,
+	    sizeof(pkt)));
+}
+
 static uint32_t
 urtwx_build_pspoll_frame(struct urtwx_softc *sc, uint8_t *buf)
 {
@@ -1565,8 +2583,8 @@ urtwx_build_null_frame(struct urtwx_softc *sc, uint8_t *buf, int qos)
 }
 
 static void
-urtwx_fill_rsvd_page_desc(struct urtwx_tx_desc *txd, uint32_t len, int qos_null,
-    int nav_use_hdr)
+urtwx_fill_rsvd_page_desc(struct urtwx_softc *sc, struct urtwx_tx_desc *txd,
+    uint32_t len, int qos_null, int nav_use_hdr)
 {
 	memset(txd, 0, sizeof(*txd));
 
@@ -1587,7 +2605,7 @@ urtwx_fill_rsvd_page_desc(struct urtwx_tx_desc *txd, uint32_t len, int qos_null,
 	if (!nav_use_hdr)
 		txd->w8 = htole32(URTWX_TXDESC_W8_EN_HWSEQ);
 
-	urtwx_txdesc_checksum(txd);
+	urtwx_txdesc_checksum(sc, txd);
 }
 
 static int
@@ -1612,7 +2630,7 @@ urtwx_fw_download_sta_rsvd_page(struct urtwx_softc *sc)
 	len = urtwx_build_pspoll_frame(sc, frame);
 	off = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
 	txd = (struct urtwx_tx_desc *)(buf + off);
-	urtwx_fill_rsvd_page_desc(txd, len, 0, 1);
+	urtwx_fill_rsvd_page_desc(sc, txd, len, 0, 1);
 	memcpy(buf + off + URTWX_TXDESC_SIZE, frame, len);
 	page += howmany(URTWX_TXDESC_SIZE + len, URTWX_PAGE_SIZE);
 
@@ -1620,7 +2638,7 @@ urtwx_fw_download_sta_rsvd_page(struct urtwx_softc *sc)
 	len = urtwx_build_null_frame(sc, frame, 0);
 	off = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
 	txd = (struct urtwx_tx_desc *)(buf + off);
-	urtwx_fill_rsvd_page_desc(txd, len, 0, 0);
+	urtwx_fill_rsvd_page_desc(sc, txd, len, 0, 0);
 	memcpy(buf + off + URTWX_TXDESC_SIZE, frame, len);
 	page += howmany(URTWX_TXDESC_SIZE + len, URTWX_PAGE_SIZE);
 
@@ -1629,7 +2647,7 @@ urtwx_fw_download_sta_rsvd_page(struct urtwx_softc *sc)
 	len = urtwx_build_null_frame(sc, frame, qos);
 	off = URTWX_RSVD_PAGE_MARGIN + (page - 1) * URTWX_PAGE_SIZE;
 	txd = (struct urtwx_tx_desc *)(buf + off);
-	urtwx_fill_rsvd_page_desc(txd, len, qos, 0);
+	urtwx_fill_rsvd_page_desc(sc, txd, len, qos, 0);
 	memcpy(buf + off + URTWX_TXDESC_SIZE, frame, len);
 	page += howmany(URTWX_TXDESC_SIZE + len, URTWX_PAGE_SIZE);
 
@@ -1858,18 +2876,28 @@ urtwx_download_firmware_reset_platform(struct urtwx_softc *sc)
 }
 
 static void
-urtwx_txdesc_checksum(struct urtwx_tx_desc *txd)
+urtwx_txdesc_checksum(struct urtwx_softc *sc, struct urtwx_tx_desc *txd)
 {
 	uint8_t		*buf;
 	uint16_t	csum, word;
+	uint32_t	w1;
+	size_t		words;
 	int		i;
 
 	buf = (uint8_t *)txd;
 	buf[URTWX_TXDESC_CSUM_IDX * 2] = 0;
 	buf[URTWX_TXDESC_CSUM_IDX * 2 + 1] = 0;
 
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		w1 = letoh32(txd->w1);
+		words = ((((w1 & URTWX_TXDESC_W1_PKT_OFFSET_MASK) >>
+		    URTWX_TXDESC_W1_PKT_OFFSET_SHIFT) * 8) +
+		    URTWX_TXDESC_SIZE) / 2;
+	} else
+		words = 16;
+
 	csum = 0;
-	for (i = 0; i < URTWX_TXDESC_CSUM_WORDS; i++) {
+	for (i = 0; i < words; i++) {
 		memcpy(&word, buf + i * 2, sizeof(word));
 		csum ^= letoh16(word);
 	}
@@ -1949,6 +2977,8 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	struct ieee80211_frame *wh;
 	struct ieee80211_key *k;
 	const char *name;
+	char sa[18], da[18], bssid[18];
+	char hex[3 * 32];
 	uint16_t seq;
 	uint32_t len;
 	usbd_status err;
@@ -1966,12 +2996,15 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	uint32_t txpktlen;
 	int hdrlen;
 	int ampdu;
+	int outi;
 	uint8_t *txbuf;
 
 	if (sc->sc_tx_active)
 		return (EBUSY);
 	wh = mtod(m, struct ieee80211_frame *);
 	name = NULL;
+	sa[0] = da[0] = bssid[0] = '\0';
+	hex[0] = '\0';
 	seq = 0;
 	report_sn = 0;
 	rate_id = URTWX_RATEID_G;
@@ -1987,6 +3020,7 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	txpktlen = m->m_pkthdr.len;
 	hdrlen = 0;
 	ampdu = 0;
+	outi = -1;
 	txbuf = NULL;
 
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
@@ -2068,18 +3102,17 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 			break;
 		}
 		if (sc->sc_tx_mgmt_log < URTWX_TX_MGMT_LOG_MAX) {
-			if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
-			    IEEE80211_FC0_SUBTYPE_PROBE_REQ) {
-				DPRINTFN(2, ("%s: TX %s len %u chan %u\n",
-				    DEVNAME(sc), name, m->m_pkthdr.len,
-				    ieee80211_chan2ieee(&sc->sc_ic,
-				    ni->ni_chan)));
-			} else {
-				printf("%s: TX %s len %u chan %u\n",
-				    DEVNAME(sc), name, m->m_pkthdr.len,
-				    ieee80211_chan2ieee(&sc->sc_ic,
-				    ni->ni_chan));
-			}
+			urtwx_format_mac(wh->i_addr2, sa, sizeof(sa));
+			urtwx_format_mac(wh->i_addr1, da, sizeof(da));
+			urtwx_format_mac(wh->i_addr3, bssid, sizeof(bssid));
+			urtwx_hexbuf(mtod(m, const uint8_t *),
+			    MIN((size_t)m->m_pkthdr.len, (size_t)32),
+			    hex, sizeof(hex));
+			printf("%s: TX %s len %u chan %u "
+			    "sa %s da %s bssid %s qsel %u\n",
+			    DEVNAME(sc), name, m->m_pkthdr.len,
+			    ieee80211_chan2ieee(&sc->sc_ic, ni->ni_chan),
+			    sa, da, bssid, qsel);
 			sc->sc_tx_mgmt_log++;
 		}
 		/*
@@ -2089,13 +3122,33 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 		 */
 		txd->w0 = htole32(letoh32(txd->w0) |
 		    URTWX_TXDESC_W0_DISQSELSEQ);
+		if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan)) {
+			rate_id = URTWX_RATEID_B_20M;
+			rate = URTWX_DESC_RATE1M;
+		} else {
+			rate_id = URTWX_RATEID_G;
+			rate = URTWX_DESC_RATE6M;
+		}
 		txd->w1 = htole32(letoh32(txd->w1) |
-		    ((uint32_t)URTWX_RATEID_B_20M <<
-		    URTWX_TXDESC_W1_RATEID_SHIFT));
+		    ((uint32_t)rate_id << URTWX_TXDESC_W1_RATEID_SHIFT));
 		txd->w3 = htole32(URTWX_TXDESC_W3_USE_RATE |
 		    URTWX_TXDESC_W3_DISDATAFB);
-		txd->w4 = htole32(URTWX_DESC_RATE1M);
+		txd->w4 = htole32(rate);
 		txd->w8 = htole32(URTWX_TXDESC_W8_EN_HWSEQ);
+		if (sc->sc_chip == &urtwx_chip_8822c &&
+		    (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+		    IEEE80211_FC0_SUBTYPE_PROBE_REQ &&
+		    sc->sc_tx_mgmt_log < URTWX_TX_MGMT_LOG_MAX) {
+			printf("%s: TX probe desc w0=%#x w1=%#x w2=%#x w3=%#x "
+			    "w4=%#x w5=%#x w6=%#x w7=%#x w8=%#x w9=%#x\n",
+			    DEVNAME(sc), letoh32(txd->w0), letoh32(txd->w1),
+			    letoh32(txd->w2), letoh32(txd->w3),
+			    letoh32(txd->w4), letoh32(txd->w5),
+			    letoh32(txd->w6), letoh32(txd->w7),
+			    letoh32(txd->w8), letoh32(txd->w9));
+			printf("%s: TX probe hdr %s\n", DEVNAME(sc), hex);
+			sc->sc_tx_mgmt_log++;
+		}
 	} else {
 		urtwx_node_tx_info(ni, &rate_id, &rate, &sgi, &ldpc,
 		    &ra_mask);
@@ -2143,7 +3196,7 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 			sc->sc_tx_data_log++;
 		}
 	}
-	urtwx_txdesc_checksum(txd);
+	urtwx_txdesc_checksum(sc, txd);
 
 	txbuf = sc->sc_tx_buf + URTWX_TXDESC_SIZE;
 	if (sec_type == URTWX_SEC_TYPE_CCMP && k != NULL &&
@@ -2172,6 +3225,25 @@ urtwx_tx(struct urtwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	pipe = urtwx_qsel_to_pipe(sc, qsel);
 	if (pipe == NULL)
 		return (ENXIO);
+	if (sc->sc_chip == &urtwx_chip_8822c && mgmt &&
+	    URTWX_8822C_FORCE_MGMT_OUT >= 0 &&
+	    URTWX_8822C_FORCE_MGMT_OUT < sc->sc_nbulkout &&
+	    sc->sc_out_pipe[URTWX_8822C_FORCE_MGMT_OUT] != NULL)
+		pipe = sc->sc_out_pipe[URTWX_8822C_FORCE_MGMT_OUT];
+	if (sc->sc_chip == &urtwx_chip_8822c && mgmt &&
+	    sc->sc_tx_mgmt_log < URTWX_TX_MGMT_LOG_MAX) {
+		for (outi = 0; outi < sc->sc_nbulkout; outi++) {
+			if (sc->sc_out_pipe[outi] == pipe)
+				break;
+		}
+		printf("%s: TX mgmt pipe out=%d ed=%#x force=%d\n",
+		    DEVNAME(sc),
+		    outi < sc->sc_nbulkout ? outi : -1,
+		    (outi >= 0 && outi < sc->sc_nbulkout) ?
+		    sc->sc_out_ed[outi] : 0,
+		    URTWX_8822C_FORCE_MGMT_OUT);
+		sc->sc_tx_mgmt_log++;
+	}
 
 	sc->sc_tx_active = 1;
 	sc->sc_tx_ni = ni;
@@ -2235,7 +3307,7 @@ urtwx_write_data_rsvd_page(struct urtwx_softc *sc, uint16_t pg_addr,
 	txd->w0 = htole32((txpkt_size & 0xffff) | (URTWX_TXDESC_SIZE << 16) |
 	    (1U << 26));
 	txd->w1 = htole32(URTWX_TXDESC_QSEL_BEACON << 8);
-	urtwx_txdesc_checksum(txd);
+	urtwx_txdesc_checksum(sc, txd);
 
 	ret = urtwx_bulk_tx(sc, URTWX_TXDESC_QSEL_BEACON, total_len);
 	if (ret != 0)
@@ -2250,6 +3322,36 @@ restore:
 	    rsvd_pg_head | BIT_BCN_VALID_V1);
 	(void)urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_BCN_CTRL, 0, bcn_ctrl);
 	(void)urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_CR + 1, 0, cr1);
+
+	return (ret);
+}
+
+static int
+urtwx_write_data_h2c(struct urtwx_softc *sc, const uint8_t *buf, uint32_t size)
+{
+	struct urtwx_tx_desc *txd;
+	uint32_t total_len;
+	int ret;
+
+	total_len = URTWX_TXDESC_SIZE + size;
+	if (total_len > URTWX_TXDESC_SIZE + URTWX_MAX_FW_CHUNK + 1)
+		return (EFBIG);
+
+	memset(sc->sc_tx_buf, 0, total_len);
+	memcpy(sc->sc_tx_buf + URTWX_TXDESC_SIZE, buf, size);
+
+	txd = (struct urtwx_tx_desc *)sc->sc_tx_buf;
+	txd->w0 = htole32((size & 0xffff) | URTWX_TXDESC_W0_LS);
+	txd->w1 = htole32((uint32_t)URTWX_TXDESC_QSEL_H2C <<
+	    URTWX_TXDESC_W1_QSEL_SHIFT);
+	urtwx_txdesc_checksum(sc, txd);
+
+	ret = urtwx_bulk_tx(sc, URTWX_TXDESC_QSEL_H2C, total_len);
+	if (ret == 0 && sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+		DPRINTF(("%s: H2C pkt sent len %u first %#x %#x %#x %#x\n",
+		    DEVNAME(sc), size, buf[0], buf[1], buf[2], buf[3]));
+		sc->sc_state_log++;
+	}
 
 	return (ret);
 }
@@ -2534,6 +3636,12 @@ urtwx_fw_download(struct urtwx_softc *sc)
 		printf("%s: power on failed\n", DEVNAME(sc));
 		goto fail;
 	}
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_C2HEVT, 0,
+		    URTWX_C2H_HW_FEATURE_DUMP);
+		if (ret != 0)
+			goto fail;
+	}
 
 	urtwx_wlan_cpu_enable(sc, 0);
 	urtwx_download_firmware_reg_backup(sc, &bckp);
@@ -2556,6 +3664,8 @@ urtwx_fw_download(struct urtwx_softc *sc)
 	ret = urtwx_download_firmware_validate(sc);
 	if (ret != 0)
 		goto fail;
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_dump_hw_feature(sc);
 
 	free(fw, M_TEMP, fw_size);
 	printf("%s: firmware running\n", DEVNAME(sc));
@@ -2730,6 +3840,368 @@ urtwx_parse_efuse_8821c(struct urtwx_softc *sc, const uint8_t *log_map,
 }
 
 static int
+urtwx_parse_efuse_8822cu(struct urtwx_softc *sc, const uint8_t *log_map,
+    uint8_t *mac_out)
+{
+	static const uint8_t empty_idx[sizeof(sc->sc_8822c_txpwr_idx)] = { 0 };
+	static const uint16_t pwr_5g_a[5] = {
+		URTWX_EFUSE_8822C_PPG_5GL1_TXA,
+		URTWX_EFUSE_8822C_PPG_5GL2_TXA,
+		URTWX_EFUSE_8822C_PPG_5GM1_TXA,
+		URTWX_EFUSE_8822C_PPG_5GM2_TXA,
+		URTWX_EFUSE_8822C_PPG_5GH1_TXA
+	};
+	static const uint16_t pwr_5g_b[5] = {
+		URTWX_EFUSE_8822C_PPG_5GL1_TXB,
+		URTWX_EFUSE_8822C_PPG_5GL2_TXB,
+		URTWX_EFUSE_8822C_PPG_5GM1_TXB,
+		URTWX_EFUSE_8822C_PPG_5GM2_TXB,
+		URTWX_EFUSE_8822C_PPG_5GH1_TXB
+	};
+	uint8_t raw;
+	int i;
+	int ret;
+
+	ret = 0;
+	sc->sc_pkg_type = 0;
+	sc->sc_rfe_btg = 0;
+	sc->sc_rf_board_option = 0;
+	sc->sc_bt_setting = 0;
+	sc->sc_usb_mode_switch = 0;
+	sc->sc_8822c_have_txpwr_idx = 0;
+	sc->sc_8822c_have_bb_pg = 0;
+	sc->sc_8822c_have_power_trim = 0;
+	memset(sc->sc_8822c_txpwr_idx, 0, sizeof(sc->sc_8822c_txpwr_idx));
+	memset(sc->sc_8822c_power_trim, 0, sizeof(sc->sc_8822c_power_trim));
+	memset(sc->sc_8822c_thermal_trim, 0xff,
+	    sizeof(sc->sc_8822c_thermal_trim));
+	memset(sc->sc_8822c_pa_bias_2g, 0xff,
+	    sizeof(sc->sc_8822c_pa_bias_2g));
+	memset(sc->sc_8822c_pa_bias_5g, 0xff,
+	    sizeof(sc->sc_8822c_pa_bias_5g));
+	memset(sc->sc_8822c_txpwr_ofs_2g, 0, sizeof(sc->sc_8822c_txpwr_ofs_2g));
+	memset(sc->sc_8822c_txpwr_ofs_5g, 0, sizeof(sc->sc_8822c_txpwr_ofs_5g));
+
+	if (log_map[URTWX_EFUSE_8822C_USB_MODE] != 0xff)
+		sc->sc_usb_mode_switch =
+		    (log_map[URTWX_EFUSE_8822C_USB_MODE] & 0x80) != 0;
+	if (log_map[URTWX_EFUSE_8822C_XTAL_K] != 0xff)
+		sc->sc_crystal_cap =
+		    log_map[URTWX_EFUSE_8822C_XTAL_K] & URTWX_XTAL_CAP_MASK;
+	if (log_map[URTWX_EFUSE_8822C_TX_BB_SWING_2G] != 0xff)
+		sc->sc_tx_bb_swing_2g =
+		    log_map[URTWX_EFUSE_8822C_TX_BB_SWING_2G];
+	if (log_map[URTWX_EFUSE_8822C_TX_BB_SWING_5G] != 0xff)
+		sc->sc_tx_bb_swing_5g =
+		    log_map[URTWX_EFUSE_8822C_TX_BB_SWING_5G];
+	if (log_map[URTWX_EFUSE_8822C_RFE_OPTION] != 0xff)
+		sc->sc_rfe_option = log_map[URTWX_EFUSE_8822C_RFE_OPTION];
+	else
+		sc->sc_rfe_option = 0;
+	if (log_map[URTWX_EFUSE_8822C_RF_BOARD_OPT] != 0xff)
+		sc->sc_rf_board_option =
+		    log_map[URTWX_EFUSE_8822C_RF_BOARD_OPT];
+	if (log_map[URTWX_EFUSE_8822C_RF_BT_SETTING] != 0xff)
+		sc->sc_bt_setting =
+		    log_map[URTWX_EFUSE_8822C_RF_BT_SETTING];
+	memcpy(sc->sc_8822c_txpwr_idx,
+	    log_map + URTWX_EFUSE_8822C_TXPWR_IDX,
+	    sizeof(sc->sc_8822c_txpwr_idx));
+	if (memcmp(sc->sc_8822c_txpwr_idx, empty_idx,
+	    sizeof(sc->sc_8822c_txpwr_idx)) != 0)
+		sc->sc_8822c_have_txpwr_idx = 1;
+
+	raw = log_map[URTWX_EFUSE_8822C_PPG_THERMAL_A];
+	if (raw != 0xff)
+		sc->sc_8822c_thermal_trim[0] = ((raw & 0x0e) >> 1) |
+		    ((raw & 0x01) << 3);
+	raw = log_map[URTWX_EFUSE_8822C_PPG_THERMAL_B];
+	if (raw != 0xff)
+		sc->sc_8822c_thermal_trim[1] = ((raw & 0x0e) >> 1) |
+		    ((raw & 0x01) << 3);
+
+	raw = log_map[URTWX_EFUSE_8822C_PPG_PABIAS_2GA];
+	if (raw != 0xff)
+		sc->sc_8822c_pa_bias_2g[0] = raw & URTWX_8822C_PPG_PABIAS_MASK;
+	raw = log_map[URTWX_EFUSE_8822C_PPG_PABIAS_2GB];
+	if (raw != 0xff)
+		sc->sc_8822c_pa_bias_2g[1] = raw & URTWX_8822C_PPG_PABIAS_MASK;
+	raw = log_map[URTWX_EFUSE_8822C_PPG_PABIAS_5GA];
+	if (raw != 0xff)
+		sc->sc_8822c_pa_bias_5g[0] = raw & URTWX_8822C_PPG_PABIAS_MASK;
+	raw = log_map[URTWX_EFUSE_8822C_PPG_PABIAS_5GB];
+	if (raw != 0xff)
+		sc->sc_8822c_pa_bias_5g[1] = raw & URTWX_8822C_PPG_PABIAS_MASK;
+
+	raw = log_map[URTWX_EFUSE_8822C_PPG_2GL_TXAB];
+	if (raw != 0xff) {
+		sc->sc_8822c_have_power_trim = 1;
+		sc->sc_8822c_power_trim[0][0] = raw & URTWX_8822C_PPG_2G_A_MASK;
+		sc->sc_8822c_power_trim[1][0] =
+		    (raw & URTWX_8822C_PPG_2G_B_MASK) >> 4;
+	}
+	raw = log_map[URTWX_EFUSE_8822C_PPG_2GM_TXAB];
+	if (raw != 0xff) {
+		sc->sc_8822c_have_power_trim = 1;
+		sc->sc_8822c_power_trim[0][1] = raw & URTWX_8822C_PPG_2G_A_MASK;
+		sc->sc_8822c_power_trim[1][1] =
+		    (raw & URTWX_8822C_PPG_2G_B_MASK) >> 4;
+	}
+	raw = log_map[URTWX_EFUSE_8822C_PPG_2GH_TXAB];
+	if (raw != 0xff) {
+		sc->sc_8822c_have_power_trim = 1;
+		sc->sc_8822c_power_trim[0][2] = raw & URTWX_8822C_PPG_2G_A_MASK;
+		sc->sc_8822c_power_trim[1][2] =
+		    (raw & URTWX_8822C_PPG_2G_B_MASK) >> 4;
+	}
+	for (i = 0; i < nitems(pwr_5g_a); i++) {
+		raw = log_map[pwr_5g_a[i]];
+		if (raw != 0xff) {
+			sc->sc_8822c_have_power_trim = 1;
+			sc->sc_8822c_power_trim[0][i + 3] =
+			    raw & URTWX_8822C_PPG_5G_MASK;
+		}
+		raw = log_map[pwr_5g_b[i]];
+		if (raw != 0xff) {
+			sc->sc_8822c_have_power_trim = 1;
+			sc->sc_8822c_power_trim[1][i + 3] =
+			    raw & URTWX_8822C_PPG_5G_MASK;
+		}
+	}
+
+	(void)log_map[URTWX_EFUSE_8822C_CHANNEL_PLAN];
+
+	memcpy(mac_out, log_map + URTWX_EFUSE_8822CU_MAC_OFFSET,
+	    ETHER_ADDR_LEN);
+	if (!urtwx_valid_etheraddr(mac_out))
+		ret = ENOENT;
+
+	return (ret);
+}
+
+static void
+urtwx_8822c_bbpg_rates(uint32_t addr, uint8_t *rates, size_t *nrates)
+{
+	*nrates = 0;
+
+	switch (addr) {
+	case 0x0c20:
+	case 0x0e20:
+		rates[0] = URTWX_DESC_RATE1M;
+		rates[1] = 0x01;
+		rates[2] = 0x02;
+		rates[3] = URTWX_DESC_RATE11M;
+		*nrates = 4;
+		break;
+	case 0x0c24:
+	case 0x0e24:
+		rates[0] = URTWX_DESC_RATE6M;
+		rates[1] = 0x05;
+		rates[2] = 0x06;
+		rates[3] = 0x07;
+		*nrates = 4;
+		break;
+	case 0x0c28:
+	case 0x0e28:
+		rates[0] = 0x08;
+		rates[1] = 0x09;
+		rates[2] = 0x0a;
+		rates[3] = URTWX_DESC_RATE54M;
+		*nrates = 4;
+		break;
+	case 0x0c2c:
+	case 0x0e2c:
+		rates[0] = 0x0c;
+		rates[1] = 0x0d;
+		rates[2] = 0x0e;
+		rates[3] = 0x0f;
+		*nrates = 4;
+		break;
+	case 0x0c30:
+	case 0x0e30:
+		rates[0] = 0x10;
+		rates[1] = 0x11;
+		rates[2] = 0x12;
+		rates[3] = URTWX_DESC_RATEMCS7;
+		*nrates = 4;
+		break;
+	case 0x0c34:
+	case 0x0e34:
+		rates[0] = 0x14;
+		rates[1] = 0x15;
+		rates[2] = 0x16;
+		rates[3] = 0x17;
+		*nrates = 4;
+		break;
+	case 0x0c38:
+	case 0x0e38:
+		rates[0] = 0x18;
+		rates[1] = 0x19;
+		rates[2] = 0x1a;
+		rates[3] = URTWX_DESC_RATEMCS15;
+		*nrates = 4;
+		break;
+	case 0x0c3c:
+	case 0x0e3c:
+		rates[0] = 0x2c;
+		rates[1] = 0x2d;
+		rates[2] = 0x2e;
+		rates[3] = 0x2f;
+		*nrates = 4;
+		break;
+	case 0x0c40:
+	case 0x0e40:
+		rates[0] = 0x30;
+		rates[1] = 0x31;
+		rates[2] = 0x32;
+		rates[3] = 0x33;
+		*nrates = 4;
+		break;
+	case 0x0c44:
+	case 0x0e44:
+		rates[0] = 0x34;
+		rates[1] = URTWX_DESC_RATEVHT1SS_MCS9;
+		rates[2] = 0x36;
+		rates[3] = 0x37;
+		*nrates = 4;
+		break;
+	case 0x0c48:
+	case 0x0e48:
+		rates[0] = 0x38;
+		rates[1] = 0x39;
+		rates[2] = 0x3a;
+		rates[3] = 0x3b;
+		*nrates = 4;
+		break;
+	case 0x0c4c:
+	case 0x0e4c:
+		rates[0] = 0x3c;
+		rates[1] = 0x3d;
+		rates[2] = 0x3e;
+		rates[3] = URTWX_DESC_RATEVHT2SS_MCS9;
+		*nrates = 4;
+		break;
+	}
+}
+
+static void
+urtwx_8822c_bbpg_normalize(int8_t *ofs, const uint8_t *rates, size_t nrates)
+{
+	int8_t base;
+	size_t i;
+	uint8_t base_idx;
+
+	if (nrates == 0)
+		return;
+
+	if (nrates == 10)
+		base_idx = rates[nrates - 3];
+	else
+		base_idx = rates[nrates - 1];
+	base = ofs[base_idx];
+
+	for (i = 0; i < nrates; i++)
+		ofs[rates[i]] -= base;
+}
+
+static void
+urtwx_8822c_parse_bb_pg(struct urtwx_softc *sc)
+{
+	static const uint8_t cck_rates[] = {
+		URTWX_DESC_RATE1M, 0x01, 0x02, URTWX_DESC_RATE11M
+	};
+	static const uint8_t ofdm_rates[] = {
+		URTWX_DESC_RATE6M, 0x05, 0x06, 0x07,
+		0x08, 0x09, 0x0a, URTWX_DESC_RATE54M
+	};
+	static const uint8_t ht1_rates[] = {
+		0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, URTWX_DESC_RATEMCS7
+	};
+	static const uint8_t ht2_rates[] = {
+		0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, URTWX_DESC_RATEMCS15
+	};
+	static const uint8_t vht1_rates[] = {
+		0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34,
+		URTWX_DESC_RATEVHT1SS_MCS9
+	};
+	static const uint8_t vht2_rates[] = {
+		0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e,
+		URTWX_DESC_RATEVHT2SS_MCS9
+	};
+	uint8_t rates[4];
+	size_t i, nrates;
+	int have;
+
+	have = 0;
+	for (i = 0; i < nitems(urtwx_8822c_bb_pg_type0); i++) {
+		const struct urtwx_8822c_bbpg *p = &urtwx_8822c_bb_pg_type0[i];
+		int8_t *ofs;
+		size_t j;
+
+		if (p->rf_path >= nitems(sc->sc_8822c_txpwr_ofs_2g))
+			continue;
+		if (p->band > 1)
+			continue;
+
+		urtwx_8822c_bbpg_rates(p->addr, rates, &nrates);
+		if (nrates == 0)
+			continue;
+
+		ofs = (p->band == 0) ? sc->sc_8822c_txpwr_ofs_2g[p->rf_path] :
+		    sc->sc_8822c_txpwr_ofs_5g[p->rf_path];
+		for (j = 0; j < nrates; j++)
+			ofs[rates[j]] = (p->data >> (j * 8)) & 0xff;
+		have = 1;
+	}
+
+	if (!have)
+		return;
+
+	for (i = 0; i < nitems(sc->sc_8822c_txpwr_ofs_2g); i++) {
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_2g[i],
+		    cck_rates, nitems(cck_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_2g[i],
+		    ofdm_rates, nitems(ofdm_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_2g[i],
+		    ht1_rates, nitems(ht1_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_2g[i],
+		    ht2_rates, nitems(ht2_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_2g[i],
+		    vht1_rates, nitems(vht1_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_2g[i],
+		    vht2_rates, nitems(vht2_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_5g[i],
+		    ofdm_rates, nitems(ofdm_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_5g[i],
+		    ht1_rates, nitems(ht1_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_5g[i],
+		    ht2_rates, nitems(ht2_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_5g[i],
+		    vht1_rates, nitems(vht1_rates));
+		urtwx_8822c_bbpg_normalize(sc->sc_8822c_txpwr_ofs_5g[i],
+		    vht2_rates, nitems(vht2_rates));
+	}
+
+	sc->sc_8822c_have_bb_pg = 1;
+}
+
+static void
+urtwx_8822c_board_info_setup(struct urtwx_softc *sc)
+{
+	/*
+	 * Linux's chip_board_info_setup() is a separate stage after efuse
+	 * parse. The full tx-power-limit tables are still missing locally,
+	 * but the phy_pg table we have should be applied from the same stage
+	 * instead of being hidden behind one specific RFE value.
+	 *
+	 * All current 8822C RFE definitions use bb_pg_type0, including the
+	 * user's rfe_def[3].
+	 */
+	sc->sc_8822c_have_bb_pg = 0;
+	urtwx_8822c_parse_bb_pg(sc);
+}
+
+static int
 urtwx_read_efuse(struct urtwx_softc *sc, uint8_t *mac_out)
 {
 	uint8_t	*phy_map;
@@ -2867,7 +4339,9 @@ urtwx_phy_match_cond(struct urtwx_softc *sc, uint32_t cond, uint32_t cond2)
 	intf = (cond & URTWX_PHY_COND_INTF_MASK) >> URTWX_PHY_COND_INTF_SHIFT;
 	rfe = cond & URTWX_PHY_COND_RFE_MASK;
 
-	if (cut != 0 && cut != URTWX_PHY_COND_WILDCARD)
+	if (cut != 0 &&
+	    cut != (sc->sc_cut_version != 0 ?
+	    sc->sc_cut_version : URTWX_PHY_COND_WILDCARD))
 		return (0);
 	if (pkg != 0 &&
 	    pkg != (sc->sc_pkg_type != 0 ?
@@ -2881,15 +4355,311 @@ urtwx_phy_match_cond(struct urtwx_softc *sc, uint32_t cond, uint32_t cond2)
 	return (1);
 }
 
+#if URTWX_8822C_ABORT_AFTER_TABLES
+static void
+urtwx_8822c_rfwrite_reset(struct urtwx_softc *sc)
+{
+	sc->sc_rfwrite_active = 0;
+	sc->sc_rfwrite_path = 0xff;
+	sc->sc_rfwrite_idx = 0xffff;
+	sc->sc_rfwrite_tbl_addr = 0;
+	sc->sc_rfwrite_tbl_data = 0;
+	sc->sc_rfwrite_raw_cnt = 0;
+	sc->sc_rfblock_cnt = 0;
+}
+
+static void
+urtwx_8822c_rfwrite_start(struct urtwx_softc *sc)
+{
+	sc->sc_rfwrite_active = 1;
+	sc->sc_rfwrite_path = 0xff;
+	sc->sc_rfwrite_idx = 0xffff;
+	sc->sc_rfwrite_tbl_addr = 0;
+	sc->sc_rfwrite_tbl_data = 0;
+}
+
+static void
+urtwx_8822c_rfwrite_stop(struct urtwx_softc *sc)
+{
+	sc->sc_rfwrite_active = 0;
+	sc->sc_rfwrite_path = 0xff;
+	sc->sc_rfwrite_idx = 0xffff;
+	sc->sc_rfwrite_tbl_addr = 0;
+	sc->sc_rfwrite_tbl_data = 0;
+}
+#endif
+
+static void
+urtwx_8822c_rfwrite_set_entry(struct urtwx_softc *sc, uint8_t path,
+    uint16_t idx, uint32_t addr, uint32_t data)
+{
+	sc->sc_rfwrite_path = path;
+	sc->sc_rfwrite_idx = idx;
+	sc->sc_rfwrite_tbl_addr = addr;
+	sc->sc_rfwrite_tbl_data = data;
+}
+
+static void
+urtwx_8822c_rfwrite_clear_entry(struct urtwx_softc *sc)
+{
+	sc->sc_rfwrite_path = 0xff;
+	sc->sc_rfwrite_idx = 0xffff;
+	sc->sc_rfwrite_tbl_addr = 0;
+	sc->sc_rfwrite_tbl_data = 0;
+}
+
+static void
+urtwx_8822c_rfwrite_log(struct urtwx_softc *sc, uint16_t val, uint16_t idx,
+    const void *buf, int len)
+{
+	struct urtwx_8822c_rfwrite_evt *evt;
+	struct urtwx_8822c_rfblock_evt *blk;
+	const uint8_t *bytes = buf;
+	uint16_t blkno;
+	uint32_t h;
+	int i;
+
+	if (!sc->sc_rfwrite_active || sc->sc_rfwrite_path == 0xff)
+		return;
+	if (len <= 0 || len > 4)
+		return;
+
+	if (sc->sc_rfwrite_idx < 32 &&
+	    sc->sc_rfwrite_raw_cnt < URTWX_8822C_RFWRITE_RAW_MAX) {
+		evt = &sc->sc_rfwrite_raw[sc->sc_rfwrite_raw_cnt++];
+		evt->path = sc->sc_rfwrite_path;
+		evt->idx = sc->sc_rfwrite_idx;
+		evt->val = val;
+		evt->idxreg = idx;
+		evt->tbl_addr = sc->sc_rfwrite_tbl_addr;
+		evt->tbl_data = sc->sc_rfwrite_tbl_data;
+		evt->len = len;
+		memset(evt->data, 0, sizeof(evt->data));
+		memcpy(evt->data, buf, len);
+	}
+
+	blkno = sc->sc_rfwrite_idx >> URTWX_8822C_RFBLOCK_SHIFT;
+	if (sc->sc_rfblock_cnt == 0 ||
+	    sc->sc_rfblock[sc->sc_rfblock_cnt - 1].path != sc->sc_rfwrite_path ||
+	    sc->sc_rfblock[sc->sc_rfblock_cnt - 1].blk != blkno) {
+		if (sc->sc_rfblock_cnt >= URTWX_8822C_RFBLOCK_MAX)
+			return;
+		blk = &sc->sc_rfblock[sc->sc_rfblock_cnt++];
+		blk->path = sc->sc_rfwrite_path;
+		blk->blk = blkno;
+		blk->count = 0;
+		blk->hash = 2166136261U;
+	}
+
+	blk = &sc->sc_rfblock[sc->sc_rfblock_cnt - 1];
+	h = blk->hash;
+	h = (h ^ sc->sc_rfwrite_path) * 16777619U;
+	h = (h ^ (sc->sc_rfwrite_idx & 0xff)) * 16777619U;
+	h = (h ^ (sc->sc_rfwrite_idx >> 8)) * 16777619U;
+	h = (h ^ (sc->sc_rfwrite_tbl_addr & 0xff)) * 16777619U;
+	h = (h ^ ((sc->sc_rfwrite_tbl_addr >> 8) & 0xff)) * 16777619U;
+	h = (h ^ (sc->sc_rfwrite_tbl_data & 0xff)) * 16777619U;
+	h = (h ^ ((sc->sc_rfwrite_tbl_data >> 8) & 0xff)) * 16777619U;
+	h = (h ^ ((sc->sc_rfwrite_tbl_data >> 16) & 0xff)) * 16777619U;
+	h = (h ^ ((sc->sc_rfwrite_tbl_data >> 24) & 0xff)) * 16777619U;
+	h = (h ^ (val & 0xff)) * 16777619U;
+	h = (h ^ (val >> 8)) * 16777619U;
+	for (i = 0; i < len; i++)
+		h = (h ^ bytes[i]) * 16777619U;
+	blk->hash = h;
+	blk->count++;
+}
+
+#if URTWX_8822C_ABORT_AFTER_TABLES
+static void
+urtwx_8822c_usbtrace_reset(struct urtwx_softc *sc)
+{
+	sc->sc_usbtrace_active = 0;
+	sc->sc_usbtrace_sync_pending = 0;
+	sc->sc_usbtrace_cnt = 0;
+}
+
+static void
+urtwx_8822c_usbtrace_start(struct urtwx_softc *sc)
+{
+	sc->sc_usbtrace_active = 1;
+	sc->sc_usbtrace_sync_pending = 0;
+}
+
+static void
+urtwx_8822c_usbtrace_stop(struct urtwx_softc *sc)
+{
+	sc->sc_usbtrace_active = 0;
+	sc->sc_usbtrace_sync_pending = 0;
+}
+#endif
+
+static void
+urtwx_8822c_usbtrace_log(struct urtwx_softc *sc, uint16_t val, uint16_t idx,
+    const void *buf, int len)
+{
+	struct urtwx_8822c_usbtrace_evt *evt;
+
+	if (!sc->sc_usbtrace_active)
+		return;
+	if (val == 0x1808 || val == 0x4108)
+		sc->sc_usbtrace_sync_pending = 1;
+	else if (val == 0x04e0) {
+		if (!sc->sc_usbtrace_sync_pending)
+			return;
+		sc->sc_usbtrace_sync_pending = 0;
+	} else
+		return;
+	if (len <= 0 || len > 4)
+		return;
+	if (sc->sc_usbtrace_cnt >= URTWX_8822C_USBTRACE_MAX)
+		return;
+
+	evt = &sc->sc_usbtrace[sc->sc_usbtrace_cnt++];
+	evt->val = val;
+	evt->idx = idx;
+	evt->len = len;
+	memset(evt->data, 0, sizeof(evt->data));
+	memcpy(evt->data, buf, len);
+}
+
+#if URTWX_8822C_ABORT_AFTER_TABLES
+static void
+urtwx_8822c_usbtrace_dump(struct urtwx_softc *sc)
+{
+	const struct urtwx_8822c_usbtrace_evt *evt;
+	int i;
+
+	for (i = 0; i < sc->sc_usbtrace_cnt; i++) {
+		evt = &sc->sc_usbtrace[i];
+		printf("%s: 8822c usbtrace W req=%#x val=%#x idx=%#x len=%u "
+		    "data=%02x %02x %02x %02x\n",
+		    DEVNAME(sc), RTW_USB_CMD_REQ, evt->val, evt->idx,
+		    evt->len, evt->data[0], evt->data[1], evt->data[2],
+		    evt->data[3]);
+	}
+}
+
+static void
+urtwx_8822c_rfwrite_dump(struct urtwx_softc *sc)
+{
+	const struct urtwx_8822c_rfwrite_evt *evt;
+	const struct urtwx_8822c_rfblock_evt *blk;
+	int i;
+
+	for (i = 0; i < sc->sc_rfwrite_raw_cnt; i++) {
+		evt = &sc->sc_rfwrite_raw[i];
+		printf("%s: 8822c rfwrite path %u tblidx %u tbladdr %#x "
+		    "tbldata %#x val=%#x idx=%#x len=%u data=%02x %02x "
+		    "%02x %02x\n", DEVNAME(sc), evt->path, evt->idx,
+		    evt->tbl_addr, evt->tbl_data, evt->val, evt->idxreg,
+		    evt->len, evt->data[0], evt->data[1], evt->data[2],
+		    evt->data[3]);
+	}
+	for (i = 0; i < sc->sc_rfblock_cnt; i++) {
+		blk = &sc->sc_rfblock[i];
+		printf("%s: 8822c rfblock path %u blk %u count %u hash %#x\n",
+		    DEVNAME(sc), blk->path, blk->blk, blk->count, blk->hash);
+	}
+}
+#endif
+
+static void
+urtwx_8822c_dump_phy_stage(struct urtwx_softc *sc, const char *tag)
+{
+	printf("%s: 8822c %s sys=%#x sys1=%#x rsv=%#x rfctrl=%#x "
+	    "wlrf1=%#x 3wirea=%#x 3wireb=%#x rstb=%#x rf0=%#x/%#x "
+	    "rfe=%#x rfboard=%#x bt=%#x pkg=%u\n",
+	    DEVNAME(sc), tag,
+	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0),
+	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN + 1, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RSV_CTRL, 0),
+	    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RF_CTRL, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_WLRF1, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_3WIRE, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_3WIRE2, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RSTB, 0),
+	    urtwx_read_rf_path(sc, 0, 0x0),
+	    urtwx_read_rf_path(sc, 1, 0x0),
+	    sc->sc_rfe_option, sc->sc_rf_board_option,
+	    sc->sc_bt_setting, sc->sc_pkg_type);
+}
+
+static void
+urtwx_8822c_tbltime_enter(struct urtwx_softc *sc, const char *tag,
+    struct timeval *tv)
+{
+	if (sc->sc_chip != &urtwx_chip_8822c)
+		return;
+
+	microuptime(tv);
+	printf("%s: 8822c tbltime enter %s t=%lld.%06ld\n", DEVNAME(sc),
+	    tag, (long long)tv->tv_sec, (long)tv->tv_usec);
+}
+
+static void
+urtwx_8822c_tbltime_exit(struct urtwx_softc *sc, const char *tag,
+    const struct timeval *start)
+{
+	struct timeval tv;
+	long long delta_ms;
+
+	if (sc->sc_chip != &urtwx_chip_8822c)
+		return;
+
+	microuptime(&tv);
+	delta_ms = (tv.tv_sec - start->tv_sec) * 1000LL;
+	delta_ms += (tv.tv_usec - start->tv_usec) / 1000LL;
+	printf("%s: 8822c tbltime exit %s t=%lld.%06ld dur=%lldms\n",
+	    DEVNAME(sc), tag, (long long)tv.tv_sec, (long)tv.tv_usec,
+	    delta_ms);
+}
+
+static int
+urtwx_8822c_rf0_retry(struct urtwx_softc *sc, uint8_t path, uint32_t expected)
+{
+	uint32_t rf0;
+	int attempt, ret;
+
+	rf0 = urtwx_read_rf_path(sc, path, 0x0);
+	for (attempt = 1; attempt < URTWX_8822C_RF0_RETRY_MAX &&
+	    rf0 != expected; attempt++) {
+		ret = urtwx_write_rf_path(sc, path, 0x0, RFREG_MASK, expected);
+		if (ret != 0)
+			return (ret);
+		delay(URTWX_8822C_RF0_RETRY_DELAY_US);
+		rf0 = urtwx_read_rf_path(sc, path, 0x0);
+	}
+
+	printf("%s: 8822c rf0 latch path %u attempts %d final %#x "
+	    "expect %#x\n", DEVNAME(sc), path, attempt, rf0, expected);
+	return (0);
+}
+
+static void
+urtwx_8822c_tblwrite_pace(struct urtwx_softc *sc)
+{
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		delay(URTWX_8822C_TBLWRITE_PACE_US);
+}
+
 static int
 urtwx_phy_cfg(struct urtwx_softc *sc, enum urtwx_phy_cfg cfg, uint8_t rf_path,
     uint32_t addr, uint32_t data)
 {
+	int ret;
+
 	switch (cfg) {
 	case URTWX_PHY_CFG_MAC:
-		return (urtwx_write_1(sc, RTW_USB_CMD_REQ, addr, 0, data));
+		ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, addr, 0, data);
+		if (ret == 0)
+			urtwx_8822c_tblwrite_pace(sc);
+		return (ret);
 	case URTWX_PHY_CFG_AGC:
-		return (urtwx_write_4(sc, RTW_USB_CMD_REQ, addr, 0, data));
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, addr, 0, data);
+		if (ret == 0)
+			urtwx_8822c_tblwrite_pace(sc);
+		return (ret);
 	case URTWX_PHY_CFG_BB:
 		switch (addr) {
 		case 0xfe:
@@ -2908,11 +4678,13 @@ urtwx_phy_cfg(struct urtwx_softc *sc, enum urtwx_phy_cfg cfg, uint8_t rf_path,
 			delay(5);
 			return (0);
 		case 0xf9:
-			delay(1);
+			delay(URTWX_8822C_RF_DELAY_US);
 			return (0);
 		default:
-			return (urtwx_write_4(sc, RTW_USB_CMD_REQ, addr, 0,
-			    data));
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, addr, 0, data);
+			if (ret == 0)
+				urtwx_8822c_tblwrite_pace(sc);
+			return (ret);
 		}
 	case URTWX_PHY_CFG_RF:
 		switch (addr) {
@@ -2926,7 +4698,8 @@ urtwx_phy_cfg(struct urtwx_softc *sc, enum urtwx_phy_cfg cfg, uint8_t rf_path,
 			if (urtwx_write_rf_path(sc, rf_path, addr, RFREG_MASK,
 			    data) != 0)
 				return (EIO);
-			delay(1);
+			delay(URTWX_8822C_RF_DELAY_US);
+			urtwx_8822c_tblwrite_pace(sc);
 			return (0);
 		}
 	}
@@ -2939,14 +4712,17 @@ urtwx_phy_load_table(struct urtwx_softc *sc, const uint32_t *tbl, size_t size,
     enum urtwx_phy_cfg cfg, uint8_t rf_path)
 {
 	uint32_t addr, cond, cond2, data;
+	uint32_t cut, pkg, intf, rfe;
 	int i, is_matched, is_skipped, ret;
+	size_t applied, skipped;
 	size_t off;
 
 	cond = 0;
 	cond2 = 0;
 	is_matched = 1;
 	is_skipped = 0;
-
+	applied = 0;
+	skipped = 0;
 	if (size % 2 != 0)
 		return (EINVAL);
 
@@ -2990,11 +4766,46 @@ urtwx_phy_load_table(struct urtwx_softc *sc, const uint32_t *tbl, size_t size,
 		}
 
 		if (!is_matched)
+		{
+			skipped++;
 			continue;
+		}
 
+		if (sc->sc_chip == &urtwx_chip_8822c && cfg == URTWX_PHY_CFG_RF)
+			urtwx_8822c_rfwrite_set_entry(sc, rf_path, off / 2,
+			    addr, data);
 		ret = urtwx_phy_cfg(sc, cfg, rf_path, addr, data);
+		if (sc->sc_chip == &urtwx_chip_8822c && cfg == URTWX_PHY_CFG_RF)
+			urtwx_8822c_rfwrite_clear_entry(sc);
 		if (ret != 0)
 			return (ret);
+		if (sc->sc_chip == &urtwx_chip_8822c &&
+		    cfg == URTWX_PHY_CFG_RF && off == 0 && addr == 0x0 &&
+		    data == 0x30000) {
+			ret = urtwx_8822c_rf0_retry(sc, rf_path, data);
+			if (ret != 0)
+				return (ret);
+		}
+		applied++;
+	}
+
+	if (sc->sc_chip == &urtwx_chip_8822c &&
+	    sc->sc_phy_cond_log < 8) {
+		cut = (cond & URTWX_PHY_COND_CUT_MASK) >>
+		    URTWX_PHY_COND_CUT_SHIFT;
+		pkg = (cond & URTWX_PHY_COND_PKG_MASK) >>
+		    URTWX_PHY_COND_PKG_SHIFT;
+		intf = (cond & URTWX_PHY_COND_INTF_MASK) >>
+		    URTWX_PHY_COND_INTF_SHIFT;
+		rfe = cond & URTWX_PHY_COND_RFE_MASK;
+		printf("%s: phy tbl cfg=%d path=%u applied=%zu skipped=%zu "
+		    "lastcond cut=%#x pkg=%#x intf=%#x rfe=%#x drvcut=%u "
+		    "drvpkg=%u drvrfe=%#x\n", DEVNAME(sc), cfg, rf_path,
+		    applied, skipped, cut, pkg, intf, rfe,
+		    sc->sc_cut_version != 0 ? sc->sc_cut_version :
+		    URTWX_PHY_COND_WILDCARD, sc->sc_pkg_type,
+		    sc->sc_rfe_option);
+		sc->sc_phy_cond_log++;
 	}
 
 	return (0);
@@ -3004,37 +4815,138 @@ static int
 urtwx_phy_load_tables(struct urtwx_softc *sc)
 {
 	const struct urtwx_chip_info *chip = sc->sc_chip;
+	struct timeval stage_tv, total_tv;
 	int path;
 	int ret;
 
+	urtwx_8822c_tbltime_enter(sc, "tables", &total_tv);
+
+#if URTWX_8822C_ABORT_AFTER_TABLES
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_rfwrite_reset(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_usbtrace_reset(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		usbd_8822c_usbtrace_reset();
+#endif
+
+	urtwx_8822c_tbltime_enter(sc, "mac", &stage_tv);
 	ret = urtwx_phy_load_table(sc, chip->uc_mac_tbl.ut_data,
 	    chip->uc_mac_tbl.ut_size, URTWX_PHY_CFG_MAC, 0);
 	if (ret != 0)
 		return (ret);
+	urtwx_8822c_tbltime_exit(sc, "mac", &stage_tv);
+
+	urtwx_8822c_tbltime_enter(sc, "bb", &stage_tv);
 	ret = urtwx_phy_load_table(sc, chip->uc_bb_tbl.ut_data,
 	    chip->uc_bb_tbl.ut_size, URTWX_PHY_CFG_BB, 0);
 	if (ret != 0)
 		return (ret);
+	urtwx_8822c_tbltime_exit(sc, "bb", &stage_tv);
+
+	urtwx_8822c_tbltime_enter(sc, "agc", &stage_tv);
 	ret = urtwx_phy_load_table(sc, chip->uc_agc_tbl.ut_data,
 	    chip->uc_agc_tbl.ut_size, URTWX_PHY_CFG_AGC, 0);
 	if (ret != 0)
 		return (ret);
+	urtwx_8822c_tbltime_exit(sc, "agc", &stage_tv);
 	if (sc->sc_rfe_option == 0x02 || sc->sc_rfe_option == 0x04) {
+		urtwx_8822c_tbltime_enter(sc, "agc_btg", &stage_tv);
 		ret = urtwx_phy_load_table(sc, chip->uc_agc_btg_type2_tbl.ut_data,
 		    chip->uc_agc_btg_type2_tbl.ut_size, URTWX_PHY_CFG_AGC, 0);
 		if (ret != 0)
 			return (ret);
+		urtwx_8822c_tbltime_exit(sc, "agc_btg", &stage_tv);
 	}
-
-	for (path = 0; path < chip->uc_rf_path_count; path++) {
-		if (chip->uc_rf_tbl[path].ut_data == NULL ||
-		    chip->uc_rf_tbl[path].ut_size == 0)
-			continue;
-		ret = urtwx_phy_load_table(sc, chip->uc_rf_tbl[path].ut_data,
-		    chip->uc_rf_tbl[path].ut_size, URTWX_PHY_CFG_RF, path);
+	if (chip->uc_rfk_init_tbl.ut_data != NULL &&
+	    chip->uc_rfk_init_tbl.ut_size != 0) {
+		ret = urtwx_write_4_mask(sc, 0x1e24, 1U << 17, 1U << 17);
 		if (ret != 0)
 			return (ret);
+		ret = urtwx_write_4_mask(sc, 0x1cd0, 1U << 28, 1U << 28);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, 0x1cd0, 1U << 29, 1U << 29);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, 0x1cd0, 1U << 30, 1U << 30);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, 0x1cd0, 1U << 31, 0);
+		if (ret != 0)
+			return (ret);
+		urtwx_8822c_tbltime_enter(sc, "rfk", &stage_tv);
+		ret = urtwx_phy_load_table(sc, chip->uc_rfk_init_tbl.ut_data,
+		    chip->uc_rfk_init_tbl.ut_size, URTWX_PHY_CFG_BB, 0);
+		if (ret != 0)
+			return (ret);
+		urtwx_8822c_tbltime_exit(sc, "rfk", &stage_tv);
 	}
+
+#if URTWX_8822C_ABORT_AFTER_TABLES
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_rfwrite_start(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_usbtrace_start(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		usbd_8822c_usbtrace_start();
+#endif
+
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		/*
+		 * Linux 8822C applies the RF tables in B-then-A order:
+		 * chip->rf_tbl = { rf_b, rf_a }, with rf_path carried in the
+		 * table metadata. Our port strips that metadata and passes the
+		 * RF path separately, so preserve the effective load order here.
+		 */
+		for (path = chip->uc_rf_path_count - 1; path >= 0; path--) {
+			if (chip->uc_rf_tbl[path].ut_data == NULL ||
+			    chip->uc_rf_tbl[path].ut_size == 0)
+				continue;
+			urtwx_8822c_tbltime_enter(sc,
+			    path == 0 ? "rf path 0" : "rf path 1", &stage_tv);
+			ret = urtwx_phy_load_table(sc,
+			    chip->uc_rf_tbl[path].ut_data,
+			    chip->uc_rf_tbl[path].ut_size,
+			    URTWX_PHY_CFG_RF, path);
+			if (ret != 0)
+				return (ret);
+			urtwx_8822c_tbltime_exit(sc,
+			    path == 0 ? "rf path 0" : "rf path 1", &stage_tv);
+		}
+	} else {
+		for (path = 0; path < chip->uc_rf_path_count; path++) {
+			if (chip->uc_rf_tbl[path].ut_data == NULL ||
+			    chip->uc_rf_tbl[path].ut_size == 0)
+				continue;
+			urtwx_8822c_tbltime_enter(sc,
+			    path == 0 ? "rf path 0" : "rf path 1", &stage_tv);
+			ret = urtwx_phy_load_table(sc,
+			    chip->uc_rf_tbl[path].ut_data,
+			    chip->uc_rf_tbl[path].ut_size,
+			    URTWX_PHY_CFG_RF, path);
+			if (ret != 0)
+				return (ret);
+			urtwx_8822c_tbltime_exit(sc,
+			    path == 0 ? "rf path 0" : "rf path 1", &stage_tv);
+		}
+	}
+
+#if URTWX_8822C_ABORT_AFTER_TABLES
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_rfwrite_stop(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_usbtrace_stop(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		usbd_8822c_usbtrace_stop();
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_rfwrite_dump(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_usbtrace_dump(sc);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		usbd_8822c_usbtrace_dump();
+#endif
+	urtwx_8822c_tbltime_exit(sc, "tables", &total_tv);
 
 	return (0);
 }
@@ -3044,6 +4956,15 @@ urtwx_phy_switch_rf_set(struct urtwx_softc *sc, enum urtwx_rf_set rf_set)
 {
 	uint32_t reg;
 	int ret;
+
+	/*
+	 * The older RFECTL/LNA/CCA switching sequence below is 8821C-shaped.
+	 * Keep it off the 8822C bring-up path until we have a confirmed
+	 * 8822C-specific front-end switch model; it is a strong candidate for
+	 * muting TX/RX despite otherwise-correct channel programming.
+	 */
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		return (0);
 
 	ret = urtwx_write_4_mask(sc, REG_CPU_DMEM_CON, BIT_WL_PLATFORM_RST,
 	    BIT_WL_PLATFORM_RST);
@@ -3095,6 +5016,61 @@ urtwx_phy_enable_bb_rf(struct urtwx_softc *sc)
 	uint8_t val8;
 	int ret;
 
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		ret = urtwx_write_1_mask(sc, REG_SYS_FUNC_EN,
+		    BIT_FEN_BB_RSTB | BIT_FEN_BB_GLB_RST,
+		    BIT_FEN_BB_RSTB | BIT_FEN_BB_GLB_RST);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_1_mask(sc, REG_RF_CTRL,
+		    BIT_RF_EN | BIT_RF_RSTB | BIT_RF_SDM_RSTB,
+		    BIT_RF_EN | BIT_RF_RSTB | BIT_RF_SDM_RSTB);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_WLRF1,
+		    URTWX_8822C_BIT_WLRF1_BBRF_EN,
+		    URTWX_8822C_BIT_WLRF1_BBRF_EN);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_field(sc, REG_RSV_CTRL,
+		    URTWX_8822C_BITS_RFC_DIRECT,
+		    URTWX_8822C_RFC_DIRECT_PI);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_field(sc, REG_WLRF1,
+		    URTWX_8822C_BITS_RFC_DIRECT,
+		    URTWX_8822C_RFC_DIRECT_PI);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_DIS_DPD,
+		    URTWX_8822C_DIS_DPD_MASK,
+		    URTWX_8822C_DIS_DPD_RATEALL);
+		if (ret != 0)
+			return (ret);
+		urtwx_8822c_header_file_init(sc, 1);
+		ret = urtwx_phy_load_tables(sc);
+		if (ret != 0)
+			return (ret);
+		urtwx_8822c_dump_phy_stage(sc, "rf tables");
+#if URTWX_8822C_ABORT_AFTER_TABLES
+		printf("%s: 8822c rfinit stop after tables\n", DEVNAME(sc));
+		return (EIO);
+#endif
+		sc->sc_usbctl_log = 0;
+		ret = urtwx_write_4_field(sc, REG_ANAPAR_XTAL_0,
+		    URTWX_8822C_BIT_XCAP_0,
+		    (uint32_t)sc->sc_crystal_cap |
+		    ((uint32_t)sc->sc_crystal_cap << 7));
+		if (ret != 0)
+			return (ret);
+		urtwx_8822c_header_file_init(sc, 0);
+		urtwx_8822c_dump_phy_stage(sc, "phy on");
+#if URTWX_8822C_ABORT_AFTER_PHYON
+	return (EIO);
+#endif
+	return (0);
+}
+
 	val8 = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0);
 	val8 |= BIT_FEN_PCIEA;
 	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0, val8);
@@ -3125,27 +5101,1770 @@ urtwx_phy_enable_bb_rf(struct urtwx_softc *sc)
 		return (ret);
 	delay(10);
 
-	ret = urtwx_write_4_mask(sc, REG_RXPSEL, BIT_RX_PSEL_RST, 0);
-	if (ret != 0)
-		return (ret);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		ret = urtwx_write_4_mask(sc, REG_WLRF1,
+		    URTWX_8822C_BIT_WLRF1_BBRF_EN,
+		    URTWX_8822C_BIT_WLRF1_BBRF_EN);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_DIS_DPD,
+		    URTWX_8822C_DIS_DPD_MASK,
+		    URTWX_8822C_DIS_DPD_RATEALL);
+		if (ret != 0)
+			return (ret);
+		urtwx_8822c_header_file_init(sc, 1);
+	} else {
+		ret = urtwx_write_4_mask(sc, REG_RXPSEL, BIT_RX_PSEL_RST, 0);
+		if (ret != 0)
+			return (ret);
+	}
 	ret = urtwx_phy_load_tables(sc);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_AFE_XTAL_CTRL, 0x7e000000U,
-	    (uint32_t)sc->sc_crystal_cap << 25);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		ret = urtwx_write_4_field(sc, REG_ANAPAR_XTAL_0,
+		    0x00fffc00U,
+		    sc->sc_crystal_cap | (sc->sc_crystal_cap << 7));
+		if (ret != 0)
+			return (ret);
+		urtwx_8822c_header_file_init(sc, 0);
+	} else {
+		ret = urtwx_write_4_mask(sc, REG_AFE_XTAL_CTRL, 0x7e000000U,
+		    (uint32_t)sc->sc_crystal_cap << 25);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_AFE_PLL_CTRL, 0x0000007eU,
+		    (uint32_t)sc->sc_crystal_cap << 1);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_CCK0_FAREPORT,
+		    (1U << 18) | (1U << 22), 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, REG_RXPSEL, BIT_RX_PSEL_RST,
+		    BIT_RX_PSEL_RST);
+		if (ret != 0)
+			return (ret);
+	}
+
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		printf("%s: 8822c phy on sys=%#x sys1=%#x rfctrl=%#x "
+		    "wlrf1=%#x 3wirea=%#x 3wireb=%#x rstb=%#x rfe=%#x "
+		    "rfboard=%#x bt=%#x pkg=%u\n",
+		    DEVNAME(sc),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN + 1, 0),
+		    urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RF_CTRL, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_WLRF1, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_3WIRE,
+			0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_3WIRE2,
+			0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RSTB, 0),
+		    sc->sc_rfe_option, sc->sc_rf_board_option,
+		    sc->sc_bt_setting, sc->sc_pkg_type);
+	}
+
+	return (0);
+}
+
+static void
+urtwx_8822c_header_file_init(struct urtwx_softc *sc, int pre)
+{
+	int ret;
+
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_3WIRE,
+	    URTWX_8822C_BIT_3WIRE_TX_EN | URTWX_8822C_BIT_3WIRE_RX_EN,
+	    URTWX_8822C_BIT_3WIRE_TX_EN | URTWX_8822C_BIT_3WIRE_RX_EN);
+	if (ret != 0)
+		return;
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_3WIRE,
+	    URTWX_8822C_BIT_3WIRE_PI_ON, URTWX_8822C_BIT_3WIRE_PI_ON);
+	if (ret != 0)
+		return;
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_3WIRE2,
+	    URTWX_8822C_BIT_3WIRE_TX_EN | URTWX_8822C_BIT_3WIRE_RX_EN,
+	    URTWX_8822C_BIT_3WIRE_TX_EN | URTWX_8822C_BIT_3WIRE_RX_EN);
+	if (ret != 0)
+		return;
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_3WIRE2,
+	    URTWX_8822C_BIT_3WIRE_PI_ON, URTWX_8822C_BIT_3WIRE_PI_ON);
+	if (ret != 0)
+		return;
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_ENCCK,
+	    URTWX_8822C_BIT_CCK_OFDM_BLK_EN,
+	    pre ? 0 : URTWX_8822C_BIT_CCK_OFDM_BLK_EN);
+}
+
+static void
+urtwx_8822c_bb_reset(struct urtwx_softc *sc)
+{
+	uint16_t sysfunc;
+
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		sysfunc = urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0);
+		printf("%s: 8822c bbreset pre sysfunc=%#x rf0=%#x/%#x\n",
+		    DEVNAME(sc), sysfunc,
+		    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+	}
+	(void)urtwx_write_2_mask(sc, REG_SYS_FUNC_EN, BIT_FEN_BB_RSTB,
+	    BIT_FEN_BB_RSTB);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		sysfunc = urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0);
+		printf("%s: 8822c bbreset set sysfunc=%#x rf0=%#x/%#x\n",
+		    DEVNAME(sc), sysfunc,
+		    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+	}
+	(void)urtwx_write_2_mask(sc, REG_SYS_FUNC_EN, BIT_FEN_BB_RSTB, 0);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		sysfunc = urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0);
+		printf("%s: 8822c bbreset clr sysfunc=%#x rf0=%#x/%#x\n",
+		    DEVNAME(sc), sysfunc,
+		    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+	}
+	(void)urtwx_write_2_mask(sc, REG_SYS_FUNC_EN, BIT_FEN_BB_RSTB,
+	    BIT_FEN_BB_RSTB);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		sysfunc = urtwx_read_2(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0);
+		printf("%s: 8822c bbreset fin sysfunc=%#x rf0=%#x/%#x\n",
+		    DEVNAME(sc), sysfunc,
+		    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+	}
+}
+
+static void
+urtwx_8822c_toggle_igi(struct urtwx_softc *sc)
+{
+	uint32_t igi;
+
+	igi = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXIGI, 0) &
+	    0x7f;
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_RXIGI, 0x7f, igi - 2);
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_RXIGI, 0x7f00,
+	    (igi - 2) << 8);
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_RXIGI, 0x7f, igi);
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_RXIGI, 0x7f00,
+	    igi << 8);
+}
+
+static int
+urtwx_8822c_rstb_3wire(struct urtwx_softc *sc, int enable)
+{
+	int ret;
+
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+	    URTWX_8822C_BIT_RSTB_3WIRE,
+	    enable ? URTWX_8822C_BIT_RSTB_3WIRE : 0);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_AFE_PLL_CTRL, 0x0000007eU,
-	    (uint32_t)sc->sc_crystal_cap << 1);
+	if (!enable)
+		return (0);
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANAPAR_A,
+	    URTWX_8822C_BIT_ANAPAR_UPDATE,
+	    URTWX_8822C_BIT_ANAPAR_UPDATE);
 	if (ret != 0)
 		return (ret);
-	ret = urtwx_write_4_mask(sc, REG_CCK0_FAREPORT,
-	    (1U << 18) | (1U << 22), 0);
+	return (urtwx_write_4_mask(sc, URTWX_8822C_REG_ANAPAR_B,
+	    URTWX_8822C_BIT_ANAPAR_UPDATE,
+	    URTWX_8822C_BIT_ANAPAR_UPDATE));
+}
+
+static uint16_t
+urtwx_8822c_get_path_write_addr(uint8_t path)
+{
+	switch (path) {
+	case 0:
+		return (0x1800);
+	case 1:
+		return (0x4100);
+	default:
+		return (0);
+	}
+}
+
+static uint16_t
+urtwx_8822c_get_path_read_addr(uint8_t path)
+{
+	switch (path) {
+	case 0:
+		return (0x2800);
+	case 1:
+		return (0x4500);
+	default:
+		return (0);
+	}
+}
+
+static int
+urtwx_8822c_dac_backup_reg(struct urtwx_softc *sc,
+    struct urtwx_backup_info *backup, uint32_t *backup_rf)
+{
+	static const uint16_t addrs[URTWX_8822C_DACK_REGS] = {
+		0x180c, 0x1810, 0x410c, 0x4110,
+		0x1c3c, 0x1c24, 0x1d70, 0x09b4,
+		0x1a00, 0x1a14, 0x1d58, 0x1c38,
+		0x1e24, 0x1e28, 0x1860, 0x4160
+	};
+	int i;
+	int path;
+
+	for (i = 0; i < URTWX_8822C_DACK_REGS; i++) {
+		backup[i].len = 4;
+		backup[i].reg = addrs[i];
+		backup[i].val = urtwx_read_4(sc, RTW_USB_CMD_REQ, addrs[i], 0);
+	}
+
+	for (path = 0; path < URTWX_8822C_DACK_PATHS; path++)
+		backup_rf[path] = urtwx_read_rf_path(sc, path, 0x8f);
+
+	return (0);
+}
+
+static int
+urtwx_8822c_dac_restore_reg(struct urtwx_softc *sc,
+    struct urtwx_backup_info *backup, uint32_t *backup_rf)
+{
+	int ret;
+	int path;
+
+	ret = urtwx_restore_regs(sc, backup, URTWX_8822C_DACK_REGS);
 	if (ret != 0)
 		return (ret);
 
-	return (urtwx_write_4_mask(sc, REG_RXPSEL, BIT_RX_PSEL_RST,
-	    BIT_RX_PSEL_RST));
+	for (path = 0; path < URTWX_8822C_DACK_PATHS; path++) {
+		ret = urtwx_write_rf_path(sc, path, 0x8f, RFREG_MASK,
+		    backup_rf[path]);
+		if (ret != 0)
+			return (ret);
+	}
+
+	return (0);
+}
+
+static void
+urtwx_8822c_rf_minmax_cmp(uint32_t value, uint32_t *min, uint32_t *max)
+{
+	if (value >= 0x200) {
+		if (*min >= 0x200) {
+			if (*min > value)
+				*min = value;
+		} else {
+			*min = value;
+		}
+		if (*max >= 0x200) {
+			if (*max < value)
+				*max = value;
+		}
+	} else {
+		if (*min < 0x200) {
+			if (*min > value)
+				*min = value;
+		}
+		if (*max >= 0x200)
+			*max = value;
+		else if (*max < value)
+			*max = value;
+	}
+}
+
+static void
+urtwx_8822c_dac_iq_sort_one(uint32_t *v1, uint32_t *v2)
+{
+	uint32_t tmp;
+
+	if (*v1 >= 0x200 && *v2 >= 0x200) {
+		if (*v1 > *v2) {
+			tmp = *v1;
+			*v1 = *v2;
+			*v2 = tmp;
+		}
+	} else if (*v1 < 0x200 && *v2 < 0x200) {
+		if (*v1 > *v2) {
+			tmp = *v1;
+			*v1 = *v2;
+			*v2 = tmp;
+		}
+	} else if (*v1 < 0x200 && *v2 >= 0x200) {
+		tmp = *v1;
+		*v1 = *v2;
+		*v2 = tmp;
+	}
+}
+
+static void
+urtwx_8822c_dac_iq_sort(uint32_t *iv, uint32_t *qv)
+{
+	int i, j;
+
+	for (i = 0; i < URTWX_8822C_DACK_SAMPLES - 1; i++) {
+		for (j = 0; j < URTWX_8822C_DACK_SAMPLES - 1 - i; j++) {
+			urtwx_8822c_dac_iq_sort_one(&iv[j], &iv[j + 1]);
+			urtwx_8822c_dac_iq_sort_one(&qv[j], &qv[j + 1]);
+		}
+	}
+}
+
+static void
+urtwx_8822c_dac_iq_offset(uint32_t *vec, uint32_t *val)
+{
+	uint32_t p, m, t;
+	int i;
+
+	m = 0;
+	p = 0;
+	for (i = 10; i < URTWX_8822C_DACK_SAMPLES - 10; i++) {
+		if (vec[i] > 0x200)
+			m += 0x400 - vec[i];
+		else
+			p += vec[i];
+	}
+
+	if (p > m)
+		t = (p - m) / (URTWX_8822C_DACK_SAMPLES - 20);
+	else {
+		t = (m - p) / (URTWX_8822C_DACK_SAMPLES - 20);
+		if (t != 0)
+			t = 0x400 - t;
+	}
+
+	*val = t;
+}
+
+static int
+urtwx_8822c_dac_iq_check(uint32_t value)
+{
+	if ((value >= 0x200 && (0x400 - value) > 0x64) ||
+	    (value < 0x200 && value > 0x64))
+		return (0);
+	return (1);
+}
+
+static int
+urtwx_8822c_dac_cal_iq_sample(struct urtwx_softc *sc, uint32_t *iv,
+    uint32_t *qv)
+{
+	uint32_t temp;
+	uint32_t last_i, last_q;
+	int cnt, i;
+	int rawlog, badlog;
+	int j;
+
+	i = 0;
+	rawlog = 0;
+	badlog = 0;
+	last_i = 0;
+	last_q = 0;
+	for (j = 0; j < URTWX_8822C_DACK_SAMPLES; j++) {
+		iv[j] = 0;
+		qv[j] = 0;
+	}
+	for (cnt = 0; i < URTWX_8822C_DACK_SAMPLES && cnt < 10000; cnt++) {
+		temp = urtwx_read_4_mask(sc, 0x2dbc, 0x003fffff);
+		iv[i] = (temp & 0x3ff000U) >> 12;
+		qv[i] = temp & 0x3ffU;
+		last_i = iv[i];
+		last_q = qv[i];
+		if (URTWX_8822C_DACK_VERBOSE && rawlog < 8) {
+			printf("%s: 8822c dack sample raw %#x i %#x q %#x\n",
+			    DEVNAME(sc), temp, iv[i], qv[i]);
+			rawlog++;
+		}
+		if (urtwx_8822c_dac_iq_check(iv[i]) &&
+		    urtwx_8822c_dac_iq_check(qv[i]))
+			i++;
+		else if (URTWX_8822C_DACK_VERBOSE && badlog < 8) {
+			printf("%s: 8822c dack bad sample raw %#x i %#x q %#x\n",
+			    DEVNAME(sc), temp, iv[i], qv[i]);
+			badlog++;
+		}
+	}
+
+	if (i != URTWX_8822C_DACK_SAMPLES) {
+		printf("%s: 8822c dack iq sample short %d/%d\n", DEVNAME(sc),
+		    i, URTWX_8822C_DACK_SAMPLES);
+		for (j = i; j < URTWX_8822C_DACK_SAMPLES; j++) {
+			iv[j] = last_i;
+			qv[j] = last_q;
+		}
+	}
+	return (0);
+}
+
+static void
+urtwx_8822c_dac_cal_iq_search(struct urtwx_softc *sc, uint32_t *iv,
+    uint32_t *qv, uint32_t *i_value, uint32_t *q_value)
+{
+	uint32_t i_max, q_max, i_min, q_min;
+	uint32_t i_delta, q_delta, temp;
+	int cnt, i;
+
+	for (cnt = 0; cnt < 100; cnt++) {
+		i_min = iv[0];
+		i_max = iv[0];
+		q_min = qv[0];
+		q_max = qv[0];
+		for (i = 0; i < URTWX_8822C_DACK_SAMPLES; i++) {
+			urtwx_8822c_rf_minmax_cmp(iv[i], &i_min, &i_max);
+			urtwx_8822c_rf_minmax_cmp(qv[i], &q_min, &q_max);
+		}
+
+		if (i_max < 0x200 && i_min < 0x200)
+			i_delta = i_max - i_min;
+		else if (i_max >= 0x200 && i_min >= 0x200)
+			i_delta = i_max - i_min;
+		else
+			i_delta = i_max + (0x400 - i_min);
+
+		if (q_max < 0x200 && q_min < 0x200)
+			q_delta = q_max - q_min;
+		else if (q_max >= 0x200 && q_min >= 0x200)
+			q_delta = q_max - q_min;
+		else
+			q_delta = q_max + (0x400 - q_min);
+
+		urtwx_8822c_dac_iq_sort(iv, qv);
+		if (i_delta <= 5 && q_delta <= 5)
+			break;
+
+		temp = urtwx_read_4_mask(sc, 0x2dbc, 0x003fffff);
+		iv[0] = (temp & 0x3ff000U) >> 12;
+		qv[0] = temp & 0x3ffU;
+		temp = urtwx_read_4_mask(sc, 0x2dbc, 0x003fffff);
+		iv[URTWX_8822C_DACK_SAMPLES - 1] =
+		    (temp & 0x3ff000U) >> 12;
+		qv[URTWX_8822C_DACK_SAMPLES - 1] = temp & 0x3ffU;
+	}
+
+	urtwx_8822c_dac_iq_offset(iv, i_value);
+	urtwx_8822c_dac_iq_offset(qv, q_value);
+}
+
+static int
+urtwx_8822c_dac_cal_rf_mode(struct urtwx_softc *sc, uint32_t *i_value,
+    uint32_t *q_value)
+{
+	uint32_t iv[URTWX_8822C_DACK_SAMPLES], qv[URTWX_8822C_DACK_SAMPLES];
+	uint32_t rf_a, rf_b;
+	int ret;
+
+	rf_a = urtwx_read_rf_path(sc, 0, 0x0);
+	rf_b = urtwx_read_rf_path(sc, 1, 0x0);
+	printf("%s: 8822c dack rf path-a=%#x path-b=%#x\n", DEVNAME(sc),
+	    rf_a, rf_b);
+
+	ret = urtwx_8822c_dac_cal_iq_sample(sc, iv, qv);
+	if (ret != 0)
+		return (ret);
+	urtwx_8822c_dac_cal_iq_search(sc, iv, qv, i_value, q_value);
+	return (0);
+}
+
+static int
+urtwx_8822c_dac_bb_setting(struct urtwx_softc *sc)
+{
+	int ret;
+
+	ret = urtwx_write_4_field(sc, 0x1d58, 0x00000ff8U, 0x1ff);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, 0x1a00, 0x00000003U, 0x2);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, 0x1a14, 0x00000300U, 0x3);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1d70, 0, 0x7e7e7e7e);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, 0x180c, 0x00000003U, 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, 0x410c, 0x00000003U, 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1b00, 0, 0x00000008);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, 0x1bcc, 0, 0x3f);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1b00, 0, 0x0000000a);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, 0x1bcc, 0, 0x3f);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, 0x1e24, 1U << 31, 0x0);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_4_field(sc, 0x1e28, 0x0000000fU, 0x3));
+}
+
+static int
+urtwx_8822c_dac_cal_adc(struct urtwx_softc *sc, uint8_t path,
+    uint32_t *adc_ic, uint32_t *adc_qc)
+{
+	uint16_t base_addr;
+	uint32_t path_sel, ic, qc, rf_a, rf_b, temp;
+	int i, ret;
+
+	base_addr = urtwx_8822c_get_path_write_addr(path);
+	if (base_addr == 0)
+		return (EINVAL);
+	path_sel = (path == 0) ? 0xa0000U : 0x80000U;
+
+	ret = urtwx_write_4_field(sc, base_addr + 0x30, 1U << 30, 0x0);
+	if (ret != 0)
+		return (ret);
+	if (path == 1) {
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x30, 0,
+		    0x30db8041);
+		if (ret != 0)
+			return (ret);
+	}
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x60, 0,
+	    0xf0040ff0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x0c, 0,
+	    0xdff00220);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02dd08c4);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x0c, 0,
+	    0x10000260);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_rf_path(sc, 0, 0x0, RFREG_MASK, 0x10000);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_rf_path(sc, 1, 0x0, RFREG_MASK, 0x10000);
+	if (ret != 0)
+		return (ret);
+	printf("%s: 8822c dack adc prep path %u r30=%#x r60=%#x r0c=%#x "
+	    "r10=%#x\n", DEVNAME(sc), path,
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, base_addr + 0x30, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, base_addr + 0x60, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, base_addr + 0x0c, 0),
+	    urtwx_read_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0));
+	rf_a = urtwx_read_rf_path(sc, 0, 0x0);
+	rf_b = urtwx_read_rf_path(sc, 1, 0x0);
+	printf("%s: 8822c dack rf0 set path-a=%#x path-b=%#x\n",
+	    DEVNAME(sc), rf_a, rf_b);
+#if URTWX_8822C_ABORT_AFTER_ADCK_PREP
+	return (EIO);
+#endif
+
+	for (i = 0; i < URTWX_8822C_DACK_TRIES; i++) {
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1c3c, 0,
+		    path_sel + 0x8003);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1c24, 0,
+		    0x00010002);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_8822c_dac_cal_rf_mode(sc, &ic, &qc);
+		if (ret != 0)
+			return (ret);
+		if (URTWX_8822C_DACK_VERBOSE) {
+			printf("%s: 8822c dack adck path %u iter %d before i=%#x q=%#x\n",
+			    DEVNAME(sc), path, i, ic, qc);
+		}
+		if (ic != 0)
+			ic = 0x400 - ic;
+		if (qc != 0)
+			qc = 0x400 - qc;
+		if (ic != 0)
+			*adc_ic = ic;
+		if (qc != 0)
+			*adc_qc = qc;
+		temp = (ic & 0x3ffU) | ((qc & 0x3ffU) << 10);
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x68, 0,
+		    temp);
+		if (ret != 0)
+			return (ret);
+		if (i == 0 && URTWX_8822C_DACK_VERBOSE) {
+			printf("%s: 8822c dack adck ctl path %u r1c3c=%#x "
+			    "r1c24=%#x r68=%#x\n", DEVNAME(sc), path,
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x1c3c, 0),
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x1c24, 0),
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ, base_addr + 0x68,
+				0));
+		}
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1c3c, 0,
+		    path_sel + 0x8103);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_8822c_dac_cal_rf_mode(sc, &ic, &qc);
+		if (ret != 0)
+			return (ret);
+		if (URTWX_8822C_DACK_VERBOSE) {
+			printf("%s: 8822c dack adck path %u iter %d after i=%#x q=%#x\n",
+			    DEVNAME(sc), path, i, ic, qc);
+		}
+		if (ic >= 0x200)
+			ic = 0x400 - ic;
+		if (qc >= 0x200)
+			qc = 0x400 - qc;
+		if (ic < 5 && qc < 5)
+			break;
+	}
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1c3c, 0, 0x00000003);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x0c, 0,
+	    0x10000260);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02d508c4);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_rf_path(sc, path, 0x8f, 1U << 13, 0x1));
+}
+
+static int
+urtwx_8822c_dac_cal_step1(struct urtwx_softc *sc, uint8_t path, uint32_t adck)
+{
+	uint16_t base_addr, read_addr;
+	int ret;
+
+	base_addr = urtwx_8822c_get_path_write_addr(path);
+	read_addr = urtwx_8822c_get_path_read_addr(path);
+	if (base_addr == 0 || read_addr == 0)
+		return (EINVAL);
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x68, 0, adck);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x0c, 0,
+	    0xdff00220);
+	if (ret != 0)
+		return (ret);
+	if (path == 0) {
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x60, 0,
+		    0xf0040ff0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1c38, 0,
+		    0xffffffffU);
+		if (ret != 0)
+			return (ret);
+	}
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02d508c5);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, 0xdb66db00);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb0, 0,
+	    0x0a11fb88);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xbc, 0,
+	    0x0008ff81);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xc0, 0,
+	    0x0003d208);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xcc, 0,
+	    0x0a11fb88);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xd8, 0,
+	    0x0008ff81);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xdc, 0,
+	    0x0003d208);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb8, 0,
+	    0x60000000);
+	if (ret != 0)
+		return (ret);
+	delay(2000);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xbc, 0,
+	    0x000aff8d);
+	if (ret != 0)
+		return (ret);
+	delay(2000);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb0, 0,
+	    0x0a11fb89);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xcc, 0,
+	    0x0a11fb89);
+	if (ret != 0)
+		return (ret);
+	delay(1000);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb8, 0,
+	    0x62000000);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xd4, 0,
+	    0x62000000);
+	if (ret != 0)
+		return (ret);
+	delay(20000);
+	if (!urtwx_check_hw_ready(sc, read_addr + 0x08, 0x007fff80U, 0xffff) ||
+	    !urtwx_check_hw_ready(sc, read_addr + 0x34, 0x007fff80U, 0xffff)) {
+		printf("%s: 8822c dack step1 timeout path %u read %#x\n",
+		    DEVNAME(sc), path, read_addr);
+	}
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb8, 0,
+	    0x02000000);
+	if (ret != 0)
+		return (ret);
+	delay(1000);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xbc, 0,
+	    0x0008ff87);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, 0xdb6db600);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02d508c5);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xbc, 0,
+	    0x0008ff87);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x60, 0,
+	    0xf0000000));
+}
+
+static int
+urtwx_8822c_dac_cal_step2(struct urtwx_softc *sc, uint8_t path,
+    uint32_t *ic_out, uint32_t *qc_out)
+{
+	uint16_t base_addr;
+	uint32_t ic, qc, ic_in, qc_in;
+	int ret;
+
+	base_addr = urtwx_8822c_get_path_write_addr(path);
+	if (base_addr == 0)
+		return (EINVAL);
+
+	ret = urtwx_write_4_field(sc, base_addr + 0xbc, 0xf0000000U, 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xc0, 0x0000000fU, 0x8);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xd8, 0xf0000000U, 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xdc, 0x0000000fU, 0x8);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1b00, 0, 0x00000008);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, 0x1bcc, 0, 0x3f);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x0c, 0,
+	    0xdff00220);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02d508c5);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1c3c, 0, 0x00088103);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_dac_cal_rf_mode(sc, &ic_in, &qc_in);
+	if (ret != 0)
+		return (ret);
+	ic = ic_in;
+	qc = qc_in;
+	if (ic != 0)
+		ic = 0x400 - ic;
+	if (qc != 0)
+		qc = 0x400 - qc;
+	if (ic < 0x300) {
+		ic = ic * 2 * 6 / 5;
+		ic += 0x80;
+	} else {
+		ic = (0x400 - ic) * 2 * 6 / 5;
+		ic = 0x7f - ic;
+	}
+	if (qc < 0x300) {
+		qc = qc * 2 * 6 / 5;
+		qc += 0x80;
+	} else {
+		qc = (0x400 - qc) * 2 * 6 / 5;
+		qc = 0x7f - qc;
+	}
+	if (ic > 0xff) {
+		printf("%s: 8822c dack step2 clamp path %u ic %#x -> 0xff\n",
+		    DEVNAME(sc), path, ic);
+		ic = 0xff;
+	}
+	if (qc > 0xff) {
+		printf("%s: 8822c dack step2 clamp path %u qc %#x -> 0xff\n",
+		    DEVNAME(sc), path, qc);
+		qc = 0xff;
+	}
+
+	*ic_out = ic;
+	*qc_out = qc;
+	if (URTWX_8822C_DACK_VERBOSE) {
+		printf("%s: 8822c dack step2 path %u before i=%#x q=%#x after i=%#x q=%#x\n",
+		    DEVNAME(sc), path, ic_in, qc_in, ic, qc);
+	}
+	return (0);
+}
+
+static int
+urtwx_8822c_dac_cal_step3(struct urtwx_softc *sc, uint8_t path,
+    uint32_t adc_ic, uint32_t adc_qc, uint32_t *ic_in, uint32_t *qc_in,
+    uint32_t *i_out, uint32_t *q_out)
+{
+	uint16_t base_addr, read_addr;
+	uint32_t ic, qc, temp;
+	int ret;
+
+	base_addr = urtwx_8822c_get_path_write_addr(path);
+	read_addr = urtwx_8822c_get_path_read_addr(path);
+	if (base_addr == 0 || read_addr == 0)
+		return (EINVAL);
+	ic = *ic_in;
+	qc = *qc_in;
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x0c, 0,
+	    0xdff00220);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02d508c5);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, 0xdb66db00);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb0, 0,
+	    0x0a11fb88);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xbc, 0,
+	    0xc008ff81);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xc0, 0,
+	    0x0003d208);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xbc, 0xf0000000U,
+	    ic & 0xf);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xc0, 0x0000000fU,
+	    (ic & 0xf0) >> 4);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xcc, 0,
+	    0x0a11fb88);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xd8, 0,
+	    0xe008ff81);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xdc, 0,
+	    0x0003d208);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xd8, 0xf0000000U,
+	    qc & 0xf);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xdc, 0x0000000fU,
+	    (qc & 0xf0) >> 4);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb8, 0,
+	    0x60000000);
+	if (ret != 0)
+		return (ret);
+	delay(2000);
+	ret = urtwx_write_4_field(sc, base_addr + 0xbc, 0x0000000eU, 0x6);
+	if (ret != 0)
+		return (ret);
+	delay(2000);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb0, 0,
+	    0x0a11fb89);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xcc, 0,
+	    0x0a11fb89);
+	if (ret != 0)
+		return (ret);
+	delay(1000);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb8, 0,
+	    0x62000000);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xd4, 0,
+	    0x62000000);
+	if (ret != 0)
+		return (ret);
+	delay(20000);
+	if (!urtwx_check_hw_ready(sc, read_addr + 0x24, 0x07f80000U, ic) ||
+	    !urtwx_check_hw_ready(sc, read_addr + 0x50, 0x07f80000U, qc)) {
+		printf("%s: 8822c dack step3 timeout path %u read %#x ic %#x "
+		    "qc %#x got_i %#x got_q %#x raw_i %#x raw_q %#x\n",
+		    DEVNAME(sc), path, read_addr, ic, qc,
+		    urtwx_read_4_mask(sc, read_addr + 0x24, 0x07f80000U),
+		    urtwx_read_4_mask(sc, read_addr + 0x50, 0x07f80000U),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, read_addr + 0x24, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, read_addr + 0x50, 0));
+	}
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0xb8, 0,
+	    0x02000000);
+	if (ret != 0)
+		return (ret);
+	delay(1000);
+	ret = urtwx_write_4_field(sc, base_addr + 0xbc, 0x0000000eU, 0x3);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, 0xdb6db600);
+	if (ret != 0)
+		return (ret);
+
+	temp = ((adc_ic + 0x10) & 0x3ffU) | (((adc_qc + 0x10) & 0x3ffU) << 10);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x68, 0, temp);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02d508c5);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x60, 0,
+	    0xf0000000);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_dac_cal_rf_mode(sc, &ic, &qc);
+	if (ret != 0)
+		return (ret);
+	if (ic >= 0x10)
+		ic -= 0x10;
+	else
+		ic = 0x400 - (0x10 - ic);
+	if (qc >= 0x10)
+		qc -= 0x10;
+	else
+		qc = 0x400 - (0x10 - qc);
+	*i_out = ic;
+	*q_out = qc;
+
+	if (ic >= 0x200)
+		ic = 0x400 - ic;
+	if (qc >= 0x200)
+		qc = 0x400 - qc;
+	*ic_in = ic;
+	*qc_in = qc;
+	if (URTWX_8822C_DACK_VERBOSE) {
+		printf("%s: 8822c dack step3 path %u after-dack i=%#x q=%#x rem_i=%#x rem_q=%#x\n",
+		    DEVNAME(sc), path, *i_out, *q_out, *ic_in, *qc_in);
+	}
+	return (0);
+}
+
+static int
+urtwx_8822c_dac_cal_step4(struct urtwx_softc *sc, uint8_t path)
+{
+	uint16_t base_addr;
+	int ret;
+
+	base_addr = urtwx_8822c_get_path_write_addr(path);
+	if (base_addr == 0)
+		return (EINVAL);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x68, 0, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, base_addr + 0x10, 0,
+	    0x02d508c4);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, base_addr + 0xbc, 0x00000001U, 0x0);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_4_field(sc, base_addr + 0x30, 1U << 30, 0x1));
+}
+
+static void
+urtwx_8822c_dac_cal_backup_vec(struct urtwx_softc *sc, uint8_t path,
+    uint8_t vec, uint16_t w_addr, uint16_t r_addr)
+{
+	uint32_t i;
+
+	if (path >= URTWX_8822C_DACK_PATHS || vec >= 2)
+		return;
+
+	for (i = 0; i < URTWX_8822C_DACK_MSBK_NUM; i++) {
+		(void)urtwx_write_4_field(sc, w_addr, 0xf0000000U, i);
+		sc->sc_8822c_dack_msbk[path][vec][i] =
+		    urtwx_read_4_mask(sc, r_addr, 0x07fc0000U);
+	}
+}
+
+static void
+urtwx_8822c_dac_cal_backup_path(struct urtwx_softc *sc, uint8_t path)
+{
+	uint16_t w_addr, r_addr;
+
+	if (path >= URTWX_8822C_DACK_PATHS)
+		return;
+
+	w_addr = urtwx_8822c_get_path_write_addr(path) + 0xb0;
+	r_addr = urtwx_8822c_get_path_read_addr(path) + 0x10;
+	urtwx_8822c_dac_cal_backup_vec(sc, path, 0, w_addr, r_addr);
+	urtwx_8822c_dac_cal_backup_vec(sc, path, 1, w_addr + 0x1c,
+	    r_addr + 0x2c);
+}
+
+static void
+urtwx_8822c_dac_cal_backup_dck(struct urtwx_softc *sc)
+{
+	sc->sc_8822c_dack_dck[0][0][0] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKA_I_0, 0xf0000000U);
+	sc->sc_8822c_dack_dck[0][0][1] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKA_I_1, 0x0000000fU);
+	sc->sc_8822c_dack_dck[0][1][0] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKA_Q_0, 0xf0000000U);
+	sc->sc_8822c_dack_dck[0][1][1] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKA_Q_1, 0x0000000fU);
+	sc->sc_8822c_dack_dck[1][0][0] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKB_I_0, 0xf0000000U);
+	sc->sc_8822c_dack_dck[1][0][1] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKB_I_1, 0x0000000fU);
+	sc->sc_8822c_dack_dck[1][1][0] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKB_Q_0, 0xf0000000U);
+	sc->sc_8822c_dack_dck[1][1][1] =
+	    urtwx_read_4_mask(sc, URTWX_8822C_REG_DCKB_Q_1, 0x0000000fU);
+}
+
+static void
+urtwx_8822c_dac_cal_backup(struct urtwx_softc *sc)
+{
+	uint32_t temp[3];
+
+	temp[0] = urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x1860, 0);
+	temp[1] = urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x4160, 0);
+	temp[2] = urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0);
+
+	(void)urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, 0xdb66db00);
+	(void)urtwx_write_4_field(sc, 0x1830, 1U << 30, 0x0);
+	(void)urtwx_write_4_field(sc, 0x1860, 0xfc000000U, 0x3c);
+	urtwx_8822c_dac_cal_backup_path(sc, 0);
+	(void)urtwx_write_4_field(sc, 0x4130, 1U << 30, 0x0);
+	(void)urtwx_write_4_field(sc, 0x4160, 0xfc000000U, 0x3c);
+	urtwx_8822c_dac_cal_backup_path(sc, 1);
+	urtwx_8822c_dac_cal_backup_dck(sc);
+	(void)urtwx_write_4_field(sc, 0x1830, 1U << 30, 0x1);
+	(void)urtwx_write_4_field(sc, 0x4130, 1U << 30, 0x1);
+	(void)urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1860, 0, temp[0]);
+	(void)urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x4160, 0, temp[1]);
+	(void)urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, temp[2]);
+}
+
+static void
+urtwx_8822c_dac_cal_restore_dck(struct urtwx_softc *sc)
+{
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_DCKA_I_0, 1U << 19,
+	    1U << 19);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKA_I_0, 0xf0000000U,
+	    sc->sc_8822c_dack_dck[0][0][0]);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKA_I_1, 0x0000000fU,
+	    sc->sc_8822c_dack_dck[0][0][1]);
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_DCKA_Q_0, 1U << 19,
+	    1U << 19);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKA_Q_0, 0xf0000000U,
+	    sc->sc_8822c_dack_dck[0][1][0]);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKA_Q_1, 0x0000000fU,
+	    sc->sc_8822c_dack_dck[0][1][1]);
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_DCKB_I_0, 1U << 19,
+	    1U << 19);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKB_I_0, 0xf0000000U,
+	    sc->sc_8822c_dack_dck[1][0][0]);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKB_I_1, 0x0000000fU,
+	    sc->sc_8822c_dack_dck[1][0][1]);
+	(void)urtwx_write_4_mask(sc, URTWX_8822C_REG_DCKB_Q_0, 1U << 19,
+	    1U << 19);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKB_Q_0, 0xf0000000U,
+	    sc->sc_8822c_dack_dck[1][1][0]);
+	(void)urtwx_write_4_field(sc, URTWX_8822C_REG_DCKB_Q_1, 0x0000000fU,
+	    sc->sc_8822c_dack_dck[1][1][1]);
+}
+
+static void
+urtwx_8822c_dac_cal_restore_prepare(struct urtwx_softc *sc)
+{
+	(void)urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, 0xdb66db00);
+	(void)urtwx_write_4_mask(sc, 0x18b0, 1U << 27, 0);
+	(void)urtwx_write_4_mask(sc, 0x18cc, 1U << 27, 0);
+	(void)urtwx_write_4_mask(sc, 0x41b0, 1U << 27, 0);
+	(void)urtwx_write_4_mask(sc, 0x41cc, 1U << 27, 0);
+	(void)urtwx_write_4_field(sc, 0x1830, 1U << 30, 0x0);
+	(void)urtwx_write_4_field(sc, 0x1860, 0xfc000000U, 0x3c);
+	(void)urtwx_write_4_field(sc, 0x18b4, 0x00000001U, 0x1);
+	(void)urtwx_write_4_field(sc, 0x18d0, 0x00000001U, 0x1);
+	(void)urtwx_write_4_field(sc, 0x4130, 1U << 30, 0x0);
+	(void)urtwx_write_4_field(sc, 0x4160, 0xfc000000U, 0x3c);
+	(void)urtwx_write_4_field(sc, 0x41b4, 0x00000001U, 0x1);
+	(void)urtwx_write_4_field(sc, 0x41d0, 0x00000001U, 0x1);
+	(void)urtwx_write_4_field(sc, 0x18b0, 0x00000f00U, 0x0);
+	(void)urtwx_write_4_mask(sc, 0x18c0, 1U << 14, 0);
+	(void)urtwx_write_4_field(sc, 0x18cc, 0x00000f00U, 0x0);
+	(void)urtwx_write_4_mask(sc, 0x18dc, 1U << 14, 0);
+	(void)urtwx_write_4_field(sc, 0x18b0, 0x00000001U, 0x0);
+	(void)urtwx_write_4_field(sc, 0x18cc, 0x00000001U, 0x0);
+	(void)urtwx_write_4_field(sc, 0x18b0, 0x00000001U, 0x1);
+	(void)urtwx_write_4_field(sc, 0x18cc, 0x00000001U, 0x1);
+	urtwx_8822c_dac_cal_restore_dck(sc);
+	(void)urtwx_write_4_field(sc, 0x18c0, 0x00038000U, 0x7);
+	(void)urtwx_write_4_field(sc, 0x18dc, 0x00038000U, 0x7);
+	(void)urtwx_write_4_field(sc, 0x41c0, 0x00038000U, 0x7);
+	(void)urtwx_write_4_field(sc, 0x41dc, 0x00038000U, 0x7);
+	(void)urtwx_write_4_field(sc, 0x18b8, (1U << 26) | (1U << 25), 0x1);
+	(void)urtwx_write_4_field(sc, 0x18d4, (1U << 26) | (1U << 25), 0x1);
+	(void)urtwx_write_4_field(sc, 0x41b0, 0x00000f00U, 0x0);
+	(void)urtwx_write_4_mask(sc, 0x41c0, 1U << 14, 0);
+	(void)urtwx_write_4_field(sc, 0x41cc, 0x00000f00U, 0x0);
+	(void)urtwx_write_4_mask(sc, 0x41dc, 1U << 14, 0);
+	(void)urtwx_write_4_field(sc, 0x41b0, 0x00000001U, 0x0);
+	(void)urtwx_write_4_field(sc, 0x41cc, 0x00000001U, 0x0);
+	(void)urtwx_write_4_field(sc, 0x41b0, 0x00000001U, 0x1);
+	(void)urtwx_write_4_field(sc, 0x41cc, 0x00000001U, 0x1);
+	(void)urtwx_write_4_field(sc, 0x41b8, (1U << 26) | (1U << 25), 0x1);
+	(void)urtwx_write_4_field(sc, 0x41d4, (1U << 26) | (1U << 25), 0x1);
+}
+
+static int
+urtwx_8822c_dac_cal_restore_wait(struct urtwx_softc *sc, uint16_t target_addr,
+    uint16_t toggle_addr)
+{
+	int cnt;
+
+	for (cnt = 0; cnt < 100; cnt++) {
+		(void)urtwx_write_4_field(sc, toggle_addr,
+		    (1U << 26) | (1U << 25), 0x0);
+		(void)urtwx_write_4_field(sc, toggle_addr,
+		    (1U << 26) | (1U << 25), 0x2);
+		if (urtwx_read_4_mask(sc, target_addr, 0x0000000fU) == 0x6)
+			return (1);
+	}
+
+	return (0);
+}
+
+static int
+urtwx_8822c_dac_cal_restore_path(struct urtwx_softc *sc, uint8_t path)
+{
+	uint16_t w_i, r_i, w_q, r_q;
+	uint32_t i, value;
+	int ret;
+
+	if (path >= URTWX_8822C_DACK_PATHS)
+		return (EINVAL);
+
+	w_i = urtwx_8822c_get_path_write_addr(path) + 0xb0;
+	r_i = urtwx_8822c_get_path_read_addr(path) + 0x08;
+	w_q = w_i + 0x1c;
+	r_q = r_i + 0x2c;
+
+	if (!urtwx_8822c_dac_cal_restore_wait(sc, r_i, w_i + 0x8))
+		return (ETIMEDOUT);
+
+	for (i = 0; i < URTWX_8822C_DACK_MSBK_NUM; i++) {
+		ret = urtwx_write_4_field(sc, w_i + 0x4, 0x00000004U, 0x0);
+		if (ret != 0)
+			return (ret);
+		value = sc->sc_8822c_dack_msbk[path][0][i];
+		ret = urtwx_write_4_field(sc, w_i + 0x4, 0x00000ff8U, value);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_field(sc, w_i, 0xf0000000U, i);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_field(sc, w_i + 0x4, 0x00000004U, 0x1);
+		if (ret != 0)
+			return (ret);
+	}
+	ret = urtwx_write_4_field(sc, w_i + 0x4, 0x00000004U, 0x0);
+	if (ret != 0)
+		return (ret);
+
+	if (!urtwx_8822c_dac_cal_restore_wait(sc, r_q, w_q + 0x8))
+		return (ETIMEDOUT);
+
+	for (i = 0; i < URTWX_8822C_DACK_MSBK_NUM; i++) {
+		ret = urtwx_write_4_field(sc, w_q + 0x4, 0x00000004U, 0x0);
+		if (ret != 0)
+			return (ret);
+		value = sc->sc_8822c_dack_msbk[path][1][i];
+		ret = urtwx_write_4_field(sc, w_q + 0x4, 0x00000ff8U, value);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_field(sc, w_q, 0xf0000000U, i);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_field(sc, w_q + 0x4, 0x00000004U, 0x1);
+		if (ret != 0)
+			return (ret);
+	}
+	ret = urtwx_write_4_field(sc, w_q + 0x4, 0x00000004U, 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, w_i + 0x8,
+	    (1U << 26) | (1U << 25), 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, w_q + 0x8,
+	    (1U << 26) | (1U << 25), 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, w_i + 0x4, 0x00000001U, 0x0);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_4_field(sc, w_q + 0x4, 0x00000001U, 0x0));
+}
+
+static int
+urtwx_8822c_dac_cal_restore(struct urtwx_softc *sc)
+{
+	uint32_t temp[3];
+	int ret;
+
+	if (sc->sc_8822c_dack_msbk[0][0][0] == 0 &&
+	    sc->sc_8822c_dack_msbk[0][1][0] == 0 &&
+	    sc->sc_8822c_dack_msbk[1][0][0] == 0 &&
+	    sc->sc_8822c_dack_msbk[1][1][0] == 0)
+		return (ENOENT);
+
+	temp[0] = urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x1860, 0);
+	temp[1] = urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x4160, 0);
+	temp[2] = urtwx_read_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0);
+
+	urtwx_8822c_dac_cal_restore_prepare(sc);
+	if (!urtwx_check_hw_ready(sc, 0x2808, 0x007fff80U, 0xffff) ||
+	    !urtwx_check_hw_ready(sc, 0x2834, 0x007fff80U, 0xffff) ||
+	    !urtwx_check_hw_ready(sc, 0x4508, 0x007fff80U, 0xffff) ||
+	    !urtwx_check_hw_ready(sc, 0x4534, 0x007fff80U, 0xffff))
+		return (ETIMEDOUT);
+
+	ret = urtwx_8822c_dac_cal_restore_path(sc, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_dac_cal_restore_path(sc, 1);
+	if (ret != 0)
+		return (ret);
+
+	ret = urtwx_write_4_field(sc, 0x1830, 1U << 30, 0x1);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, 0x4130, 1U << 30, 0x1);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1860, 0, temp[0]);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x4160, 0, temp[1]);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, 0x18b0, 1U << 27, 1U << 27);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, 0x18cc, 1U << 27, 1U << 27);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, 0x41b0, 1U << 27, 1U << 27);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, 0x41cc, 1U << 27, 1U << 27);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x09b4, 0, temp[2]));
+}
+
+static int
+urtwx_8822c_rf_dac_cal(struct urtwx_softc *sc)
+{
+	struct urtwx_backup_info backup[URTWX_8822C_DACK_REGS];
+	uint32_t backup_rf[URTWX_8822C_DACK_PATHS];
+	uint32_t adc_ic_a, adc_qc_a, adc_ic_b, adc_qc_b;
+	uint32_t ic_a, qc_a, ic_b, qc_b, ic, qc;
+	uint32_t i_a, q_a, i_b, q_b;
+	int i, ret;
+
+	adc_ic_a = adc_qc_a = adc_ic_b = adc_qc_b = 0;
+	ic_a = qc_a = ic_b = qc_b = 0;
+	i_a = q_a = i_b = q_b = 0;
+	sc->sc_usbctl_log = 0;
+	printf("%s: 8822c dack begin rf0=%#x/%#x\n", DEVNAME(sc),
+	    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+#if URTWX_8822C_ABORT_BEFORE_DACK
+	urtwx_8822c_dump_dackstage(sc);
+	return (EIO);
+#endif
+
+	ret = urtwx_8822c_dac_cal_restore(sc);
+	if (ret == 0) {
+		printf("%s: 8822c dack restore ok\n", DEVNAME(sc));
+		return (0);
+	}
+
+	ret = urtwx_8822c_dac_backup_reg(sc, backup, backup_rf);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_dac_bb_setting(sc);
+	if (ret != 0)
+		return (ret);
+#if URTWX_8822C_ABORT_AFTER_DACK_BB
+	urtwx_8822c_dump_dackbbstage(sc);
+	return (EIO);
+#endif
+
+	ret = urtwx_8822c_dac_cal_adc(sc, 0, &adc_ic_a, &adc_qc_a);
+	if (ret != 0)
+		return (ret);
+	for (i = 0; i < URTWX_8822C_DACK_TRIES; i++) {
+		ret = urtwx_8822c_dac_cal_step1(sc, 0,
+		    (adc_ic_a & 0x3ffU) | ((adc_qc_a & 0x3ffU) << 10));
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_8822c_dac_cal_step2(sc, 0, &ic, &qc);
+		if (ret != 0)
+			return (ret);
+		ic_a = ic;
+		qc_a = qc;
+		ret = urtwx_8822c_dac_cal_step3(sc, 0, adc_ic_a, adc_qc_a,
+		    &ic, &qc, &i_a, &q_a);
+		if (ret != 0)
+			return (ret);
+		if (ic < 5 && qc < 5)
+			break;
+	}
+	ret = urtwx_8822c_dac_cal_step4(sc, 0);
+	if (ret != 0)
+		return (ret);
+
+	ret = urtwx_8822c_dac_cal_adc(sc, 1, &adc_ic_b, &adc_qc_b);
+	if (ret != 0)
+		return (ret);
+	for (i = 0; i < URTWX_8822C_DACK_TRIES; i++) {
+		ret = urtwx_8822c_dac_cal_step1(sc, 1,
+		    (adc_ic_b & 0x3ffU) | ((adc_qc_b & 0x3ffU) << 10));
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_8822c_dac_cal_step2(sc, 1, &ic, &qc);
+		if (ret != 0)
+			return (ret);
+		ic_b = ic;
+		qc_b = qc;
+		ret = urtwx_8822c_dac_cal_step3(sc, 1, adc_ic_b, adc_qc_b,
+		    &ic, &qc, &i_b, &q_b);
+		if (ret != 0)
+			return (ret);
+		if (ic < 5 && qc < 5)
+			break;
+	}
+	ret = urtwx_8822c_dac_cal_step4(sc, 1);
+	if (ret != 0)
+		return (ret);
+
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1b00, 0, 0x00000008);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_field(sc, 0x4130, 1U << 30, 0x1);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, 0x1bcc, 0, 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1b00, 0, 0x0000000a);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, 0x1bcc, 0, 0x0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_dac_restore_reg(sc, backup, backup_rf);
+	if (ret != 0)
+		return (ret);
+	urtwx_8822c_dac_cal_backup(sc);
+
+	printf("%s: 8822c dack a(ic=%#x qc=%#x i=%#x q=%#x) "
+	    "b(ic=%#x qc=%#x i=%#x q=%#x)\n", DEVNAME(sc), ic_a, qc_a,
+	    i_a, q_a, ic_b, qc_b, i_b, q_b);
+	return (0);
+}
+
+static int
+urtwx_8822c_rf_x2_check(struct urtwx_softc *sc)
+{
+	uint32_t x2k_busy;
+	int ret;
+
+	delay(1000);
+	x2k_busy = urtwx_read_rf_path(sc, 0, 0xb8) & (1U << 15);
+	if (x2k_busy == 0)
+		return (0);
+	ret = urtwx_write_rf_path(sc, 0, 0xb8, RFREG_MASK, 0x0c4440);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_rf_path(sc, 0, 0xba, RFREG_MASK, 0x06840d);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_rf_path(sc, 0, 0xb8, RFREG_MASK, 0x080440);
+	if (ret != 0)
+		return (ret);
+	delay(1000);
+	return (0);
+}
+
+static int
+urtwx_8822c_thermal_trim(struct urtwx_softc *sc)
+{
+	uint8_t path;
+	int ret;
+
+	for (path = 0; path < sc->sc_chip->uc_rf_path_count &&
+	    path < nitems(sc->sc_8822c_thermal_trim); path++) {
+		if (sc->sc_8822c_thermal_trim[path] == 0xff)
+			continue;
+		ret = urtwx_write_rf_path(sc, path, 0x43, URTWX_RF_THEMAL_MASK,
+		    sc->sc_8822c_thermal_trim[path]);
+		if (ret != 0)
+			return (ret);
+	}
+	return (0);
+}
+
+static int
+urtwx_8822c_power_trim(struct urtwx_softc *sc)
+{
+	static const uint8_t seq_to_idx[] = {
+		0, 1, 2, 2, 3, 4, 5, 6, 7, 3, 4, 5, 6, 7, 7
+	};
+	uint8_t path, seq;
+	int ret;
+
+	if (!sc->sc_8822c_have_power_trim)
+		return (urtwx_write_4_mask(sc, URTWX_8822C_REG_DIS_DPD,
+		    URTWX_8822C_DIS_DPD_MASK, URTWX_8822C_DIS_DPD_RATEALL));
+
+	for (path = 0; path < sc->sc_chip->uc_rf_path_count &&
+	    path < nitems(sc->sc_8822c_power_trim); path++) {
+		ret = urtwx_write_rf_path(sc, path, 0xee, 1U << 19, 0x1);
+		if (ret != 0)
+			return (ret);
+		for (seq = 0; seq < nitems(seq_to_idx); seq++) {
+			ret = urtwx_write_rf_path(sc, path, 0x33, RFREG_MASK,
+			    seq);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_rf_path(sc, path, 0x3f, RFREG_MASK,
+			    sc->sc_8822c_power_trim[path][seq_to_idx[seq]]);
+			if (ret != 0)
+				return (ret);
+		}
+		ret = urtwx_write_rf_path(sc, path, 0xee, 1U << 19, 0x0);
+		if (ret != 0)
+			return (ret);
+	}
+	return (urtwx_write_4_mask(sc, URTWX_8822C_REG_DIS_DPD,
+	    URTWX_8822C_DIS_DPD_MASK, URTWX_8822C_DIS_DPD_RATEALL));
+}
+
+static int
+urtwx_8822c_pa_bias(struct urtwx_softc *sc)
+{
+	uint8_t path;
+	int ret;
+
+	for (path = 0; path < sc->sc_chip->uc_rf_path_count &&
+	    path < nitems(sc->sc_8822c_pa_bias_2g); path++) {
+		if (sc->sc_8822c_pa_bias_2g[path] != 0xff) {
+			ret = urtwx_write_rf_path(sc, path, URTWX_RF_PA,
+			    URTWX_RF_PABIAS_2G_MASK,
+			    sc->sc_8822c_pa_bias_2g[path]);
+			if (ret != 0)
+				return (ret);
+		}
+	}
+	for (path = 0; path < sc->sc_chip->uc_rf_path_count &&
+	    path < nitems(sc->sc_8822c_pa_bias_5g); path++) {
+		if (sc->sc_8822c_pa_bias_5g[path] != 0xff) {
+			ret = urtwx_write_rf_path(sc, path, URTWX_RF_PA,
+			    URTWX_RF_PABIAS_5G_MASK,
+			    sc->sc_8822c_pa_bias_5g[path]);
+			if (ret != 0)
+				return (ret);
+		}
+	}
+	return (0);
+}
+
+static int
+urtwx_8822c_rf_init(struct urtwx_softc *sc)
+{
+	int ret;
+
+	ret = urtwx_8822c_rf_dac_cal(sc);
+	if (ret != 0) {
+		printf("%s: 8822c dack failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	ret = urtwx_8822c_rf_x2_check(sc);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_thermal_trim(sc);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_power_trim(sc);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_8822c_pa_bias(sc));
+}
+
+static int
+urtwx_8822c_phy_init(struct urtwx_softc *sc)
+{
+	int ret;
+
+	/*
+	 * Match the hardware-affecting subset of Linux's rtw_phy_init() /
+	 * rtw8822c_adaptivity_init() before RF init. The software-only DM
+	 * bookkeeping from that helper is not relevant to this bring-up path.
+	 */
+	ret = urtwx_write_4_mask(sc, REG_EDCCA_TH, 0x00ff0000U, 0x00ff0000U);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_EDCCA_TH, 0xff000000U, 0xff000000U);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_TX_PTCL_CTRL, BIT_DIS_EDCCA, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_RD_CTRL, BIT_EDCCA_MSK_CNTDOWN_EN,
+	    BIT_EDCCA_MSK_CNTDOWN_EN);
+	if (ret != 0)
+		return (ret);
+	return (urtwx_write_4_mask(sc, REG_EDCCA_DECISION,
+	    URTWX_8822C_BIT_EDCCA_OPTION, 0));
+}
+
+static int
+urtwx_8822c_config_trx_mode(struct urtwx_softc *sc, uint8_t tx_path,
+    uint8_t rx_path)
+{
+	int ret;
+
+	if ((tx_path | rx_path) & URTWX_8822C_BB_PATH_A)
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ORITXCODE,
+		    0x000fffffU, 0x33312U);
+	else
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ORITXCODE,
+		    0x000fffffU, 0x11111U);
+	if (ret != 0)
+		return (ret);
+	if ((tx_path | rx_path) & URTWX_8822C_BB_PATH_B)
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ORITXCODE2,
+		    0x000fffffU, 0x33312U);
+	else
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ORITXCODE2,
+		    0x000fffffU, 0x11111U);
+	if (ret != 0)
+		return (ret);
+	printf("%s: 8822c trx stage oritx rf0=%#x/%#x\n", DEVNAME(sc),
+	    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+
+	if (rx_path == URTWX_8822C_BB_PATH_A ||
+	    rx_path == URTWX_8822C_BB_PATH_B) {
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_CCANRX,
+		    0x00600000U, 0x0U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_CCANRX,
+		    0x00060000U, 0x0U);
+		if (ret != 0)
+			return (ret);
+		if (rx_path == URTWX_8822C_BB_PATH_B)
+			ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXCCKSEL,
+			    0x0f000000U, 0x05000000U);
+		else
+			ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXCCKSEL,
+			    0x0f000000U, 0x0U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXFNCTL, 0x00000300U,
+		    0x0U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXFNCTL,
+		    0x00600000U, 0x0U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_AGCSWSH,
+		    0x00020000U, 0x0U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTWTPD,
+		    0x00100000U, 0x0U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_MRCM, 0x01000000U,
+		    0x0U);
+		if (ret != 0)
+			return (ret);
+		if (rx_path == URTWX_8822C_BB_PATH_B) {
+			ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP,
+			    0x0f000000U, 0x02000000U);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP,
+			    0x000f0000U, 0x00020000U);
+			if (ret != 0)
+				return (ret);
+		} else {
+			ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP,
+			    0x0f000000U, 0x01000000U);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP,
+			    0x000f0000U, 0x00010000U);
+			if (ret != 0)
+				return (ret);
+		}
+	} else if (rx_path == URTWX_8822C_BB_PATH_AB) {
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_CCANRX,
+		    0x00600000U, 0x00200000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_CCANRX,
+		    0x00060000U, 0x00020000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXCCKSEL,
+		    0x0f000000U, 0x01000000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXFNCTL, 0x00000300U,
+		    0x00000100U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXFNCTL,
+		    0x00600000U, 0x00200000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_AGCSWSH,
+		    0x00020000U, 0x00020000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTWTPD,
+		    0x00100000U, 0x00100000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_MRCM, 0x01000000U,
+		    0x01000000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP,
+		    0x0f000000U, 0x03000000U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP,
+		    0x000f0000U, 0x00030000U);
+		if (ret != 0)
+			return (ret);
+	}
+	printf("%s: 8822c trx stage rx rf0=%#x/%#x\n", DEVNAME(sc),
+	    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+
+	switch (tx_path) {
+	case URTWX_8822C_BB_PATH_A:
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXCCKSEL,
+		    0xf0000000U, 0x80000000U);
+		break;
+	case URTWX_8822C_BB_PATH_B:
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXCCKSEL,
+		    0xf0000000U, 0x40000000U);
+		break;
+	case URTWX_8822C_BB_PATH_AB:
+	default:
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RXCCKSEL,
+		    0xf0000000U, 0x80000000U);
+		break;
+	}
+	if (ret != 0)
+		return (ret);
+	printf("%s: 8822c trx stage ccksel rf0=%#x/%#x\n", DEVNAME(sc),
+	    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+	urtwx_8822c_bb_reset(sc);
+	printf("%s: 8822c trx stage ccktx rf0=%#x/%#x\n", DEVNAME(sc),
+	    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+
+	switch (tx_path) {
+	case URTWX_8822C_BB_PATH_A:
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP0,
+		    0x000000ffU, 0x11U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_TXLGMAP,
+		    0x000000ffU, 0x00U);
+		if (ret != 0)
+			return (ret);
+		break;
+	case URTWX_8822C_BB_PATH_B:
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP0,
+		    0x000000ffU, 0x12U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_TXLGMAP,
+		    0x000000ffU, 0x00U);
+		if (ret != 0)
+			return (ret);
+		break;
+	case URTWX_8822C_BB_PATH_AB:
+	default:
+		/*
+		 * Linux calls rtw8822c_config_tx_path(tx_path=AB,
+		 * tx_path_sel_1ss=A, tx_path_cck=A, is_tx2_path=false)
+		 * from rtw8822c_phy_set_param().  That selects the
+		 * "1SS on path A" OFDM mapping even though TX is 2x2.
+		 */
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_ANTMAP0, 0x000000ffU,
+		    0x31U);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_TXLGMAP, 0x0000ffffU,
+		    0x0400U);
+		if (ret != 0)
+			return (ret);
+		break;
+	}
+	urtwx_8822c_bb_reset(sc);
+	urtwx_8822c_bb_reset(sc);
+	printf("%s: 8822c trx stage ofdmtx rf0=%#x/%#x\n", DEVNAME(sc),
+	    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+	urtwx_8822c_toggle_igi(sc);
+	printf("%s: 8822c trx stage igi rf0=%#x/%#x\n", DEVNAME(sc),
+	    urtwx_read_rf_path(sc, 0, 0x0), urtwx_read_rf_path(sc, 1, 0x0));
+
+	return (0);
 }
 
 static void
@@ -3230,6 +6949,281 @@ urtwx_phy_set_channel_bb(struct urtwx_softc *sc, uint8_t channel, uint8_t bw,
 
 	if (channel > 14 && channel < 36)
 		return (EINVAL);
+
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		/* Follow Linux rtw8822c_set_channel_bb(). */
+		if (channel <= 14) {
+			ret = urtwx_write_4_mask(sc, 0x1a14, 0x00000300U, 0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x1a9c, 0x00100000U,
+			    0x00100000U);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_1_mask(sc, REG_CCK_CHECK,
+			    BIT_CHECK_CCK_EN, 0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x1a80, 0x00040000U, 0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x1c80, 0x3f000000U, 0x0f);
+			if (ret != 0)
+				return (ret);
+			switch (bw) {
+			case URTWX_CHANNEL_WIDTH_40:
+				ret = urtwx_write_4_field(sc, 0x18ac,
+				    0x0000f000U, 0x4);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x41ac,
+				    0x0000f000U, 0x4);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x18ac,
+				    0x000001f0U, 0x0);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x41ac,
+				    0x000001f0U, 0x0);
+				if (ret != 0)
+					return (ret);
+				break;
+			case URTWX_CHANNEL_WIDTH_20:
+			default:
+				ret = urtwx_write_4_field(sc, 0x18ac,
+				    0x0000f000U, 0x5);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x41ac,
+				    0x0000f000U, 0x5);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x18ac,
+				    0x000001f0U, 0x6);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x41ac,
+				    0x000001f0U, 0x6);
+				if (ret != 0)
+					return (ret);
+				break;
+			}
+			if (channel == 13 || channel == 14)
+				val32 = 0x969;
+			else if (channel == 11 || channel == 12)
+				val32 = 0x96a;
+			else
+				val32 = 0x9aa;
+			ret = urtwx_write_4_field(sc, 0x0c30, 0x00000fffU,
+			    val32);
+			if (ret != 0)
+				return (ret);
+			if (channel == 14) {
+				ret = urtwx_write_4_field(sc, 0x1a20,
+				    0xffff0000U, 0x3da0);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1a24,
+				    0, 0x4962c931U);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x1a28,
+				    0x0000ffffU, 0x6aa3);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x1a98,
+				    0xffff0000U, 0xaa7b);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x1a9c,
+				    0x0000ffffU, 0xf3d7);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1aa0,
+				    0, 0x0);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1aac,
+				    0, 0xff012455U);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1ab0,
+				    0, 0x0000ffffU);
+				if (ret != 0)
+					return (ret);
+			} else {
+				ret = urtwx_write_4_field(sc, 0x1a20,
+				    0xffff0000U, 0x5284);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1a24,
+				    0, 0x3e18fec8U);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x1a28,
+				    0x0000ffffU, 0x0a88);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x1a98,
+				    0xffff0000U, 0xacc4);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4_field(sc, 0x1a9c,
+				    0x0000ffffU, 0xc8b2);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1aa0,
+				    0, 0x00faf0deU);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1aac,
+				    0, 0x00122344U);
+				if (ret != 0)
+					return (ret);
+				ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, 0x1ab0,
+				    0, 0x0fffffffU);
+				if (ret != 0)
+					return (ret);
+			}
+			ret = urtwx_write_4_field(sc, 0x0808, 0x00000070U,
+			    channel == 13 ? 0x3 : 0x1);
+			if (ret != 0)
+				return (ret);
+		} else {
+			ret = urtwx_write_4_mask(sc, 0x1a80, 0x00040000U,
+			    0x00040000U);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_1_mask(sc, REG_CCK_CHECK,
+			    BIT_CHECK_CCK_EN, BIT_CHECK_CCK_EN);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x1a14, 0x00000300U,
+			    0x00000300U);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x1a9c, 0x00100000U, 0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x1c80, 0x3f000000U, 0x22);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x0808, 0x00000070U, 0x3);
+			if (ret != 0)
+				return (ret);
+			if ((channel >= 36 && channel <= 64)) {
+				val32 = 0x1;
+			} else if (channel >= 100 && channel <= 144) {
+				val32 = 0x2;
+			} else {
+				val32 = 0x3;
+			}
+			ret = urtwx_write_4_field(sc, 0x18ac, 0x000001f0U,
+			    val32);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x41ac, 0x000001f0U,
+			    val32);
+			if (ret != 0)
+				return (ret);
+			if (channel >= 36 && channel <= 51)
+				val32 = 0x494;
+			else if (channel >= 52 && channel <= 55)
+				val32 = 0x493;
+			else if (channel >= 56 && channel <= 111)
+				val32 = 0x453;
+			else if (channel >= 112 && channel <= 119)
+				val32 = 0x452;
+			else if (channel >= 120 && channel <= 172)
+				val32 = 0x412;
+			else
+				val32 = 0x411;
+			ret = urtwx_write_4_field(sc, 0x0c30, 0x00000fffU,
+			    val32);
+			if (ret != 0)
+				return (ret);
+		}
+
+		switch (bw) {
+		case URTWX_CHANNEL_WIDTH_40:
+			ret = urtwx_write_4_mask(sc, 0x1a00, 0x10U,
+			    primary_ch_idx == URTWX_SC_20_UPPER ? 0x10U : 0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x0000000fU, 0x5);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x000000c0U, 0x0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x0000ff00U,
+			    primary_ch_idx | (primary_ch_idx << 4));
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x1abc, 0x40000000U,
+			    0x40000000U);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x088c, 0x0000f000U, 0x1);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x0cbc, 0x00200000U,
+			    0x00200000U);
+			if (ret != 0)
+				return (ret);
+			break;
+		case URTWX_CHANNEL_WIDTH_80:
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x0000000fU, 0xa);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x000000c0U, 0x0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x0000ff00U,
+			    primary_ch_idx | (primary_ch_idx << 4));
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x088c, 0x0000f000U, 0x6);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x0cbc, 0x00200000U,
+			    0x00200000U);
+			if (ret != 0)
+				return (ret);
+			break;
+		case URTWX_CHANNEL_WIDTH_20:
+		default:
+			ret = urtwx_write_4_field(sc, 0x0810, 0x00003ff0U,
+			    0x19b);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x0000000fU, 0x0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b0, 0x0000ffc0U, 0x0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b4, 0x00000700U, 0x7);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x09b4, 0x00700000U, 0x6);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x1abc, 0x40000000U, 0);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_field(sc, 0x088c, 0x0000f000U, 0x1);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_4_mask(sc, 0x0cbc, 0x00200000U, 0);
+			if (ret != 0)
+				return (ret);
+			break;
+		}
+
+		return (0);
+	}
 
 	if (channel <= 14) {
 		ret = urtwx_write_4_mask(sc, REG_RXPSEL, 0x10000000U,
@@ -3395,10 +7389,16 @@ urtwx_phy_set_channel_mac(struct urtwx_softc *sc, uint8_t channel, uint8_t bw,
 static int
 urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel, uint8_t bw)
 {
+	const struct urtwx_chip_info *chip = sc->sc_chip;
 	uint32_t rf18;
+	uint32_t rf_rxbb;
+	uint8_t path;
 	int ret;
 
-	rf18 = urtwx_read_rf(sc, 0x18);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		rf18 = 0;
+	else
+		rf18 = urtwx_read_rf_path(sc, 0, 0x18);
 	rf18 &= ~(RF18_BAND_MASK | RF18_CHANNEL_MASK | RF18_RFSI_MASK |
 	    RF18_BW_MASK);
 	rf18 |= (channel & RF18_CHANNEL_MASK);
@@ -3416,6 +7416,7 @@ urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel, uint8_t bw)
 		rf18 |= RF18_RFSI_GE;
 	else if (channel > 140)
 		rf18 |= RF18_RFSI_GT;
+	sc->sc_rf18_want = rf18;
 
 	if (channel <= 14) {
 		if (sc->sc_rfe_btg)
@@ -3427,26 +7428,137 @@ urtwx_phy_set_channel_rf(struct urtwx_softc *sc, uint8_t channel, uint8_t bw)
 	if (ret != 0)
 		return (ret);
 
-	if (channel <= 14) {
-		ret = urtwx_write_rf(sc, RF_LUTDBG, 0x40, 1);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		uint16_t reg;
+
+		if (bw == URTWX_CHANNEL_WIDTH_80)
+			rf_rxbb = 0x8;
+		else if (bw == URTWX_CHANNEL_WIDTH_40)
+			rf_rxbb = 0x10;
+		else
+			rf_rxbb = 0x18;
+
+		if (sc->sc_rfset_log < 8) {
+			printf("%s: 8822c setchan pre ch %u rstb=%#x 3wirea=%#x "
+			    "3wireb=%#x\n", DEVNAME(sc), channel,
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+			    URTWX_8822C_REG_RSTB, 0),
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+			    URTWX_8822C_REG_3WIRE, 0),
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+			    URTWX_8822C_REG_3WIRE2, 0));
+			sc->sc_rfset_log++;
+		}
+		ret = urtwx_8822c_rstb_3wire(sc, 0);
 		if (ret != 0)
 			return (ret);
-		ret = urtwx_write_rf(sc, 0x64, 0x0f, 0x0f);
+		for (path = 0; path < chip->uc_rf_path_count; path++) {
+			reg = sc->sc_chip->uc_rf_write_base[path] +
+			    ((uint16_t)0xee << 2);
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, reg, 0, 0x4);
+			if (ret != 0)
+				return (ret);
+			delay(URTWX_8822C_RF_DELAY_US);
+				if (sc->sc_scan_log < 4)
+					printf("%s: 8822c setchan ch %u path %u rf0xee=0x1 "
+					    "peek %#x\n", DEVNAME(sc), channel, path,
+				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+				    sc->sc_chip->uc_rf_write_base[path] +
+				    ((uint16_t)0xee << 2), 0) & RFREG_MASK);
+			reg = sc->sc_chip->uc_rf_write_base[path] +
+			    ((uint16_t)0x33 << 2);
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, reg, 0, 0x12);
+			if (ret != 0)
+				return (ret);
+			delay(URTWX_8822C_RF_DELAY_US);
+				if (sc->sc_scan_log < 4)
+					printf("%s: 8822c setchan ch %u path %u rf0x33=0x12 "
+					    "peek %#x\n", DEVNAME(sc), channel, path,
+				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+				    sc->sc_chip->uc_rf_write_base[path] +
+				    ((uint16_t)0x33 << 2), 0) & RFREG_MASK);
+			reg = sc->sc_chip->uc_rf_write_base[path] +
+			    ((uint16_t)0x3f << 2);
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, reg, 0,
+			    rf_rxbb);
+			if (ret != 0)
+				return (ret);
+			delay(URTWX_8822C_RF_DELAY_US);
+				if (sc->sc_scan_log < 4)
+					printf("%s: 8822c setchan ch %u path %u rf0x3f=%#x "
+					    "peek %#x\n", DEVNAME(sc), channel, path, rf_rxbb,
+				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+				    sc->sc_chip->uc_rf_write_base[path] +
+				    ((uint16_t)0x3f << 2), 0) & RFREG_MASK);
+			reg = sc->sc_chip->uc_rf_write_base[path] +
+			    ((uint16_t)0xee << 2);
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, reg, 0, 0);
+			if (ret != 0)
+				return (ret);
+			delay(URTWX_8822C_RF_DELAY_US);
+				if (sc->sc_scan_log < 4)
+					printf("%s: 8822c setchan ch %u path %u rf0xee=0 "
+					    "peek %#x\n", DEVNAME(sc), channel, path,
+				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+				    sc->sc_chip->uc_rf_write_base[path] +
+				    ((uint16_t)0xee << 2), 0) & RFREG_MASK);
+		}
+		for (path = 0; path < chip->uc_rf_path_count; path++) {
+			reg = sc->sc_chip->uc_rf_write_base[path] +
+			    ((uint16_t)0x18 << 2);
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, reg, 0, rf18);
+			if (ret != 0)
+				return (ret);
+			delay(1);
+				if (sc->sc_scan_log < 4)
+					printf("%s: 8822c setchan ch %u path %u rf0x18=%#x "
+					    "peek %#x\n", DEVNAME(sc), channel, path, rf18,
+				    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+				    sc->sc_chip->uc_rf_write_base[path] +
+				    ((uint16_t)0x18 << 2), 0) & RFREG_MASK);
+		}
+		ret = urtwx_8822c_rstb_3wire(sc, 1);
 		if (ret != 0)
 			return (ret);
-	} else {
-		ret = urtwx_write_rf(sc, RF_LUTDBG, 0x40, 0);
+		if (sc->sc_rfset_log < 16) {
+			printf("%s: 8822c setchan post ch %u rstb=%#x 3wirea=%#x "
+			    "3wireb=%#x\n", DEVNAME(sc), channel,
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+			    URTWX_8822C_REG_RSTB, 0),
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+			    URTWX_8822C_REG_3WIRE, 0),
+			    urtwx_read_4(sc, RTW_USB_CMD_REQ,
+			    URTWX_8822C_REG_3WIRE2, 0));
+			sc->sc_rfset_log++;
+		}
+		return (0);
+	}
+
+	for (path = 0; path < chip->uc_rf_path_count; path++) {
+		if (channel <= 14) {
+			ret = urtwx_write_rf_path(sc, path, RF_LUTDBG, 0x40, 1);
+			if (ret != 0)
+				return (ret);
+			ret = urtwx_write_rf_path(sc, path, 0x64, 0x0f, 0x0f);
+			if (ret != 0)
+				return (ret);
+		} else {
+			ret = urtwx_write_rf_path(sc, path, RF_LUTDBG, 0x40, 0);
+			if (ret != 0)
+				return (ret);
+		}
+		ret = urtwx_write_rf_path(sc, path, 0x18, RFREG_MASK, rf18);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_rf_path(sc, path, RF_XTALX2, 0x00080000U, 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_rf_path(sc, path, RF_XTALX2, 0x00080000U, 1);
 		if (ret != 0)
 			return (ret);
 	}
-	ret = urtwx_write_rf(sc, 0x18, RFREG_MASK, rf18);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_write_rf(sc, RF_XTALX2, 0x00080000U, 0);
-	if (ret != 0)
-		return (ret);
 
-	return (urtwx_write_rf(sc, RF_XTALX2, 0x00080000U, 1));
+	return (0);
 }
 
 static int
@@ -3487,13 +7599,541 @@ urtwx_phy_set_channel_rxdfir(struct urtwx_softc *sc, uint8_t bw)
 }
 
 static int
+urtwx_8822c_set_tx_power_default(struct urtwx_softc *sc, uint8_t channel,
+    uint8_t bw)
+{
+	static const uint16_t cck_ref_reg[2] = {
+		URTWX_8822C_REG_TXPWR_REF_A_CCK,
+		URTWX_8822C_REG_TXPWR_REF_B_CCK
+	};
+	static const uint16_t ofdm_ref_reg[2] = {
+		URTWX_8822C_REG_TXPWR_REF_A_OFDM,
+		URTWX_8822C_REG_TXPWR_REF_B_OFDM
+	};
+	uint8_t pwr_ref_cck[2], pwr_ref_ofdm[2];
+	int8_t diff_idx[4];
+	uint8_t txpwr[2][URTWX_DESC_RATEVHT2SS_MCS9 + 1];
+	uint32_t cck_ref, ofdm_ref, phy_pwr_idx;
+	uint16_t ns;
+	uint8_t group, pwr_idx[4];
+	int8_t diff_a, diff_b;
+	int path, rate, i;
+	int ret;
+
+	static const uint8_t cck_rates[] = {
+		URTWX_DESC_RATE1M, 0x01, 0x02, URTWX_DESC_RATE11M
+	};
+	static const uint8_t ofdm_rates[] = {
+		URTWX_DESC_RATE6M, 0x05, 0x06, 0x07,
+		0x08, 0x09, 0x0a, URTWX_DESC_RATE54M
+	};
+	static const uint8_t ht1_rates[] = {
+		0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, URTWX_DESC_RATEMCS7
+	};
+	static const uint8_t ht2_rates[] = {
+		0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, URTWX_DESC_RATEMCS15
+	};
+	static const uint8_t vht1_rates[] = {
+		0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34,
+		URTWX_DESC_RATEVHT1SS_MCS9
+	};
+	static const uint8_t vht2_rates[] = {
+		0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e,
+		URTWX_DESC_RATEVHT2SS_MCS9
+	};
+
+#define URTWX_8822C_NIBBLE(_v, _shift) \
+	((((int8_t)(((_v) >> (_shift)) & 0x0f)) & 0x08) ? \
+	    (int8_t)((((_v) >> (_shift)) & 0x0f) - 16) : \
+	    (int8_t)(((_v) >> (_shift)) & 0x0f))
+
+	if (!sc->sc_8822c_have_txpwr_idx) {
+		const uint32_t cck_ref_default =
+		    ((uint32_t)URTWX_8822C_TXPWR_REF_DEFAULT << 16) &
+		    0x007f0000U;
+		const uint32_t ofdm_ref_default =
+		    ((uint32_t)URTWX_8822C_TXPWR_REF_DEFAULT << 10) &
+		    0x0001fc00U;
+
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+		    URTWX_8822C_BIT_TXAGC_RSTB, 0);
+		if (ret != 0)
+			return (ret);
+		for (path = 0; path < sc->sc_chip->uc_rf_path_count; path++) {
+			ret = urtwx_write_4_mask(sc, cck_ref_reg[path],
+			    0x007f0000U, cck_ref_default);
+			if (ret != 0)
+				return (ret);
+		}
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+		    URTWX_8822C_BIT_TXAGC_RSTB, 0);
+		if (ret != 0)
+			return (ret);
+		for (path = 0; path < sc->sc_chip->uc_rf_path_count; path++) {
+			ret = urtwx_write_4_mask(sc, ofdm_ref_reg[path],
+			    0x0001fc00U, ofdm_ref_default);
+			if (ret != 0)
+				return (ret);
+		}
+		for (rate = 0; rate <= URTWX_DESC_RATEVHT2SS_MCS9; rate += 4) {
+			ret = urtwx_write_4(sc, RTW_USB_CMD_REQ,
+			    URTWX_8822C_REG_TXAGC_BASE + rate, 0, 0);
+			if (ret != 0)
+				return (ret);
+		}
+		return (urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+		    URTWX_8822C_BIT_TXAGC_RSTB,
+		    URTWX_8822C_BIT_TXAGC_RSTB));
+	}
+
+	group = 0;
+	switch (channel) {
+	case 1:
+	case 2:
+	case 36:
+	case 38:
+	case 40:
+	case 42:
+		group = 0;
+		break;
+	case 3:
+	case 4:
+	case 5:
+	case 44:
+	case 46:
+	case 48:
+	case 50:
+		group = 1;
+		break;
+	case 6:
+	case 7:
+	case 8:
+	case 52:
+	case 54:
+	case 56:
+	case 58:
+		group = 2;
+		break;
+	case 9:
+	case 10:
+	case 11:
+	case 60:
+	case 62:
+	case 64:
+		group = 3;
+		break;
+	case 12:
+	case 13:
+	case 100:
+	case 102:
+	case 104:
+	case 106:
+		group = 4;
+		break;
+	case 14:
+		group = 4;
+		break;
+	case 108:
+	case 110:
+	case 112:
+	case 114:
+		group = 5;
+		break;
+	case 116:
+	case 118:
+	case 120:
+	case 122:
+		group = 6;
+		break;
+	case 124:
+	case 126:
+	case 128:
+	case 130:
+		group = 7;
+		break;
+	case 132:
+	case 134:
+	case 136:
+	case 138:
+		group = 8;
+		break;
+	case 140:
+	case 142:
+	case 144:
+		group = 9;
+		break;
+	case 149:
+	case 151:
+	case 153:
+	case 155:
+		group = 10;
+		break;
+	case 157:
+	case 159:
+	case 161:
+		group = 11;
+		break;
+	case 165:
+	case 167:
+	case 169:
+	case 171:
+		group = 12;
+		break;
+	case 173:
+	case 175:
+	case 177:
+		group = 13;
+		break;
+	}
+
+	memset(txpwr, 0, sizeof(txpwr));
+	for (path = 0; path < sc->sc_chip->uc_rf_path_count; path++) {
+		const struct urtwx_8822c_txpwr_idx *idx =
+		    &sc->sc_8822c_txpwr_idx[path];
+		int8_t ofdm1, bw20_1, bw20_2, bw40_2, bw80_1, bw80_2;
+		uint8_t base_cck, base40, base80_lo, base80_hi;
+
+		if (channel <= 14) {
+			base_cck = idx->pwr_idx_2g.cck_base[
+			    (channel == 14) ? 5 : group];
+			base40 = idx->pwr_idx_2g.bw40_base[group];
+			ofdm1 = URTWX_8822C_NIBBLE(idx->pwr_idx_2g.ht_1s_diff.val,
+			    0);
+			bw20_1 = URTWX_8822C_NIBBLE(
+			    idx->pwr_idx_2g.ht_1s_diff.val, 4);
+			ns = le16toh(idx->pwr_idx_2g.ht_2s_diff.val);
+			bw20_2 = URTWX_8822C_NIBBLE(ns, 0);
+			bw40_2 = URTWX_8822C_NIBBLE(ns, 4);
+
+			for (i = 0; i < nitems(cck_rates); i++)
+				txpwr[path][cck_rates[i]] = base_cck;
+			for (i = 0; i < nitems(ofdm_rates); i++)
+				txpwr[path][ofdm_rates[i]] = base40 + ofdm1 * 2;
+			for (i = 0; i < nitems(ht1_rates); i++) {
+				txpwr[path][ht1_rates[i]] = base40 +
+				    ((bw == URTWX_CHANNEL_WIDTH_20) ?
+				    bw20_1 * 2 : 0);
+			}
+			for (i = 0; i < nitems(ht2_rates); i++) {
+				txpwr[path][ht2_rates[i]] = base40 +
+				    ((bw == URTWX_CHANNEL_WIDTH_20) ?
+				    (bw20_1 + bw20_2) * 2 : bw40_2 * 2);
+			}
+			for (i = 0; i < nitems(vht1_rates); i++)
+				txpwr[path][vht1_rates[i]] =
+				    txpwr[path][ht1_rates[i < nitems(ht1_rates) ?
+				    i : nitems(ht1_rates) - 1]];
+			for (i = 0; i < nitems(vht2_rates); i++)
+				txpwr[path][vht2_rates[i]] =
+				    txpwr[path][ht2_rates[i < nitems(ht2_rates) ?
+				    i : nitems(ht2_rates) - 1]];
+		} else {
+			base40 = idx->pwr_idx_5g.bw40_base[group];
+			base80_lo = idx->pwr_idx_5g.bw40_base[group];
+			base80_hi = idx->pwr_idx_5g.bw40_base[
+			    (group < 13) ? group + 1 : group];
+			ofdm1 = URTWX_8822C_NIBBLE(idx->pwr_idx_5g.ht_1s_diff.val,
+			    0);
+			bw20_1 = URTWX_8822C_NIBBLE(
+			    idx->pwr_idx_5g.ht_1s_diff.val, 4);
+			bw20_2 = URTWX_8822C_NIBBLE(
+			    idx->pwr_idx_5g.ht_2s_diff.val, 0);
+			bw40_2 = URTWX_8822C_NIBBLE(
+			    idx->pwr_idx_5g.ht_2s_diff.val, 4);
+			bw80_1 = URTWX_8822C_NIBBLE(
+			    idx->pwr_idx_5g.vht_1s_diff.val, 4);
+			bw80_2 = URTWX_8822C_NIBBLE(
+			    idx->pwr_idx_5g.vht_2s_diff.val, 4);
+
+			for (i = 0; i < nitems(ofdm_rates); i++)
+				txpwr[path][ofdm_rates[i]] = base40 + ofdm1 * 2;
+			for (i = 0; i < nitems(ht1_rates); i++) {
+				if (bw == URTWX_CHANNEL_WIDTH_80)
+					txpwr[path][ht1_rates[i]] =
+					    ((base80_lo + base80_hi) / 2) +
+					    bw80_1 * 2;
+				else
+					txpwr[path][ht1_rates[i]] = base40 +
+					    ((bw == URTWX_CHANNEL_WIDTH_20) ?
+					    bw20_1 * 2 : 0);
+			}
+			for (i = 0; i < nitems(ht2_rates); i++) {
+				if (bw == URTWX_CHANNEL_WIDTH_80)
+					txpwr[path][ht2_rates[i]] =
+					    ((base80_lo + base80_hi) / 2) +
+					    (bw80_1 + bw80_2) * 2;
+				else
+					txpwr[path][ht2_rates[i]] = base40 +
+					    ((bw == URTWX_CHANNEL_WIDTH_20) ?
+					    (bw20_1 + bw20_2) * 2 :
+					    bw40_2 * 2);
+			}
+			for (i = 0; i < nitems(vht1_rates); i++) {
+				if (bw == URTWX_CHANNEL_WIDTH_80)
+					txpwr[path][vht1_rates[i]] =
+					    ((base80_lo + base80_hi) / 2) +
+					    bw80_1 * 2;
+				else
+					txpwr[path][vht1_rates[i]] =
+					    txpwr[path][ht1_rates[
+					    i < nitems(ht1_rates) ? i :
+					    nitems(ht1_rates) - 1]];
+			}
+			for (i = 0; i < nitems(vht2_rates); i++) {
+				if (bw == URTWX_CHANNEL_WIDTH_80)
+					txpwr[path][vht2_rates[i]] =
+					    ((base80_lo + base80_hi) / 2) +
+					    (bw80_1 + bw80_2) * 2;
+				else
+					txpwr[path][vht2_rates[i]] =
+					    txpwr[path][ht2_rates[
+					    i < nitems(ht2_rates) ? i :
+					    nitems(ht2_rates) - 1]];
+			}
+		}
+
+		pwr_ref_cck[path] = txpwr[path][URTWX_DESC_RATE11M];
+		pwr_ref_ofdm[path] = txpwr[path][URTWX_DESC_RATEMCS7];
+	}
+
+	if (sc->sc_8822c_have_bb_pg) {
+		for (path = 0; path < sc->sc_chip->uc_rf_path_count; path++) {
+			const int8_t *ofs = (channel <= 14) ?
+			    sc->sc_8822c_txpwr_ofs_2g[path] :
+			    sc->sc_8822c_txpwr_ofs_5g[path];
+
+			for (rate = 0; rate <= URTWX_DESC_RATEVHT2SS_MCS9;
+			    rate++) {
+				int pwr;
+
+				pwr = (int)txpwr[path][rate] + ofs[rate];
+				if (pwr < 0)
+					pwr = 0;
+				else if (pwr > 0x7f)
+					pwr = 0x7f;
+				txpwr[path][rate] = pwr;
+			}
+
+			pwr_ref_cck[path] = txpwr[path][URTWX_DESC_RATE11M];
+			pwr_ref_ofdm[path] = txpwr[path][URTWX_DESC_RATEMCS7];
+		}
+	}
+
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+	    URTWX_8822C_BIT_TXAGC_RSTB, 0);
+	if (ret != 0)
+		return (ret);
+	for (path = 0; path < sc->sc_chip->uc_rf_path_count; path++) {
+		cck_ref = ((uint32_t)pwr_ref_cck[path] << 16) & 0x007f0000U;
+		ret = urtwx_write_4_mask(sc, cck_ref_reg[path], 0x007f0000U,
+		    cck_ref);
+		if (ret != 0)
+			return (ret);
+	}
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+	    URTWX_8822C_BIT_TXAGC_RSTB, 0);
+	if (ret != 0)
+		return (ret);
+	for (path = 0; path < sc->sc_chip->uc_rf_path_count; path++) {
+		ofdm_ref = ((uint32_t)pwr_ref_ofdm[path] << 10) & 0x0001fc00U;
+		ret = urtwx_write_4_mask(sc, ofdm_ref_reg[path], 0x0001fc00U,
+		    ofdm_ref);
+		if (ret != 0)
+			return (ret);
+	}
+
+	for (rate = 0; rate <= URTWX_DESC_RATEVHT2SS_MCS9; rate += 4) {
+		for (i = 0; i < 4; i++) {
+			diff_a = (int8_t)txpwr[0][rate + i] - (int8_t)
+			    ((rate + i) <= URTWX_DESC_RATE11M ?
+			    pwr_ref_cck[0] : pwr_ref_ofdm[0]);
+			diff_b = diff_a;
+			if (sc->sc_chip->uc_rf_path_count > 1)
+				diff_b = (int8_t)txpwr[1][rate + i] - (int8_t)
+				    ((rate + i) <= URTWX_DESC_RATE11M ?
+				    pwr_ref_cck[1] : pwr_ref_ofdm[1]);
+			diff_idx[i] = min(diff_a, diff_b);
+			pwr_idx[i] = (uint8_t)diff_idx[i] & 0x7f;
+		}
+		phy_pwr_idx = pwr_idx[0] |
+		    ((uint32_t)pwr_idx[1] << 8) |
+		    ((uint32_t)pwr_idx[2] << 16) |
+		    ((uint32_t)pwr_idx[3] << 24);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+		    URTWX_8822C_BIT_TXAGC_RSTB, 0);
+		if (ret != 0)
+			return (ret);
+		ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_TXAGC_BASE + rate,
+		    0xffffffffU, phy_pwr_idx);
+		if (ret != 0)
+			return (ret);
+	}
+
+#undef URTWX_8822C_NIBBLE
+	return (urtwx_write_4_mask(sc, URTWX_8822C_REG_RSTB,
+	    URTWX_8822C_BIT_TXAGC_RSTB,
+	    URTWX_8822C_BIT_TXAGC_RSTB));
+}
+
+static void
+urtwx_8822c_dump_chan_regs(struct urtwx_softc *sc, uint8_t channel)
+{
+	uint32_t sys, rfctrl, wlrf1, wirea, wireb, rstb;
+	uint32_t antmap0, antmap, mrcm, agcswsh, antwtpd;
+	uint32_t rxccksel, ccanrx, encck, rxfnctl, rxigi, txlgmap;
+	uint32_t refacck, refaofdm, refbcck, refbofdm;
+	uint32_t agc0, agc1, agc2, agc3;
+
+	sys = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_FUNC_EN, 0);
+	rfctrl = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_RF_CTRL, 0);
+	wlrf1 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_WLRF1, 0);
+	wirea = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_3WIRE, 0);
+	wireb = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_3WIRE2, 0);
+	rstb = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RSTB, 0);
+	antmap0 = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ANTMAP0, 0);
+	antmap = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ANTMAP, 0);
+	mrcm = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_MRCM, 0);
+	agcswsh = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_AGCSWSH, 0);
+	antwtpd = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ANTWTPD, 0);
+	rxccksel = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXCCKSEL, 0);
+	ccanrx = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_CCANRX, 0);
+	encck = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ENCCK, 0);
+	rxfnctl = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXFNCTL, 0);
+	rxigi = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXIGI, 0);
+	txlgmap = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_TXLGMAP, 0);
+	refacck = urtwx_read_4(sc, RTW_USB_CMD_REQ,
+	    URTWX_8822C_REG_TXPWR_REF_A_CCK, 0);
+	refaofdm = urtwx_read_4(sc, RTW_USB_CMD_REQ,
+	    URTWX_8822C_REG_TXPWR_REF_A_OFDM, 0);
+	refbcck = urtwx_read_4(sc, RTW_USB_CMD_REQ,
+	    URTWX_8822C_REG_TXPWR_REF_B_CCK, 0);
+	refbofdm = urtwx_read_4(sc, RTW_USB_CMD_REQ,
+	    URTWX_8822C_REG_TXPWR_REF_B_OFDM, 0);
+	agc0 = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_TXAGC_BASE + 0,
+	    0);
+	agc1 = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_TXAGC_BASE + 4,
+	    0);
+	agc2 = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_TXAGC_BASE + 8,
+	    0);
+	agc3 = urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_TXAGC_BASE + 12,
+	    0);
+
+	printf("%s: 8822c ch%u regs sys=%#x rfctrl=%#x wlrf1=%#x "
+	    "3wirea=%#x 3wireb=%#x rstb=%#x\n",
+	    DEVNAME(sc), channel, sys, rfctrl, wlrf1, wirea, wireb, rstb);
+	printf("%s: 8822c ch%u ant=%#x/%#x mrcm=%#x agcswsh=%#x antwtpd=%#x "
+	    "rxccksel=%#x ccanrx=%#x encck=%#x\n",
+	    DEVNAME(sc), channel, antmap0, antmap, mrcm, agcswsh, antwtpd,
+	    rxccksel, ccanrx, encck);
+	printf("%s: 8822c ch%u rxfnctl=%#x rxigi=%#x txlgmap=%#x "
+	    "pwrref a=%#x/%#x b=%#x/%#x agc=%#x/%#x/%#x/%#x\n",
+	    DEVNAME(sc), channel, rxfnctl, rxigi, txlgmap, refacck, refaofdm,
+	    refbcck, refbofdm, agc0, agc1, agc2, agc3);
+}
+
+static void
+urtwx_8822c_log_usb_mode(struct urtwx_softc *sc)
+{
+	uint8_t syscfg2_3;
+	uint32_t pad_ctrl2;
+	int cur_u3, can_switch, already_u3;
+
+	syscfg2_3 = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_SYS_CFG2 + 3, 0);
+	pad_ctrl2 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_PAD_CTRL2, 0);
+	cur_u3 = (syscfg2_3 == 0x20);
+	can_switch = (pad_ctrl2 & (BIT_MASK_USB23_SW_MODE_V1 |
+	    BIT_USB3_USB2_TRANSITION)) != 0;
+	already_u3 = ((pad_ctrl2 & BIT_MASK_USB23_SW_MODE_V1) >> 18) ==
+	    BIT_USB_MODE_U3;
+
+	printf("%s: 8822c usb syscfg2+3=%#x pad_ctrl2=%#x efuse_switch=%u "
+	    "cur_u3=%d can_switch=%d already_u3=%d\n",
+	    DEVNAME(sc), syscfg2_3, pad_ctrl2, sc->sc_usb_mode_switch,
+	    cur_u3, can_switch, already_u3);
+}
+
+static void
+urtwx_8822c_dump_hw_feature(struct urtwx_softc *sc)
+{
+	uint8_t id, feat[URTWX_HW_FEATURE_LEN];
+	char hex[URTWX_HW_FEATURE_LEN * 3];
+	int i;
+
+	id = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_C2HEVT, 0);
+	if (id != URTWX_C2H_HW_FEATURE_REPORT) {
+		printf("%s: 8822c hw feature id %#x\n", DEVNAME(sc), id);
+		return;
+	}
+
+	for (i = 0; i < URTWX_HW_FEATURE_LEN; i++)
+		feat[i] = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_C2HEVT + 2 + i,
+		    0);
+	urtwx_hexbuf(feat, sizeof(feat), hex, sizeof(hex));
+	printf("%s: 8822c hw feature %s\n", DEVNAME(sc), hex);
+	(void)urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_C2HEVT, 0, 0);
+}
+
+static int
 urtwx_phy_init_runtime(struct urtwx_softc *sc)
 {
 	int ret;
 
+	memset(sc->sc_rf_cache_valid, 0, sizeof(sc->sc_rf_cache_valid));
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		sc->sc_usbctl_log = 0;
+
 	ret = urtwx_phy_enable_bb_rf(sc);
 	if (ret != 0)
 		return (ret);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		sc->sc_usbctl_log = 0;
+#if URTWX_8822C_FORCE_TRX_B_ONLY
+		printf("%s: 8822c diag forcing trx B/B\n", DEVNAME(sc));
+		ret = urtwx_8822c_config_trx_mode(sc, URTWX_8822C_BB_PATH_B,
+		    URTWX_8822C_BB_PATH_B);
+#else
+		ret = urtwx_8822c_config_trx_mode(sc, URTWX_8822C_BB_PATH_AB,
+		    URTWX_8822C_BB_PATH_AB);
+#endif
+		if (ret != 0)
+			return (ret);
+#if URTWX_8822C_ABORT_AFTER_CONFIG_TRX
+		printf("%s: 8822c trx init antmap0=%#x antmap=%#x "
+		    "rxccksel=%#x ccanrx=%#x txlgmap=%#x rf0=%#x/%#x\n",
+		    DEVNAME(sc),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ANTMAP0, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ANTMAP, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXCCKSEL, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_CCANRX, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_TXLGMAP, 0),
+		    urtwx_read_rf_path(sc, 0, 0x0),
+		    urtwx_read_rf_path(sc, 1, 0x0));
+		return (EIO);
+#endif
+		sc->sc_usbctl_log = 0;
+		ret = urtwx_8822c_phy_init(sc);
+		if (ret != 0)
+			return (ret);
+#if URTWX_8822C_ABORT_AFTER_PHYINIT
+		printf("%s: 8822c phy init edcca_th=%#x edcca_dec=%#x "
+		    "rd_ctrl=%#x txptcl=%#x rf0=%#x/%#x\n",
+		    DEVNAME(sc),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_EDCCA_TH, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_EDCCA_DECISION, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_RD_CTRL, 0),
+		    urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_TX_PTCL_CTRL, 0),
+		    urtwx_read_rf_path(sc, 0, 0x0),
+		    urtwx_read_rf_path(sc, 1, 0x0));
+		return (EIO);
+#endif
+#if URTWX_8822C_ABORT_AFTER_TRXMODE
+		urtwx_8822c_dump_trxstage(sc);
+		return (EIO);
+#endif
+		ret = urtwx_8822c_rf_init(sc);
+		if (ret != 0)
+			return (ret);
+	}
 	ret = urtwx_phy_set_channel_bb(sc, URTWX_FIXED_CHANNEL,
 	    URTWX_CHANNEL_WIDTH_20, URTWX_SC_DONT_CARE);
 	if (ret != 0)
@@ -3506,8 +8146,13 @@ urtwx_phy_init_runtime(struct urtwx_softc *sc)
 	    URTWX_CHANNEL_WIDTH_20);
 	if (ret != 0)
 		return (ret);
-
-	return (urtwx_phy_set_channel_rxdfir(sc, URTWX_CHANNEL_WIDTH_20));
+	ret = urtwx_phy_set_channel_rxdfir(sc, URTWX_CHANNEL_WIDTH_20);
+	if (ret != 0)
+		return (ret);
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		return (urtwx_8822c_set_tx_power_default(sc,
+		    URTWX_FIXED_CHANNEL, URTWX_CHANNEL_WIDTH_20));
+	return (0);
 }
 
 static int
@@ -3534,8 +8179,14 @@ urtwx_set_chan(struct urtwx_softc *sc, struct ieee80211_channel *c)
 	ret = urtwx_phy_set_channel_rf(sc, chan, bw);
 	if (ret != 0)
 		return (ret);
-
-	return (urtwx_phy_set_channel_rxdfir(sc, bw));
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		urtwx_8822c_toggle_igi(sc);
+		return (0);
+	}
+	ret = urtwx_phy_set_channel_rxdfir(sc, bw);
+	if (ret != 0)
+		return (ret);
+	return (0);
 }
 
 static int
@@ -3858,9 +8509,37 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 		if (urtwx_set_chan(sc, chan) == 0 &&
 		    !usbd_is_dying(sc->sc_udev)) {
 			if (sc->sc_scan_log < URTWX_SCAN_LOG_MAX) {
-				printf("%s: scan channel %u rf18=%#x\n",
-				    DEVNAME(sc), ieee80211_chan2ieee(ic, chan),
-				    urtwx_read_rf(sc, 0x18));
+				if (sc->sc_chip == &urtwx_chip_8822c) {
+					uint16_t wreg_a, wreg_b;
+					uint32_t read_a, read_b, write_a, write_b;
+					uint8_t curchan;
+
+					wreg_a = sc->sc_chip->uc_rf_write_base[0] +
+					    ((uint16_t)0x18 << 2);
+					wreg_b = sc->sc_chip->uc_rf_write_base[1] +
+					    ((uint16_t)0x18 << 2);
+					curchan = ieee80211_chan2ieee(ic, chan);
+					read_a = urtwx_read_rf_path(sc, 0, 0x18);
+					read_b = urtwx_read_rf_path(sc, 1, 0x18);
+					write_a = urtwx_read_4(sc, RTW_USB_CMD_REQ,
+					    wreg_a, 0) & RFREG_MASK;
+					write_b = urtwx_read_4(sc, RTW_USB_CMD_REQ,
+					    wreg_b, 0) & RFREG_MASK;
+					printf("%s: scan channel %u rf18 want=%#x "
+					    "reada=%#x readb=%#x writea=%#x "
+					    "writeb=%#x\n", DEVNAME(sc),
+					    curchan,
+					    sc->sc_rf18_want, read_a, read_b,
+					    write_a, write_b);
+					if (sc->sc_scan_log < 4)
+						urtwx_8822c_dump_chan_regs(sc,
+						    curchan);
+				} else {
+					printf("%s: scan channel %u rf18=%#x\n",
+					    DEVNAME(sc),
+					    ieee80211_chan2ieee(ic, chan),
+					    urtwx_read_rf(sc, 0x18));
+				}
 				sc->sc_scan_log++;
 			}
 			timeout_add_msec(&sc->sc_scan_to,
@@ -3911,7 +8590,8 @@ urtwx_newstate_cb(struct urtwx_softc *sc, void *arg)
 	}
 	}
 	(void)sc->sc_newstate(ic, cmd->state, cmd->arg);
-	if (sc->sc_state_log < URTWX_STATE_LOG_MAX) {
+	if (cmd->state != IEEE80211_S_SCAN &&
+	    sc->sc_state_log < URTWX_STATE_LOG_MAX) {
 		printf("%s: newstate done#%u now %s link %u assoc_fail %#x "
 		    "flags %#x\n",
 		    DEVNAME(sc), cmd->seq, ieee80211_state_name[ic->ic_state],
@@ -4454,6 +9134,44 @@ urtwx_get_rx_rssi_8821c(struct urtwx_softc *sc, const uint8_t *phy_status,
 	return (urtwx_rx_power_to_rssi(rx_power));
 }
 
+static uint8_t
+urtwx_get_rx_rssi_8822c(struct urtwx_softc *sc, const uint8_t *phy_status,
+    const struct urtwx_rx_stat *stat)
+{
+	uint32_t dw0, dw1;
+	uint8_t page, pwdb_a, pwdb_b, pwdb;
+	int8_t rx_power;
+
+	(void)sc;
+
+	if (stat->drvinfosz < 8)
+		return (0);
+
+	page = phy_status[0] & 0x0f;
+	dw0 = UGETDW(phy_status);
+	dw1 = UGETDW(phy_status + 4);
+
+	if (page == 0 || stat->rate <= URTWX_DESC_RATE11M) {
+		pwdb_a = (dw0 >> 8) & 0xff;
+		pwdb_b = dw1 & 0xff;
+	} else {
+		pwdb_a = (dw0 >> 8) & 0xff;
+		pwdb_b = (dw0 >> 16) & 0xff;
+	}
+
+	if (pwdb_a == 0 && pwdb_b == 0)
+		return (0);
+	if (pwdb_b == 0)
+		pwdb = pwdb_a;
+	else if (pwdb_a == 0)
+		pwdb = pwdb_b;
+	else
+		pwdb = (pwdb_a + pwdb_b) / 2;
+
+	rx_power = pwdb - 110;
+	return (urtwx_rx_power_to_rssi(rx_power));
+}
+
 static void
 urtwx_rx_frame(struct urtwx_softc *sc, const uint8_t *buf, int len,
     const struct urtwx_rx_stat *stat, struct mbuf_list *ml)
@@ -4763,6 +9481,12 @@ urtwx_rx_init(struct urtwx_softc *sc)
 		    USBD_SHORT_XFER_OK | USBD_NO_COPY, USBD_NO_TIMEOUT,
 		    urtwx_rxeof);
 		error = usbd_transfer(data->xfer);
+		if (i < 8) {
+			printf("%s: RX submit %d status %d pipe %p ed %#x\n",
+			    DEVNAME(sc), i, error,
+			    (void *)sc->sc_ep[URTWX_ENDPT_RX],
+			    sc->sc_ed[URTWX_ENDPT_RX]);
+		}
 		if (error != 0 && error != USBD_IN_PROGRESS)
 			return (EIO);
 	}
@@ -4802,6 +9526,13 @@ urtwx_init(struct ifnet *ifp)
 	printf(" len %d autojoin %d rsn %d\n", ic->ic_des_esslen,
 	    ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) != 0,
 	    ISSET(ic->ic_flags, IEEE80211_F_RSNON) != 0);
+	printf("%s: usb ed rx=%#x intr=%#x out=%d pipe_rx=%p pipe_intr=%p\n",
+	    DEVNAME(sc), sc->sc_ed[URTWX_ENDPT_RX],
+	    sc->sc_ed[URTWX_ENDPT_INTR], sc->sc_nbulkout,
+	    (void *)sc->sc_ep[URTWX_ENDPT_RX],
+	    (void *)sc->sc_ep[URTWX_ENDPT_INTR]);
+	sc->sc_rfinit_log = 0;
+	sc->sc_rfinit_prestage_log = 0;
 
 	if (!sc->sc_fw_loaded) {
 		error = urtwx_fw_download(sc);
@@ -4817,6 +9548,8 @@ urtwx_init(struct ifnet *ifp)
 				    DEVNAME(sc));
 				return (EIO);
 			}
+			if (sc->sc_chip == &urtwx_chip_8822c)
+				urtwx_8822c_board_info_setup(sc);
 			sc->sc_have_macaddr = 1;
 			printf("%s: MAC %s\n", DEVNAME(sc),
 			    ether_sprintf(sc->sc_macaddr));
@@ -4836,6 +9569,8 @@ urtwx_init(struct ifnet *ifp)
 		printf("%s: power-on/system init failed\n", DEVNAME(sc));
 		return (error);
 	}
+	if (sc->sc_chip == &urtwx_chip_8822c)
+		urtwx_8822c_log_usb_mode(sc);
 
 	if (urtwx_mac_init_runtime(sc) != 0) {
 		printf("%s: could not initialize MAC/RX path\n",
@@ -4877,6 +9612,8 @@ urtwx_init(struct ifnet *ifp)
 	sc->sc_scan_log = 0;
 	sc->sc_state_log = 0;
 	sc->sc_tx_mgmt_log = 0;
+	sc->sc_rfio_log = 0;
+	sc->sc_usbctl_log = 0;
 	sc->sc_tx_data_log = 0;
 	sc->sc_txeof_log = 0;
 	sc->sc_txeof_data_log = 0;
@@ -5278,6 +10015,7 @@ urtwx_init_h2c(struct urtwx_softc *sc)
 		    DEVNAME(sc), wp, rp, freeq));
 	}
 	sc->sc_h2c_box = 0;
+	sc->sc_h2c_pkt_seq = 0;
 
 	return (0);
 }
@@ -5429,6 +10167,262 @@ urtwx_mac_init_8821c(struct urtwx_softc *sc)
 }
 
 static int
+urtwx_mac_init_8822c(struct urtwx_softc *sc)
+{
+	uint8_t value8;
+	uint16_t value16;
+	uint32_t value32;
+	int ret;
+
+	ret = urtwx_mac_init_8821c(sc);
+	if (ret != 0)
+		return (ret);
+
+	value8 = urtwx_read_1(sc, RTW_USB_CMD_REQ, REG_FWHW_TXQ_CTRL, 0);
+	value8 |= 0x80;
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_FWHW_TXQ_CTRL, 0,
+	    value8);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_FWHW_TXQ_CTRL + 1, 0,
+	    URTWX_8822C_WLAN_TXQ_RPT_EN);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_SPEC_SIFS, 0,
+	    URTWX_8822C_WLAN_SPEC_SIFS);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RESP_SIFS_CCK,
+	    0, URTWX_8822C_WLAN_RESP_SIFS_CCK);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RESP_SIFS_OFDM,
+	    0, URTWX_8822C_WLAN_RESP_SIFS_OFDM);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_DARFRC, 0,
+	    URTWX_8822C_WLAN_DARFRC);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_DARFRCH, 0,
+	    URTWX_8822C_WLAN_DARFRCH);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RARFRCH, 0,
+	    URTWX_8822C_WLAN_RARFRCH);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFR0, 0,
+	    URTWX_8822C_WLAN_ARFR0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFRH0, 0,
+	    URTWX_8822C_WLAN_ARFRH0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFR1_V1, 0,
+	    URTWX_8822C_WLAN_ARFR1);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFRH1_V1, 0,
+	    URTWX_8822C_WLAN_ARFRH1);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFR4, 0,
+	    URTWX_8822C_WLAN_ARFR4);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFRH4, 0,
+	    URTWX_8822C_WLAN_ARFRH4);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFR5, 0,
+	    URTWX_8822C_WLAN_ARFR5);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ARFRH5, 0,
+	    URTWX_8822C_WLAN_ARFRH5);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_PROT_MODE_CTRL, 0,
+	    URTWX_8822C_WLAN_PROT_MODE_CTRL);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_LIFETIME_EN,
+	    URTWX_8822C_BIT_BA_PARSER_EN, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_RRSR,
+	    URTWX_8822C_BITS_RRSR_RSC, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_EDCA_BE_PARAM,
+	    0, URTWX_8822C_WLAN_EDCA_BE_PARAM);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_EDCA_BK_PARAM,
+	    0, URTWX_8822C_WLAN_EDCA_BK_PARAM);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_PIFS, 0,
+	    URTWX_8822C_WLAN_PIFS_TIME);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_TX_PTCL_CTRL + 1,
+	    BIT_SIFS_BK_EN >> 8, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, URTWX_8822C_REG_RD_CTRL + 1,
+	    0x07, URTWX_8822C_RD_CTRL1);
+	if (ret != 0)
+		return (ret);
+	value32 = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_AFE_CTRL1, 0);
+	value32 &= ~BIT_MAC_CLK_SEL;
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, REG_AFE_CTRL1, 0, value32);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_USTIME_TSF, 0,
+	    URTWX_MAC_CLK_SPEED);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_USTIME_EDCA, 0,
+	    URTWX_MAC_CLK_SPEED);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, URTWX_8822C_REG_MISC_CTRL,
+	    URTWX_8822C_MISC_CTRL, URTWX_8822C_MISC_CTRL);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_BCN_CTRL_CLINT0,
+	    0, URTWX_8822C_WLAN_BCN_CTRL_CLT0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_BCN_MAX_ERR, 0,
+	    URTWX_8822C_WLAN_BCN_MAX_ERR);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_MAR, 0,
+	    URTWX_8822C_WLAN_MULTI_ADDR);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_MAR + 4, 0,
+	    URTWX_8822C_WLAN_MULTI_ADDR);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_BBPSF_CTRL + 2,
+	    0, URTWX_8822C_WLAN_RESP_TXRATE);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_ACKTO, 0,
+	    URTWX_8822C_WLAN_ACKTO);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_ACKTO_CCK, 0,
+	    URTWX_8822C_WLAN_ACKTO_CCK);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_EIFS, 0,
+	    URTWX_8822C_WLAN_EIFS);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_NAV_CTRL + 2, 0,
+	    URTWX_8822C_WLAN_NAV_MAX);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_WMAC_TRXPTCL_CTL_H + 2, 0,
+	    URTWX_8822C_BAR_ACK_TYPE);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, URTWX_8822C_REG_GENERAL_OPTION,
+	    URTWX_8822C_GENERAL_OPTION, URTWX_8822C_GENERAL_OPTION);
+	if (ret != 0)
+		return (ret);
+	value16 = urtwx_read_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXPSF_CTRL + 2,
+	    0);
+	value16 &= URTWX_8822C_RXPSF_CTRL2_MASK;
+	value16 |= (uint16_t)(URTWX_8822C_RXPSF_CTRL2_VAL >> 16);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXPSF_CTRL + 2,
+	    0, value16);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXPSF_CTRL, 0,
+	    URTWX_8822C_RXPSF_CTRL_VAL);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ,
+	    URTWX_8822C_REG_RXPSF_TYPE_CTRL, 0, 0xffffffffU);
+	if (ret != 0)
+		return (ret);
+	value16 = urtwx_read_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXPSF_CTRL, 0);
+	value16 &= ~URTWX_8822C_RXPSF_CTRL_MASK;
+	value16 |= URTWX_8822C_RXPSF_CTRL_FIXUP;
+	ret = urtwx_write_2(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_RXPSF_CTRL, 0,
+	    value16);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4(sc, RTW_USB_CMD_REQ, URTWX_8822C_REG_INT_MIG, 0,
+	    URTWX_8822C_WLAN_MAC_INT_MIG);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_8822c_coex_cfg_init(sc);
+	if (ret != 0)
+		return (ret);
+
+	return (urtwx_write_1_mask(sc, REG_SND_PTCL_CTRL,
+	    BIT_DIS_CHK_VHTSIGB_CRC, BIT_DIS_CHK_VHTSIGB_CRC));
+}
+
+static int
+urtwx_8822c_coex_cfg_init(struct urtwx_softc *sc)
+{
+	int ret;
+
+	/*
+	 * Minimal Wi-Fi-side front-end/PTA ownership setup from Linux
+	 * rtw8822c_coex_cfg_init(). This is not full BT coexistence;
+	 * it just puts the shared front-end into the expected WLAN state.
+	 */
+	ret = urtwx_write_1_mask(sc, REG_BCN_CTRL, BIT_EN_BCN_FUNCTION,
+	    BIT_EN_BCN_FUNCTION);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_BT_TDMA_TIME, BIT_MASK_SAMPLE_RATE,
+	    0x05);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1(sc, RTW_USB_CMD_REQ, REG_BT_STAT_CTRL, 0, 0x01);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_GPIO_MUXCFG, BIT_BT_PTA_EN,
+	    BIT_BT_PTA_EN);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_4_mask(sc, REG_GPIO_MUXCFG, BIT_PO_BT_PTA_PINS,
+	    BIT_PO_BT_PTA_PINS);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_QUEUE_CTRL, BIT_PTA_WL_TX_EN,
+	    BIT_PTA_WL_TX_EN);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_QUEUE_CTRL, BIT_PTA_EDCCA_EN, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_2_mask(sc, REG_BT_COEX_V2, BIT_GNT_BT_POLARITY,
+	    BIT_GNT_BT_POLARITY);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_1_mask(sc, REG_DUMMY_PAGE4_V1, BIT_BTCCA_CTRL, 0);
+	if (ret != 0)
+		return (ret);
+	ret = urtwx_write_rf_path(sc, 1, RF_MODOPT, RFREG_MASK, 0x40000);
+	if (ret != 0)
+		return (ret);
+
+	return (urtwx_8822c_wifi_only_coex(sc));
+}
+
+static int
 urtwx_rx_set_dma(struct urtwx_softc *sc)
 {
 	int ret;
@@ -5498,32 +10492,72 @@ urtwx_mac_init_runtime(struct urtwx_softc *sc)
 {
 	int ret;
 
-	ret = urtwx_txdma_queue_mapping(sc);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_priority_queue_cfg(sc);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_init_h2c(sc);
-	if (ret != 0)
-		return (ret);
-	ret = sc->sc_chip->uc_mac_init(sc);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_phy_init_runtime(sc);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_rx_set_dma(sc);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_usb_interface_cfg(sc);
-	if (ret != 0)
-		return (ret);
-	ret = urtwx_sec_enable(sc);
-	if (ret != 0)
-		return (ret);
+	sc->sc_chip_version = urtwx_read_4(sc, RTW_USB_CMD_REQ, REG_SYS_CFG1, 0);
+	sc->sc_cut_version = BIT_GET_CHIP_VER(sc->sc_chip_version);
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		printf("%s: chipcfg1=%#x cut=%u\n", DEVNAME(sc),
+		    sc->sc_chip_version, sc->sc_cut_version);
+	}
 
-	return (urtwx_usb_rx_agg_cfg(sc));
+	ret = urtwx_txdma_queue_mapping(sc);
+	if (ret != 0) {
+		printf("%s: txdma queue mapping failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	ret = urtwx_priority_queue_cfg(sc);
+	if (ret != 0) {
+		printf("%s: priority queue cfg failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	ret = urtwx_init_h2c(sc);
+	if (ret != 0) {
+		printf("%s: h2c init failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	ret = sc->sc_chip->uc_mac_init(sc);
+	if (ret != 0) {
+		printf("%s: chip mac init failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	ret = urtwx_phy_init_runtime(sc);
+	if (ret != 0) {
+		printf("%s: phy init runtime failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	ret = urtwx_rx_set_dma(sc);
+	if (ret != 0) {
+		printf("%s: rx dma setup failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	ret = urtwx_usb_interface_cfg(sc);
+	if (ret != 0) {
+		printf("%s: usb interface cfg failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+	if (sc->sc_chip == &urtwx_chip_8822c) {
+		ret = urtwx_fw_send_general_info(sc);
+		if (ret != 0) {
+			printf("%s: general info h2c failed %d\n", DEVNAME(sc),
+			    ret);
+			return (ret);
+		}
+		ret = urtwx_fw_send_phydm_info(sc);
+		if (ret != 0) {
+			printf("%s: phydm info h2c failed %d\n", DEVNAME(sc),
+			    ret);
+			return (ret);
+		}
+	}
+	ret = urtwx_sec_enable(sc);
+	if (ret != 0) {
+		printf("%s: sec enable failed %d\n", DEVNAME(sc), ret);
+		return (ret);
+	}
+
+	ret = urtwx_usb_rx_agg_cfg(sc);
+	if (ret != 0)
+		printf("%s: usb rx agg cfg failed %d\n", DEVNAME(sc), ret);
+	return (ret);
 }
 
 int
@@ -5590,7 +10624,11 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 
 		if (UE_GET_DIR(ed->bEndpointAddress) == UE_DIR_IN &&
 		    UE_GET_XFERTYPE(ed->bmAttributes) == UE_BULK) {
-			sc->sc_ed[URTWX_ENDPT_RX] = ed->bEndpointAddress;
+			if (sc->sc_ed[URTWX_ENDPT_RX] == 0)
+				sc->sc_ed[URTWX_ENDPT_RX] = ed->bEndpointAddress;
+			else
+				printf("%s: ignoring extra bulk-in endpoint %#x\n",
+				    DEVNAME(sc), ed->bEndpointAddress);
 		} else if (UE_GET_DIR(ed->bEndpointAddress) == UE_DIR_OUT &&
 		    UE_GET_XFERTYPE(ed->bmAttributes) == UE_BULK) {
 			if (sc->sc_nbulkout >= URTWX_MAX_OUT_PIPES) {
@@ -5614,6 +10652,12 @@ urtwx_attach(struct device *parent, struct device *self, void *aux)
 		    sc->sc_nbulkout, sc->sc_ed[URTWX_ENDPT_INTR]);
 		return;
 	}
+	printf("%s: endpoints rx=%#x intr=%#x out=%d", DEVNAME(sc),
+	    sc->sc_ed[URTWX_ENDPT_RX], sc->sc_ed[URTWX_ENDPT_INTR],
+	    sc->sc_nbulkout);
+	for (i = 0; i < sc->sc_nbulkout; i++)
+		printf(" out%d=%#x", i, sc->sc_out_ed[i]);
+	printf("\n");
 
 	err = usbd_open_pipe(sc->sc_iface, sc->sc_ed[URTWX_ENDPT_RX],
 	    USBD_EXCLUSIVE_USE, &sc->sc_ep[URTWX_ENDPT_RX]);

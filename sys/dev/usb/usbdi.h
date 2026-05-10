@@ -165,6 +165,16 @@ void usbd_ref_incr(struct usbd_device *);
 void usbd_ref_decr(struct usbd_device *);
 void usbd_ref_wait(struct usbd_device *);
 
+void usbd_8822c_usbtrace_reset(void);
+void usbd_8822c_usbtrace_start(void);
+void usbd_8822c_usbtrace_stop(void);
+void usbd_8822c_usbtrace_dump(void);
+void usbd_8822c_usbtrace_log(const char *, struct usbd_device *,
+    const usb_device_request_t *, const void *, u_int32_t);
+void usbd_8822c_usbtrace_log_xhci(struct usbd_device *,
+    const usb_device_request_t *, const void *, const void *, u_int32_t,
+    uint64_t, uint32_t, uint32_t);
+
 /* An iterator for descriptors. */
 struct usbd_desc_iter {
 	const uByte *cur;
