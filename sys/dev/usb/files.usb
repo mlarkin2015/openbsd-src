@@ -451,6 +451,11 @@ device	urtwx: ether, ifnet, ifmedia, wlan, firmload
 attach	urtwx at uhub
 file	dev/usb/if_urtwx.c		urtwx
 
+# Realtek RTL8821AU/RTL8811AU
+device	urtwa: ether, ifnet, ifmedia, wlan, firmload
+attach	urtwa at uhub
+file	dev/usb/if_urtwa.c		urtwa
+
 # Realtek RTL8188SU/RTL8191SU/RTL8192SU
 device	rsu: ether, ifnet, ifmedia, wlan, firmload
 attach	rsu at uhub
