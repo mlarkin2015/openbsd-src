@@ -240,6 +240,8 @@ struct urtwa_softc {
 	int			 sc_tx_mgmt_log;
 	int			 sc_powered;
 	int			 sc_fw_running;
+	int			 sc_fw_deferred;
+	int			 sc_efuse_valid;
 	int			 sc_running;
 	uint8_t			 sc_h2c_box;
 	int			 sc_scan_pending;
@@ -487,6 +489,7 @@ static int			 urtwa_write_firmware_page(struct urtwa_softc *,
 static int			 urtwa_fw_download_legacy(struct urtwa_softc *);
 static void			 urtwa_efuse_grant(struct urtwa_softc *, int);
 static int			 urtwa_read_efuse(struct urtwa_softc *);
+static int			 urtwa_ensure_fw(struct urtwa_softc *);
 static int			 urtwa_attach_ifnet(struct urtwa_softc *);
 static int			 urtwa_runtime_init(struct urtwa_softc *);
 static int			 urtwa_h2c_send_register(struct urtwa_softc *,
@@ -1109,7 +1112,8 @@ urtwa_fw_download_legacy(struct urtwa_softc *sc)
 	if (error != 0) {
 		printf("%s: could not read firmware %s (error %d)\n",
 		    sc->sc_dev.dv_xname, URTWA_FW_NAME, error);
-		return (error);
+		urtwa_power_off(sc);
+		return (EAGAIN);
 	}
 	if (fwlen < sizeof(*hdr)) {
 		printf("%s: short firmware image\n", sc->sc_dev.dv_xname);
@@ -1352,6 +1356,35 @@ out:
 	if (log_map != NULL)
 		free(log_map, M_DEVBUF, URTWA_EFUSE_LOG_SIZE);
 	return (error);
+}
+
+static int
+urtwa_ensure_fw(struct urtwa_softc *sc)
+{
+	int error;
+
+	if (!sc->sc_powered) {
+		error = urtwa_power_on(sc);
+		if (error != 0)
+			return (error);
+	}
+	if (!sc->sc_efuse_valid) {
+		error = urtwa_read_efuse(sc);
+		if (error != 0) {
+			urtwa_power_off(sc);
+			return (error);
+		}
+		sc->sc_efuse_valid = 1;
+	}
+	if (sc->sc_fw_running) {
+		sc->sc_fw_deferred = 0;
+		return (0);
+	}
+	error = urtwa_fw_download_legacy(sc);
+	if (error != 0)
+		return (error);
+	sc->sc_fw_deferred = 0;
+	return (0);
 }
 
 static uint32_t
@@ -2218,7 +2251,7 @@ urtwa_get_rx_rssi(struct urtwa_softc *sc, uint8_t *phy_status,
 {
 	uint32_t w0, w1;
 	uint8_t gain, lna_idx, vga_idx;
-	int8_t rx_power;
+	int8_t rx_power, rx_power_gain;
 
 	/*
 	 * On 8821AU we are seeing valid-looking 32-byte Jaguar PHY blocks on
@@ -2231,14 +2264,27 @@ urtwa_get_rx_rssi(struct urtwa_softc *sc, uint8_t *phy_status,
 
 	w0 = letoh32(((struct urtwa_rx_desc *)phy_status)->w0);
 	w1 = letoh32(((struct urtwa_rx_desc *)phy_status)->w1);
+	gain = w0 & 0x7f;
+	rx_power_gain = gain - 110;
 
 	if (stat->rate <= 3) {
 		lna_idx = (w1 >> 13) & 0x7;
 		vga_idx = (w1 >> 8) & 0x1f;
 		rx_power = urtwa_cck_rx_pwr(lna_idx, vga_idx);
+
+		/*
+		 * With PHYST clear, some 8821AU CCK drvinfo blocks still carry
+		 * plausible AGC state but occasionally decode to unrealistically
+		 * strong values. Prefer the weaker estimate when both the CCK
+		 * AGC path and the OFDM-style gain path look sane.
+		 */
+		if (rx_power > 0 || rx_power <= -100)
+			rx_power = rx_power_gain;
+		else if (rx_power_gain < 0 && rx_power_gain > -100 &&
+		    rx_power_gain < rx_power)
+			rx_power = rx_power_gain;
 	} else {
-		gain = w0 & 0x7f;
-		rx_power = gain - 110;
+		rx_power = rx_power_gain;
 	}
 
 	stat->rx_power = rx_power;
@@ -2686,8 +2732,10 @@ urtwa_init(struct ifnet *ifp)
 		urtwa_kick_state(sc);
 		return (0);
 	}
-	if (!sc->sc_fw_running)
-		return (EIO);
+	if (!sc->sc_fw_running) {
+		if (urtwa_ensure_fw(sc) != 0)
+			return (EIO);
+	}
 
 	if (urtwa_load_table(sc, &urtwa_mac_tbl) != 0)
 		return (EIO);
@@ -3075,6 +3123,7 @@ urtwa_attach(struct device *parent, struct device *self, void *aux)
 {
 	struct urtwa_softc *sc = (struct urtwa_softc *)self;
 	struct usb_attach_arg *uaa = aux;
+	int error;
 
 	sc->sc_udev = uaa->device;
 	sc->sc_iface = uaa->iface;
@@ -3108,22 +3157,16 @@ urtwa_attach(struct device *parent, struct device *self, void *aux)
 		printf("%s0x%02x", i == 0 ? "" : " ", sc->sc_tx_no[i]);
 	printf("]\n");
 
-	if (urtwa_power_on(sc) != 0) {
+	error = urtwa_power_on(sc);
+	if (error != 0) {
 		printf("%s: phase2 power-on failed\n", sc->sc_dev.dv_xname);
 		urtwa_free_rx_list(sc);
 		urtwa_free_tx_resources(sc);
 		urtwa_close_pipes(sc);
 		return;
 	}
-	if (urtwa_fw_download_legacy(sc) != 0) {
-		printf("%s: phase2 firmware download failed\n",
-		    sc->sc_dev.dv_xname);
-		urtwa_free_rx_list(sc);
-		urtwa_free_tx_resources(sc);
-		urtwa_close_pipes(sc);
-		return;
-	}
-	if (urtwa_read_efuse(sc) != 0) {
+	error = urtwa_read_efuse(sc);
+	if (error != 0) {
 		printf("%s: efuse read failed\n", sc->sc_dev.dv_xname);
 		urtwa_power_off(sc);
 		urtwa_free_rx_list(sc);
@@ -3131,9 +3174,24 @@ urtwa_attach(struct device *parent, struct device *self, void *aux)
 		urtwa_close_pipes(sc);
 		return;
 	}
+	sc->sc_efuse_valid = 1;
+	error = urtwa_fw_download_legacy(sc);
+	if (error == EAGAIN) {
+		sc->sc_fw_deferred = 1;
+		printf("%s: firmware load deferred until interface bring-up\n",
+		    sc->sc_dev.dv_xname);
+	} else if (error != 0) {
+		printf("%s: phase2 firmware download failed\n",
+		    sc->sc_dev.dv_xname);
+		urtwa_free_rx_list(sc);
+		urtwa_free_tx_resources(sc);
+		urtwa_close_pipes(sc);
+		return;
+	}
 	if (urtwa_attach_ifnet(sc) != 0) {
 		printf("%s: ifnet attach failed\n", sc->sc_dev.dv_xname);
-		urtwa_power_off(sc);
+		if (sc->sc_powered)
+			urtwa_power_off(sc);
 		urtwa_free_rx_list(sc);
 		urtwa_free_tx_resources(sc);
 		urtwa_close_pipes(sc);

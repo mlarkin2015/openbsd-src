@@ -132,10 +132,13 @@ Status:
 - first-pass management-frame logging is now wired in
 - real RX completions and nonstop beacon reception are now confirmed
 - passive RX works well enough to move on to management TX / active scan
-- RSSI/PHY-status decode is still placeholder quality and currently reports
-  `0%` for everything
-- fixed-channel fidelity is not fully proven yet; recent logs on `chan 1`
-  still showed some beacons whose DS parameter IE reported other channels
+- passive background channel rotation is now working; `ifconfig urtwa0 up`
+  followed by `ifconfig urtwa0 scan` can populate results from multiple
+  channels without an explicit join target
+- RSSI/PHY-status decode is no longer stuck at `0%`, but it still runs hot on
+  some distant APs and needs later tuning
+- fixed-channel tuning is now good enough that `chan 6` / `chan 11` runs are
+  dominated by beacons from the selected channel
 - next step is the first management-TX path for active scan / probe requests
 
 ### 4. Active scan / TX
@@ -220,20 +223,11 @@ Immediate implementation target:
 Status:
 
 - normal `if_snd` TX is now wired in
-- DHCP DISCOVER is proven on-air from `b0:19:21:53:e3:0a`
-- no DHCPOFFER has been seen on-air yet
-- Linux-shaped hardware sequencing is now enabled and should be kept
-- an experimental post-association port/runtime parity batch was tried:
-  - direct port register writes
-  - firmware default-port / media-status notification
-- that batch regressed the data path and introduced USB-control write failures
-  on the 8821AU USB path
-- those invasive post-association writes are now being backed back out so
-  testing returns to the last known-good baseline:
-  - association works
-  - DHCP DISCOVER is on-air
-  - the remaining blocker is inbound data/DHCPOFFER rather than management
-    state or scan
+- outbound data TX is proven on-air
+- inbound unicast RX is proven
+- open-network DHCP now works end-to-end
+- real IP traffic is confirmed, including ping and later unicast traffic
+- the current remaining work is polish, not basic data-path bring-up
 
 ## Non-goals for the first pass
 
@@ -243,12 +237,14 @@ Status:
 
 ## Immediate next step
 
-Return to the last known-good post-association baseline and revalidate:
+Polish the now-working driver rather than changing major lifecycle pieces:
 
-- association still reaches `RUN`/`active`
-- DHCP DISCOVER returns on-air with sane sequence numbers
-- then focus on inbound data RX / DHCPOFFER handling before revisiting any
-  more invasive post-association runtime programming
+- finish RSSI tuning so distant APs do not pin at `100%`
+- add real active multi-channel probe scanning rather than passive-only cache
+  population
+- improve STA data-path polish (QoS/WME transmit shape, sequence/queue
+  behavior, broader AP interoperability)
+- then move to WPA support
 
 ## Deferred Issues
 
@@ -256,23 +252,23 @@ These are known and intentionally deferred so they do not distract from the
 RX/TX bring-up path:
 
 - RSSI is not computed correctly yet.
-  - Current first-pass PHY-status decode is still rough.
-  - Early runs left reported RSSI at `0%`; the `8821A` CCK fallback path now
-    matches Linux more closely, but the values still need validation against
-    real AP distance and Linux reference runs.
+  - Early runs left reported RSSI at `0%`; that part is fixed.
+  - The current `8821A` CCK fallback path is good enough to expose useful
+    percentages, but some distant APs still pin at `100%`.
+  - This likely needs more tuning of the CCK/Jaguar PHY-status heuristic
+    rather than a larger lifecycle change.
   - This is no longer a functional blocker, but it should be cleaned up before
     the driver is considered polished.
 
 - Firmware load during early autoconf is not robust.
-  - If the device is present at boot, `/etc/firmware` is not yet available and
-    the attach-time firmware load fails.
-  - We solved this in earlier drivers by deferring firmware load until a later
-    stage such as interface bring-up.
+  - Resolved for the current bring-up path.
+  - `urtwa` now keeps power-on/efuse attach working even if
+    `/etc/firmware` is not yet available, defers firmware download until the
+    first interface bring-up, and has now passed a real boot-time validation
+    run.
 
-- Unplug/detach still has RX xfer teardown bugs.
-  - Recent unplug tests showed `usbd_free_xfer: xfer ... not free`.
-  - The detach path now aborts active pipes and waits for outstanding USB
-    references before freeing RX/TX xfers, matching the stable ordering used
-    in the older USB WLAN drivers.
-  - This needs one real unplug/replug validation run, but the likely root
-    cause has now been addressed.
+- Unplug/detach teardown regression appears resolved.
+  - Recent unplug/replug validation no longer shows the old
+    `usbd_free_xfer: xfer ... not free` failure.
+  - Keep an eye on detach ordering as the driver grows, but this is no longer
+    an active blocker.
