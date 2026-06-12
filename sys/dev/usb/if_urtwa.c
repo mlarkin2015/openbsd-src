@@ -1858,6 +1858,22 @@ urtwa_desired_channel(struct urtwa_softc *sc)
 }
 
 static void
+urtwa_scan_set_channel(struct urtwa_softc *sc)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_channel *chan;
+	uint8_t ieee;
+
+	chan = ic->ic_bss->ni_chan;
+	if (chan == IEEE80211_CHAN_ANYC || chan == NULL)
+		return;
+	ieee = ieee80211_chan2ieee(ic, chan);
+	if (ieee == 0 || ieee == sc->sc_curchan)
+		return;
+	(void)urtwa_set_channel(sc, ieee);
+}
+
+static void
 urtwa_task(void *arg)
 {
 	struct urtwa_softc *sc = arg;
@@ -1882,6 +1898,8 @@ urtwa_task(void *arg)
 				ieee80211_next_scan(ifp);
 		}
 		splx(s);
+		if (sc->sc_running && ic->ic_state == IEEE80211_S_SCAN)
+			urtwa_scan_set_channel(sc);
 	}
 
 	if (sc->sc_link_pending && sc->sc_fw_running) {
@@ -1899,6 +1917,7 @@ static void
 urtwa_kick_state(struct urtwa_softc *sc)
 {
 	struct ieee80211com *ic = &sc->sc_ic;
+	struct ifnet *ifp = &ic->ic_if;
 	struct ieee80211_channel *chan;
 
 	if (ic->ic_opmode == IEEE80211_M_MONITOR) {
@@ -1916,6 +1935,11 @@ urtwa_kick_state(struct urtwa_softc *sc)
 	    (ic->ic_flags & IEEE80211_F_DESBSSID) != 0 ||
 	    (ic->ic_flags & IEEE80211_F_AUTO_JOIN) != 0) {
 		ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+	} else if (ic->ic_state == IEEE80211_S_INIT &&
+	    ic->ic_des_chan == IEEE80211_CHAN_ANYC) {
+		ieee80211_begin_scan(ifp);
+		if (sc->sc_running && ic->ic_state == IEEE80211_S_SCAN)
+			urtwa_scan_set_channel(sc);
 	}
 }
 
@@ -2196,7 +2220,13 @@ urtwa_get_rx_rssi(struct urtwa_softc *sc, uint8_t *phy_status,
 	uint8_t gain, lna_idx, vga_idx;
 	int8_t rx_power;
 
-	if (!stat->phy_status || stat->is_c2h)
+	/*
+	 * On 8821AU we are seeing valid-looking 32-byte Jaguar PHY blocks on
+	 * beacon/probe frames even when the RX descriptor PHYST bit is clear.
+	 * Use the drvinfo payload whenever it is present, and reserve the
+	 * PHYST bit only as a hint for debugging.
+	 */
+	if (stat->is_c2h || stat->drvinfosz < 8)
 		return;
 
 	w0 = letoh32(((struct urtwa_rx_desc *)phy_status)->w0);
@@ -2396,12 +2426,29 @@ urtwa_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		if (stat.pktlen == 0)
 			break;
 
+		urtwa_get_rx_rssi(sc, buf + URTWA_RX_DESC_SIZE + stat.shift,
+		    &stat);
+
 		if (sc->sc_rx_desc_log < URTWA_RX_TRACE_LOG_MAX) {
-			printf("%s: RX desc pktlen %u info %u shift %u c2h %u "
-			    "crc %u icv %u rate %u\n", sc->sc_dev.dv_xname,
+			uint32_t phy_w0 = 0, phy_w1 = 0;
+			uint8_t gain = 0, lna_idx = 0, vga_idx = 0;
+
+			if (stat.drvinfosz >= 8) {
+				phy_w0 = letoh32(*(uint32_t *)(buf +
+				    URTWA_RX_DESC_SIZE + stat.shift));
+				phy_w1 = letoh32(*(uint32_t *)(buf +
+				    URTWA_RX_DESC_SIZE + stat.shift + 4));
+				gain = phy_w0 & 0x7f;
+				lna_idx = (phy_w1 >> 13) & 0x7;
+				vga_idx = (phy_w1 >> 8) & 0x1f;
+			}
+			printf("%s: RX desc pktlen %u info %u shift %u physt %u "
+			    "c2h %u crc %u icv %u rate %u pwr %d rssi %u "
+			    "gain %u lna %u vga %u\n", sc->sc_dev.dv_xname,
 			    stat.pktlen, stat.drvinfosz, stat.shift,
-			    stat.is_c2h, stat.crc_err, stat.icv_err,
-			    stat.rate);
+			    stat.phy_status, stat.is_c2h, stat.crc_err,
+			    stat.icv_err, stat.rate, stat.rx_power,
+			    stat.rssi, gain, lna_idx, vga_idx);
 			sc->sc_rx_desc_log++;
 		}
 
@@ -2413,8 +2460,6 @@ urtwa_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		if (pkttot > len)
 			pkttot = len;
 
-		urtwa_get_rx_rssi(sc, buf + URTWA_RX_DESC_SIZE + stat.shift,
-		    &stat);
 		if (stat.is_c2h) {
 			if (sc->sc_rx_done <= 8)
 				printf("%s: RX C2H len %u\n",
