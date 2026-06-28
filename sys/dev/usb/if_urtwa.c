@@ -543,6 +543,7 @@ static int			 urtwa_init(struct ifnet *);
 static void			 urtwa_stop(struct ifnet *, int);
 static int			 urtwa_ioctl(struct ifnet *, u_long, caddr_t);
 static void			 urtwa_start(struct ifnet *);
+static void			 urtwa_scan_set_channel(struct urtwa_softc *);
 int				 urtwa_match(struct device *, void *, void *);
 void				 urtwa_attach(struct device *, struct device *,
 				     void *);
@@ -1801,6 +1802,8 @@ urtwa_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 	int error;
 
 	ostate = ic->ic_state;
+	if (sc->sc_running && nstate == IEEE80211_S_SCAN)
+		urtwa_scan_set_channel(sc);
 	if (sc->sc_tx_mgmt_log < URTWA_TX_TRACE_LOG_MAX) {
 		printf("%s: newstate %d->%d ascan=%d arg=%d\n",
 		    sc->sc_dev.dv_xname, ic->ic_state, nstate,
@@ -1950,7 +1953,6 @@ static void
 urtwa_kick_state(struct urtwa_softc *sc)
 {
 	struct ieee80211com *ic = &sc->sc_ic;
-	struct ifnet *ifp = &ic->ic_if;
 	struct ieee80211_channel *chan;
 
 	if (ic->ic_opmode == IEEE80211_M_MONITOR) {
@@ -1970,9 +1972,7 @@ urtwa_kick_state(struct urtwa_softc *sc)
 		ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
 	} else if (ic->ic_state == IEEE80211_S_INIT &&
 	    ic->ic_des_chan == IEEE80211_CHAN_ANYC) {
-		ieee80211_begin_scan(ifp);
-		if (sc->sc_running && ic->ic_state == IEEE80211_S_SCAN)
-			urtwa_scan_set_channel(sc);
+		ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
 	}
 }
 
