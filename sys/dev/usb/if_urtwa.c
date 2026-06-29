@@ -514,6 +514,7 @@ static int			 urtwa_sta_link_prep(struct urtwa_softc *,
 				     const uint8_t *);
 static void			 urtwa_sta_link_drop(struct urtwa_softc *);
 static uint8_t			 urtwa_desired_channel(struct urtwa_softc *);
+static int			 urtwa_have_des_candidate(struct urtwa_softc *);
 static void			 urtwa_task(void *);
 static void			 urtwa_kick_state(struct urtwa_softc *);
 static void			 urtwa_scan_to(void *);
@@ -562,6 +563,7 @@ static void			 urtwa_stop(struct ifnet *, int);
 static int			 urtwa_ioctl(struct ifnet *, u_long, caddr_t);
 static void			 urtwa_start(struct ifnet *);
 static void			 urtwa_scan_set_channel(struct urtwa_softc *);
+static void			 urtwa_bss_set_channel(struct urtwa_softc *);
 int				 urtwa_match(struct device *, void *, void *);
 void				 urtwa_attach(struct device *, struct device *,
 				     void *);
@@ -1827,6 +1829,15 @@ urtwa_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 	ostate = ic->ic_state;
 	if (sc->sc_running && nstate == IEEE80211_S_SCAN)
 		urtwa_scan_set_channel(sc);
+	if (sc->sc_running &&
+	    (nstate == IEEE80211_S_AUTH || nstate == IEEE80211_S_ASSOC) &&
+	    ic->ic_bss != NULL) {
+		urtwa_bss_set_channel(sc);
+		if (nstate == IEEE80211_S_AUTH &&
+		    !IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid,
+		    etherbroadcastaddr))
+			(void)urtwa_sta_link_prep(sc, ic->ic_bss->ni_bssid);
+	}
 	if (sc->sc_tx_mgmt_log < URTWA_TX_TRACE_LOG_MAX) {
 		printf("%s: newstate %d->%d ascan=%d arg=%d\n",
 		    sc->sc_dev.dv_xname, ic->ic_state, nstate,
@@ -1891,9 +1902,6 @@ urtwa_send_mgmt(struct ieee80211com *ic, struct ieee80211_node *ni, int type,
 		    sc->sc_dev.dv_xname, name, ic->ic_state,
 		    (ic->ic_flags & IEEE80211_F_ASCAN) != 0, mq_len(&ic->ic_mgtq));
 		sc->sc_tx_mgmt_log++;
-	}
-	if (ni != NULL && subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
-		(void)urtwa_sta_link_prep(sc, ni->ni_bssid);
 	}
 	return ((*sc->sc_send_mgmt)(ic, ni, type, arg1, arg2));
 }
@@ -1986,6 +1994,52 @@ urtwa_scan_set_channel(struct urtwa_softc *sc)
 }
 
 static void
+urtwa_bss_set_channel(struct urtwa_softc *sc)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_channel *chan;
+	uint8_t ieee;
+
+	if (ic->ic_bss == NULL)
+		return;
+	chan = ic->ic_bss->ni_chan;
+	if (chan == IEEE80211_CHAN_ANYC || chan == NULL)
+		return;
+	ieee = ieee80211_chan2ieee(ic, chan);
+	if (ieee == 0 || ieee == sc->sc_curchan)
+		return;
+	(void)urtwa_set_channel(sc, ieee);
+}
+
+static int
+urtwa_have_des_candidate(struct urtwa_softc *sc)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ieee80211_node *ni;
+
+	if (ic->ic_des_esslen == 0 &&
+	    (ic->ic_flags & IEEE80211_F_DESBSSID) == 0 &&
+	    (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0)
+		return (0);
+
+	RBT_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
+		if (ni == ic->ic_bss)
+			continue;
+		if ((ic->ic_flags & IEEE80211_F_DESBSSID) != 0 &&
+		    !IEEE80211_ADDR_EQ(ic->ic_des_bssid, ni->ni_bssid))
+			continue;
+		if (ic->ic_des_esslen != 0 &&
+		    (ni->ni_esslen != ic->ic_des_esslen ||
+		    memcmp(ni->ni_essid, ic->ic_des_essid,
+		    ic->ic_des_esslen) != 0))
+			continue;
+		return (1);
+	}
+
+	return (0);
+}
+
+static void
 urtwa_task(void *arg)
 {
 	struct urtwa_softc *sc = arg;
@@ -2004,9 +2058,28 @@ urtwa_task(void *arg)
 
 		s = splnet();
 		if (ic->ic_state == IEEE80211_S_SCAN) {
-			if (ic->ic_des_chan != IEEE80211_CHAN_ANYC)
-				ieee80211_end_scan(ifp);
-			else
+			/*
+			 * Only short-circuit scan when the user pinned a
+			 * specific BSSID, or when the user pinned a specific
+			 * channel and we have already found a matching ESS on
+			 * that channel. For ESS-only auto-join, let net80211
+			 * walk the full channel set so it can rank multiple
+			 * same-SSID candidates instead of stopping on the
+			 * first acceptable mesh BSSID.
+			 */
+			if ((ic->ic_flags & IEEE80211_F_DESBSSID) != 0) {
+				if (urtwa_have_des_candidate(sc))
+					ieee80211_end_scan(ifp);
+				else if (ic->ic_des_chan != IEEE80211_CHAN_ANYC)
+					ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+				else
+					ieee80211_next_scan(ifp);
+			} else if (ic->ic_des_chan != IEEE80211_CHAN_ANYC) {
+				if (urtwa_have_des_candidate(sc))
+					ieee80211_end_scan(ifp);
+				else
+					ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+			} else
 				ieee80211_next_scan(ifp);
 		}
 		splx(s);
@@ -3061,6 +3134,21 @@ urtwa_start(struct ifnet *ifp)
 			continue;
 		}
 		wh = mtod(m, struct ieee80211_frame *);
+		if (ic->ic_opmode == IEEE80211_M_STA &&
+		    ic->ic_state == IEEE80211_S_RUN &&
+		    ic->ic_bss != NULL) {
+			if (ni != ic->ic_bss) {
+				ieee80211_release_node(ic, ni);
+				ni = ieee80211_ref_node(ic->ic_bss);
+			}
+			if ((wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) ==
+			    IEEE80211_FC1_DIR_TODS) {
+				IEEE80211_ADDR_COPY(wh->i_addr1,
+				    ic->ic_bss->ni_bssid);
+				IEEE80211_ADDR_COPY(wh->i_addr2,
+				    ic->ic_myaddr);
+			}
+		}
 		qsel = urtwa_tx_data_qsel(wh);
 		if (urtwa_tx(sc, m, ni, qsel, 0) != 0) {
 			ieee80211_release_node(ic, ni);

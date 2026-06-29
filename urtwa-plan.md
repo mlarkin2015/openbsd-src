@@ -223,6 +223,24 @@ Status:
 - real IP traffic is confirmed, including ping and later unicast traffic
 - the current remaining work is polish, not basic data-path bring-up
 
+### 7. WPA2-PSK / RSN
+
+Goal:
+
+- complete the 4-way handshake
+- install CCMP keys through net80211
+- carry encrypted DHCP and normal IP traffic
+
+Status:
+
+- WPA2-PSK now works on 2.4 GHz against `liberator`
+- the full 4-way handshake is proven on-air
+- `set_key cipher=ccmp` succeeds for pairwise and group keys
+- post-handshake frames are now actually protected on-air
+- DHCP over WPA now succeeds
+- real encrypted IP traffic is confirmed
+- the remaining WPA work is cleanup/polish, not first-pass functionality
+
 ## Non-goals for the first pass
 
 - WPA before open association works
@@ -231,13 +249,13 @@ Status:
 
 ## Immediate next step
 
-Move from open STA to WPA2-PSK:
+Clean up and broaden the now-working STA path:
 
-- advertise RSN/WEP capability to net80211
-- keep the first WPA pass software-crypto based
-- log EAPOL TX/RX and key install/delete activity
-- only add hardware CAM/key programming if the first 4-way handshake proves it
-  is actually required
+- remove the remaining auth-time register-write path that can still trigger
+  `not in process context` warnings
+- broaden WPA/Open validation across more APs and bands
+- decide whether QoS/WME TX shape or hardware CAM programming needs more work
+  for interoperability, not first bring-up
 
 ## Deferred Issues
 
@@ -254,9 +272,19 @@ RX/TX bring-up path:
     final upstream-quality submission.
 - QoS/WME transmit shape is not yet fully Linux-like.
   - Open association, DHCP, and real IP traffic already work.
-  - The driver still needs broader WPA/interoperability validation before
-    deciding whether QoS data or hardware key/CAM programming needs more work.
-    the driver is considered polished.
+  - WPA2-PSK also works, but the driver still needs broader
+    interoperability validation before deciding whether QoS data or hardware
+    key/CAM programming needs more work before the driver is considered
+    polished.
+
+- The auth-time pre-link register-write experiment is not needed for the
+  working WPA/open path.
+  - Earlier versions used it to try to prime MAC/BSSID/net-type state before
+    auth.
+  - In practice it only introduced `usbd_do_request: not in process context`
+    and `ctl reg 0x0610 failed: INVAL` warnings.
+  - The working path now relies on the later link-state task/H2C handling
+    instead.
 
 - Firmware load during early autoconf is not robust.
   - Resolved for the current bring-up path.
