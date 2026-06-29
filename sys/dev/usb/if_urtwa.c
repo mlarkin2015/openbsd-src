@@ -39,11 +39,15 @@
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/if_media.h>
+#include <net/if_llc.h>
 #include <net/route.h>
 #include <netinet/in.h>
 #include <netinet/if_ether.h>
 
+#include <net80211/ieee80211.h>
+#include <net80211/ieee80211_crypto.h>
 #include <net80211/ieee80211_var.h>
+#include <net80211/ieee80211_proto.h>
 
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
@@ -230,6 +234,12 @@ struct urtwa_softc {
 				    enum ieee80211_state, int);
 	int			(*sc_send_mgmt)(struct ieee80211com *,
 				    struct ieee80211_node *, int, int, int);
+	int			(*sc_set_key)(struct ieee80211com *,
+				    struct ieee80211_node *,
+				    struct ieee80211_key *);
+	void			(*sc_delete_key)(struct ieee80211com *,
+				    struct ieee80211_node *,
+				    struct ieee80211_key *);
 	int			 sc_rx_done;
 	int			 sc_rx_desc_log;
 	int			 sc_rx_mgmt_log;
@@ -238,6 +248,8 @@ struct urtwa_softc {
 	int			 sc_tx_log;
 	int			 sc_tx_start_log;
 	int			 sc_tx_mgmt_log;
+	int			 sc_key_log;
+	int			 sc_eapol_log;
 	int			 sc_powered;
 	int			 sc_fw_running;
 	int			 sc_fw_deferred;
@@ -539,6 +551,12 @@ static int			 urtwa_newstate(struct ieee80211com *,
 				     enum ieee80211_state, int);
 static int			 urtwa_send_mgmt(struct ieee80211com *,
 				     struct ieee80211_node *, int, int, int);
+static int			 urtwa_set_key(struct ieee80211com *,
+				     struct ieee80211_node *,
+				     struct ieee80211_key *);
+static void			 urtwa_delete_key(struct ieee80211com *,
+				     struct ieee80211_node *,
+				     struct ieee80211_key *);
 static int			 urtwa_init(struct ifnet *);
 static void			 urtwa_stop(struct ifnet *, int);
 static int			 urtwa_ioctl(struct ifnet *, u_long, caddr_t);
@@ -1724,6 +1742,7 @@ urtwa_attach_ifnet(struct urtwa_softc *sc)
 	ic->ic_state = IEEE80211_S_INIT;
 	ic->ic_caps = IEEE80211_C_SCANALL | IEEE80211_C_MONITOR |
 	    IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
+	    IEEE80211_C_WEP | IEEE80211_C_RSN |
 	    IEEE80211_C_SHSLOT | IEEE80211_C_SHPREAMBLE;
 	ic->ic_max_rssi = 100;
 	ic->ic_lintval = 5;
@@ -1786,6 +1805,10 @@ urtwa_attach_ifnet(struct urtwa_softc *sc)
 	ic->ic_newstate = urtwa_newstate;
 	sc->sc_send_mgmt = ic->ic_send_mgmt;
 	ic->ic_send_mgmt = urtwa_send_mgmt;
+	sc->sc_set_key = ic->ic_set_key;
+	ic->ic_set_key = urtwa_set_key;
+	sc->sc_delete_key = ic->ic_delete_key;
+	ic->ic_delete_key = urtwa_delete_key;
 	ieee80211_media_init(ifp, ieee80211_media_change,
 	    ieee80211_media_status);
 
@@ -1873,6 +1896,59 @@ urtwa_send_mgmt(struct ieee80211com *ic, struct ieee80211_node *ni, int type,
 		(void)urtwa_sta_link_prep(sc, ni->ni_bssid);
 	}
 	return ((*sc->sc_send_mgmt)(ic, ni, type, arg1, arg2));
+}
+
+static const char *
+urtwa_cipher_name(const struct ieee80211_key *k)
+{
+	switch (k->k_cipher) {
+	case IEEE80211_CIPHER_USEGROUP:
+		return ("usegroup");
+	case IEEE80211_CIPHER_WEP40:
+		return ("wep40");
+	case IEEE80211_CIPHER_TKIP:
+		return ("tkip");
+	case IEEE80211_CIPHER_CCMP:
+		return ("ccmp");
+	case IEEE80211_CIPHER_WEP104:
+		return ("wep104");
+	case IEEE80211_CIPHER_BIP:
+		return ("bip");
+	default:
+		return ("unknown");
+	}
+}
+
+static int
+urtwa_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
+    struct ieee80211_key *k)
+{
+	struct urtwa_softc *sc = ic->ic_if.if_softc;
+	int error;
+
+	error = (*sc->sc_set_key)(ic, ni, k);
+	if (sc->sc_key_log < URTWA_TX_TRACE_LOG_MAX) {
+		printf("%s: set_key cipher=%s id=%u flags=%#x len=%u ni=%p error=%d\n",
+		    sc->sc_dev.dv_xname, urtwa_cipher_name(k), k->k_id,
+		    k->k_flags, k->k_len, ni, error);
+		sc->sc_key_log++;
+	}
+	return (error);
+}
+
+static void
+urtwa_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
+    struct ieee80211_key *k)
+{
+	struct urtwa_softc *sc = ic->ic_if.if_softc;
+
+	if (sc->sc_key_log < URTWA_TX_TRACE_LOG_MAX) {
+		printf("%s: delete_key cipher=%s id=%u flags=%#x ni=%p\n",
+		    sc->sc_dev.dv_xname, urtwa_cipher_name(k), k->k_id,
+		    k->k_flags, ni);
+		sc->sc_key_log++;
+	}
+	(*sc->sc_delete_key)(ic, ni, k);
 }
 
 static uint8_t
@@ -2330,10 +2406,13 @@ urtwa_rx_frame(struct urtwa_softc *sc, uint8_t *buf, int len,
 	struct ieee80211_node *ni;
 	struct ieee80211_rxinfo rxi;
 	struct mbuf *m;
+	struct llc *llc;
 	const char *name;
 	uint8_t *frm, *efrm;
 	char ssid[IEEE80211_NWID_LEN + 1];
 	uint8_t chan;
+	uint16_t etype;
+	u_int hdrlen;
 	int i, ssidlen, s;
 
 	if (len < sizeof(*wh) || len > MCLBYTES) {
@@ -2429,10 +2508,37 @@ urtwa_rx_frame(struct urtwa_softc *sc, uint8_t *buf, int len,
 
 	s = splnet();
 	ni = ieee80211_find_rxnode(ic, wh);
+	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_DATA &&
+	    sc->sc_eapol_log < URTWA_TX_TRACE_LOG_MAX) {
+		hdrlen = ieee80211_get_hdrlen(wh);
+		if (len >= hdrlen + LLC_SNAPFRAMELEN) {
+			llc = (struct llc *)(buf + hdrlen);
+			if (llc->llc_dsap == LLC_SNAP_LSAP &&
+			    llc->llc_ssap == LLC_SNAP_LSAP &&
+			    llc->llc_control == LLC_UI &&
+			    llc->llc_snap.org_code[0] == 0 &&
+			    llc->llc_snap.org_code[1] == 0 &&
+			    llc->llc_snap.org_code[2] == 0) {
+				etype = ntohs(llc->llc_snap.ether_type);
+				if (etype == ETHERTYPE_EAPOL) {
+					printf("%s: RX EAPOL port_valid=%d protected=%d sa %02x:%02x:%02x:%02x:%02x:%02x da %02x:%02x:%02x:%02x:%02x:%02x\n",
+					    sc->sc_dev.dv_xname,
+					    ni != NULL ? ni->ni_port_valid : -1,
+					    (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0,
+					    wh->i_addr2[0], wh->i_addr2[1], wh->i_addr2[2],
+					    wh->i_addr2[3], wh->i_addr2[4], wh->i_addr2[5],
+					    wh->i_addr1[0], wh->i_addr1[1], wh->i_addr1[2],
+					    wh->i_addr1[3], wh->i_addr1[4], wh->i_addr1[5]);
+					sc->sc_eapol_log++;
+				}
+			}
+		}
+	}
 	memset(&rxi, 0, sizeof(rxi));
 	rxi.rxi_rssi = stat->rssi;
 	rxi.rxi_chan = sc->sc_curchan;
-	if (stat->decrypted)
+	if (stat->decrypted &&
+	    (ic->ic_flags & (IEEE80211_F_RSNON | IEEE80211_F_WEPON)) == 0)
 		rxi.rxi_flags |= IEEE80211_RXI_HWDEC;
 	ieee80211_inputm(ifp, m, ni, &rxi, ml);
 	ieee80211_release_node(ic, ni);
@@ -2586,15 +2692,49 @@ urtwa_tx(struct urtwa_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 {
 	struct ieee80211com *ic = &sc->sc_ic;
 	struct ifnet *ifp = &ic->ic_if;
+	struct ieee80211_key *k;
+	struct llc *llc;
 	struct ieee80211_frame whbuf;
 	struct ieee80211_frame *wh;
 	struct urtwa_tx_desc *txd;
 	uint16_t len;
+	uint16_t etype;
+	u_int hdrlen;
+	uint32_t txpktlen;
+	uint8_t sec_type;
+	int use_hwseq;
 	uint8_t rateid, rate;
 	int ep, error;
 
 	if (m == NULL)
 		return (EINVAL);
+	if (sc->sc_tx_active)
+		return (EBUSY);
+
+	wh = mtod(m, struct ieee80211_frame *);
+	k = NULL;
+	sec_type = 0;
+	use_hwseq = 1;
+	txpktlen = m->m_pkthdr.len;
+
+	if ((wh->i_fc[1] & IEEE80211_FC1_PROTECTED) && ni != NULL) {
+		k = ieee80211_get_txkey(ic, wh, ni);
+		if (k == NULL) {
+			m_freem(m);
+			ieee80211_release_node(ic, ni);
+			return (EINVAL);
+		}
+		if (k->k_flags & IEEE80211_KEY_SWCRYPTO) {
+			if ((m = ieee80211_encrypt(ic, m, k)) == NULL) {
+				ieee80211_release_node(ic, ni);
+				return (ENOBUFS);
+			}
+			wh = mtod(m, struct ieee80211_frame *);
+			txpktlen = m->m_pkthdr.len;
+			use_hwseq = 0;
+		}
+	}
+
 	len = m->m_pkthdr.len;
 	if (len < sizeof(whbuf) || len + URTWA_TX_DESC_SIZE > URTWA_TXBUFSZ) {
 		m_freem(m);
@@ -2602,8 +2742,6 @@ urtwa_tx(struct urtwa_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 			ieee80211_release_node(ic, ni);
 		return (EMSGSIZE);
 	}
-	if (sc->sc_tx_active)
-		return (EBUSY);
 
 	m_copydata(m, 0, sizeof(whbuf), (caddr_t)&whbuf);
 	wh = &whbuf;
@@ -2619,16 +2757,16 @@ urtwa_tx(struct urtwa_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	txd = (struct urtwa_tx_desc *)sc->sc_tx_buf;
 	memset(txd, 0, URTWA_TX_DESC_SIZE);
 	txd->w0 = htole32(
-	    urtwa_encode_bits(len, URTWA_TX_DESC_W0_TXPKTSIZE) |
+	    urtwa_encode_bits(txpktlen, URTWA_TX_DESC_W0_TXPKTSIZE) |
 	    urtwa_encode_bits(URTWA_TX_DESC_SIZE, URTWA_TX_DESC_W0_OFFSET) |
 	    (IEEE80211_IS_MULTICAST(wh->i_addr1) ? URTWA_TX_DESC_W0_BMC : 0) |
 	    URTWA_TX_DESC_W0_LS |
-	    URTWA_TX_DESC_W0_DISQSELSEQ);
+	    (use_hwseq ? URTWA_TX_DESC_W0_DISQSELSEQ : 0));
 	txd->w1 = htole32(
 	    urtwa_encode_bits(0, URTWA_TX_DESC_W1_MACID) |
 	    urtwa_encode_bits(qsel, URTWA_TX_DESC_W1_QSEL) |
 	    urtwa_encode_bits(rateid, URTWA_TX_DESC_W1_RATE_ID) |
-	    urtwa_encode_bits(0, URTWA_TX_DESC_W1_SEC_TYPE) |
+	    urtwa_encode_bits(sec_type, URTWA_TX_DESC_W1_SEC_TYPE) |
 	    urtwa_encode_bits(0, URTWA_TX_DESC_W1_PKT_OFFSET));
 	txd->w2 = htole32(is_mgmt ? URTWA_TX_DESC_W2_SPE_RPT : 0);
 	txd->w3 = htole32(
@@ -2638,7 +2776,7 @@ urtwa_tx(struct urtwa_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 	txd->w4 = htole32(
 	    urtwa_encode_bits(rate, URTWA_TX_DESC_W4_DATARATE) |
 	    urtwa_encode_bits(0x1f, URTWA_TX_DESC_W4_DATARATE_FB_LIMIT));
-	txd->w8 = htole32(URTWA_TX_DESC_W8_EN_HWSEQ);
+	txd->w8 = htole32(use_hwseq ? URTWA_TX_DESC_W8_EN_HWSEQ : 0);
 
 	m_copydata(m, 0, len, sc->sc_tx_buf + URTWA_TX_DESC_SIZE);
 	urtwa_txdesc_checksum(txd);
@@ -2678,6 +2816,31 @@ urtwa_tx(struct urtwa_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 			    wh->i_addr2[0], wh->i_addr2[1], wh->i_addr2[2],
 			    wh->i_addr2[3], wh->i_addr2[4], wh->i_addr2[5]);
 			sc->sc_tx_log++;
+		}
+	}
+	if (!is_mgmt && sc->sc_eapol_log < URTWA_TX_TRACE_LOG_MAX) {
+		hdrlen = ieee80211_get_hdrlen(wh);
+		if (len >= hdrlen + LLC_SNAPFRAMELEN) {
+			llc = (struct llc *)((uint8_t *)wh + hdrlen);
+			if (llc->llc_dsap == LLC_SNAP_LSAP &&
+			    llc->llc_ssap == LLC_SNAP_LSAP &&
+			    llc->llc_control == LLC_UI &&
+			    llc->llc_snap.org_code[0] == 0 &&
+			    llc->llc_snap.org_code[1] == 0 &&
+			    llc->llc_snap.org_code[2] == 0) {
+				etype = ntohs(llc->llc_snap.ether_type);
+				if (etype == ETHERTYPE_EAPOL) {
+					printf("%s: TX EAPOL ep %d qsel %u port_valid=%d protected=%d da %02x:%02x:%02x:%02x:%02x:%02x sa %02x:%02x:%02x:%02x:%02x:%02x\n",
+					    sc->sc_dev.dv_xname, ep, qsel,
+					    ni != NULL ? ni->ni_port_valid : -1,
+					    (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0,
+					    wh->i_addr1[0], wh->i_addr1[1], wh->i_addr1[2],
+					    wh->i_addr1[3], wh->i_addr1[4], wh->i_addr1[5],
+					    wh->i_addr2[0], wh->i_addr2[1], wh->i_addr2[2],
+					    wh->i_addr2[3], wh->i_addr2[4], wh->i_addr2[5]);
+					sc->sc_eapol_log++;
+				}
+			}
 		}
 	}
 
@@ -2729,6 +2892,8 @@ urtwa_init(struct ifnet *ifp)
 		sc->sc_tx_log = 0;
 		sc->sc_tx_start_log = 0;
 		sc->sc_tx_mgmt_log = 0;
+		sc->sc_key_log = 0;
+		sc->sc_eapol_log = 0;
 		urtwa_kick_state(sc);
 		return (0);
 	}
@@ -2768,6 +2933,8 @@ urtwa_init(struct ifnet *ifp)
 	sc->sc_tx_log = 0;
 	sc->sc_tx_start_log = 0;
 	sc->sc_tx_mgmt_log = 0;
+	sc->sc_key_log = 0;
+	sc->sc_eapol_log = 0;
 	ifp->if_flags |= IFF_RUNNING;
 	ifq_clr_oactive(&ifp->if_snd);
 	urtwa_kick_state(sc);

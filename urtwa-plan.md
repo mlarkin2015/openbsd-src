@@ -165,23 +165,17 @@ Immediate implementation target:
 
 Status:
 
-- in progress
-- first management-only USB TX path is now the active work area
-- TX scope is intentionally narrow for the first pass:
-  - management frames from `ic_mgtq` only
-  - Linux-shaped `8821A` txdesc with legacy checksum
-  - no data-path support yet
-  - no assumption reuse from `urtwx` beyond basic OpenBSD queue draining
-- important OpenBSD net80211 note:
-  - `SIOCS80211SCAN` is disabled in this tree, so `ifconfig urtwa0 scan`
-    does not initiate an active scan; it only dumps the current node cache
-  - first management TX therefore needs to be validated through a directed
-    join/auth/assoc attempt rather than expecting probe requests from
-    `ifconfig ... scan`
-- management TX is now proven on-air through directed join:
+- done
+- management TX is proven on-air through directed join:
   - probe requests are transmitted from `b0:19:21:53:e3:0a`
   - probe responses are received back from the AP
-  - the management-only TX/RX path is good enough to proceed
+- active rotating probe scan is now working:
+  - hardware retunes before per-channel probe emission
+  - `send_mgmt probe request` / `TX probe request` are visible in `dmesg`
+  - on-air captures show probe requests on the tuned channel and probe
+    responses back from nearby APs
+- `ifconfig urtwa0 scan` still dumps the node cache, but after `ifconfig up`
+  the background net80211 scan now populates results from multiple channels
 
 ### 5. Association
 
@@ -237,14 +231,13 @@ Status:
 
 ## Immediate next step
 
-Polish the now-working driver rather than changing major lifecycle pieces:
+Move from open STA to WPA2-PSK:
 
-- finish RSSI tuning so distant APs do not pin at `100%`
-- add real active multi-channel probe scanning rather than passive-only cache
-  population
-- improve STA data-path polish (QoS/WME transmit shape, sequence/queue
-  behavior, broader AP interoperability)
-- then move to WPA support
+- advertise RSN/WEP capability to net80211
+- keep the first WPA pass software-crypto based
+- log EAPOL TX/RX and key install/delete activity
+- only add hardware CAM/key programming if the first 4-way handshake proves it
+  is actually required
 
 ## Deferred Issues
 
@@ -258,6 +251,11 @@ RX/TX bring-up path:
   - This likely needs more tuning of the CCK/Jaguar PHY-status heuristic
     rather than a larger lifecycle change.
   - This is no longer a functional blocker, but it should be cleaned up before
+    final upstream-quality submission.
+- QoS/WME transmit shape is not yet fully Linux-like.
+  - Open association, DHCP, and real IP traffic already work.
+  - The driver still needs broader WPA/interoperability validation before
+    deciding whether QoS data or hardware key/CAM programming needs more work.
     the driver is considered polished.
 
 - Firmware load during early autoconf is not robust.
