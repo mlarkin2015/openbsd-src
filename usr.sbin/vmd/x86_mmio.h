@@ -148,7 +148,7 @@ struct x86_insn {
 };
 
 int	insn_decode(struct vm_exit *, struct x86_insn *);
-int	insn_emulate(struct vm_exit *, struct x86_insn *);
+int	insn_emulate(struct vm_exit *, struct x86_insn *, uint32_t);
 int	detect_cpu_mode(struct vcpu_reg_state *);
 
 #endif /* _MMIO_H_ */
