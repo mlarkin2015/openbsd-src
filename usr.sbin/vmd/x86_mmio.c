@@ -73,8 +73,8 @@ static enum decode_result next_value(struct x86_decode_state *, size_t,
     uint64_t *);
 static int is_valid_state(struct x86_decode_state *, const char *);
 
-static int emulate_mov(struct x86_insn *, struct vm_exit *);
-static int emulate_movzx(struct x86_insn *, struct vm_exit *);
+static int emulate_mov(struct x86_insn *, struct vm_exit *, uint32_t);
+static int emulate_movzx(struct x86_insn *, struct vm_exit *, uint32_t);
 
 /* Lookup table for 1-byte opcodes, in opcode alphabetical order. */
 const enum x86_opcode_type x86_1byte_opcode_tbl[255] = {
@@ -1099,7 +1099,7 @@ get_operand_size(struct x86_insn *insn)
 }
 
 static int
-emulate_mov(struct x86_insn *insn, struct vm_exit *exit)
+emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
 	int ret, opsz;
 	uint64_t gpa, data, mask;
@@ -1140,7 +1140,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit)
 		    "0x%llx", __func__, opsz, str_reg(insn->insn_reg),
 		    exit->vrs.vrs_gprs[insn->insn_reg]);
 
-		ret = mmio_fn(MMIO_DIR_READ, gpa, &data);
+		ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
 		if (!ret) {
 			exit->vrs.vrs_gprs[insn->insn_reg] &= mask;
 			exit->vrs.vrs_gprs[insn->insn_reg] |= data;
@@ -1171,7 +1171,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit)
 			data = exit->vrs.vrs_gprs[insn->insn_reg];
 			log_warnx("%s: write 0x%llx to mmio addr 0x%llx",
 			    __func__, data, gpa);
-			ret = mmio_fn(MMIO_DIR_WRITE, gpa, &data);
+			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
 			if (ret) {
 				log_warnx("%s: mmio function indicated failure",
 				    __func__);
@@ -1197,7 +1197,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit)
 		mmio_fn = mmio_find_dev(gpa);
 		if (mmio_fn) {
 			data = insn->insn_immediate;
-			ret = mmio_fn(MMIO_DIR_WRITE, gpa, &data);
+			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
 			if (!ret) {
 				log_warnx("%s: wrote immediate value 0x%llx to memory", __func__,
 				    data);
@@ -1219,7 +1219,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit)
 }
 
 static int
-emulate_movzx(struct x86_insn *insn, struct vm_exit *exit)
+emulate_movzx(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
 	uint8_t byte, len, src = 1, dst = 2;
 	uint64_t value = 0;
@@ -1292,17 +1292,17 @@ emulate_movzx(struct x86_insn *insn, struct vm_exit *exit)
  *  ENOTSUP: an unsupported instruction was provided
  */
 int
-insn_emulate(struct vm_exit *exit, struct x86_insn *insn)
+insn_emulate(struct vm_exit *exit, struct x86_insn *insn, uint32_t vcpu_id)
 {
 	int res;
 
 	switch (insn->insn_opcode.op_type) {
 	case OP_MOV:
-		res = emulate_mov(insn, exit);
+		res = emulate_mov(insn, exit, vcpu_id);
 		break;
 
 	case OP_MOVZX:
-		res = emulate_movzx(insn, exit);
+		res = emulate_movzx(insn, exit, vcpu_id);
 		break;
 
 	default:

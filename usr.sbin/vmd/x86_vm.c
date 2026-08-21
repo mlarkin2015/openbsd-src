@@ -24,7 +24,7 @@
 
 #include <machine/pte.h>
 #include <machine/specialreg.h>
-#include <machine/vmmvar.h>
+#include "../../sys/arch/amd64/include/vmmvar.h"
 
 #include <errno.h>
 #include <string.h>
@@ -716,7 +716,7 @@ vcpu_exit_eptviolation(struct vm_run_params *vrp)
 
 		ret = insn_decode(ve, &insn);
 		if (ret == 0)
-			ret = insn_emulate(ve, &insn);
+			ret = insn_emulate(ve, &insn, vrp->vrp_vcpu_id);
 		break;
 
 	case VEE_FAULT_PROTECT:
