@@ -203,7 +203,7 @@ i82093aa_regsel(int dir, uint64_t *data)
 }
 
 int
-i82093aa_mmio(int dir, paddr_t addr, uint64_t *data)
+i82093aa_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 {
 	log_warnx("%s: dir=%d addr=0x%lx data=0x%llx", __func__, dir, addr,
 	    *data);
