@@ -59,6 +59,7 @@ struct i82489dx {
 	uint32_t	dcr_timer;	/* divisor config */
 	struct timespec	timer_start;	/* host time at ICR write */
 	int		timer_running;
+	int		timer_periodic;
 
 	uint32_t	curvec;
 };
@@ -73,6 +74,7 @@ static int		lapic_ncpus = 0;
 
 static uint32_t	i82489dx_divisor(uint32_t);
 static uint64_t	i82489dx_timer_ccr(struct i82489dx *);
+static void	i82489dx_timer_reload(struct i82489dx *);
 
 uint32_t
 i82489dx_divisor(uint32_t dcr)
@@ -120,6 +122,13 @@ i82489dx_timer_ccr(struct i82489dx *lapic)
 	}
 
 	return (uint64_t)lapic->icr_timer - ticks;
+}
+
+static void
+i82489dx_timer_reload(struct i82489dx *lapic)
+{
+	clock_gettime(CLOCK_MONOTONIC, &lapic->timer_start);
+	lapic->timer_running = (lapic->icr_timer != 0);
 }
 
 void
@@ -262,8 +271,10 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 	case LAPIC_ICR_TIMER:
 		if (dir == MMIO_DIR_WRITE) {
 			lapic->icr_timer = (uint32_t)*data;
-			clock_gettime(CLOCK_MONOTONIC, &lapic->timer_start);
-			lapic->timer_running = (lapic->icr_timer != 0);
+			lapic->timer_periodic =
+			    (lapic->lvt[LVT_TIMER] & LAPIC_LVTT_TM) ==
+			    LAPIC_LVTT_TM_PERIODIC;
+			i82489dx_timer_reload(lapic);
 			log_debug("%s: vcpu %u lapic timer icr=%u div=%u",
 			    __func__, vcpu_id, lapic->icr_timer,
 			    i82489dx_divisor(lapic->dcr_timer));
@@ -291,6 +302,8 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 				    vcpu_id);
 			}
 			lapic->lvt[LVT_TIMER] = d;
+			lapic->timer_periodic =
+			    (d & LAPIC_LVTT_TM) == LAPIC_LVTT_TM_PERIODIC;
 		}
 		break;
 	case LAPIC_PCINT:
@@ -334,6 +347,53 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 	}
 
 	return 0;
+}
+
+/*
+ * Check the vcpu's LAPIC timer for expiry. On expiry, deliver the timer
+ * LVT vector (if unmasked) into the IRR and reload in periodic mode.
+ *
+ * Returns 1 if an interrupt became pending, 0 otherwise.
+ */
+int
+i82489dx_timer_check(uint32_t vcpu_id)
+{
+	struct i82489dx *lapic;
+	uint8_t vector;
+
+	if (vcpu_id >= LAPIC_MAX_VCPUS || vcpu_id >= (uint32_t)lapic_ncpus)
+		return 0;
+
+	lapic = &lapics[vcpu_id];
+	if (!lapic->timer_running || !i82489dx_enabled(vcpu_id))
+		return 0;
+
+	if (i82489dx_timer_ccr(lapic) != 0)
+		return 0;
+
+	/* expired */
+	vector = lapic->lvt[LVT_TIMER] & LAPIC_LVTT_VEC_MASK;
+
+	if (lapic->timer_periodic) {
+		i82489dx_timer_reload(lapic);
+	} else {
+		lapic->timer_running = 0;
+		lapic->ccr_timer = 0;
+	}
+
+	if (lapic->lvt[LVT_TIMER] & LAPIC_LVT_MASKED)
+		return 0;
+
+	if (vector < 32) {
+		log_debug("%s: vcpu %u timer vector %u too low, dropped",
+		    __func__, vcpu_id, vector);
+		return 0;
+	}
+
+	log_debug("%s: vcpu %u lapic timer expired, vector %u", __func__,
+	    vcpu_id, vector);
+	i82489dx_set_irr(vcpu_id, vector);
+	return 1;
 }
 
 void
@@ -489,6 +549,17 @@ i82489dx_ack(int vcpu_id)
 	vector = i82489dx_get_highest_irr(vcpu_id);
 	if (vector == 0xFFFF)
 		return vector;
+
+	/*
+	 * Task priority gating: vectors of equal or lower priority class
+	 * than TPR stay pending in the IRR until the guest lowers TPR.
+	 */
+	if ((vector & LAPIC_TPRI_INT_MASK) <=
+	    (lapics[vcpu_id].tpr & LAPIC_TPRI_INT_MASK)) {
+		log_debug("%s: vector %d gated by tpr 0x%x", __func__, vector,
+		    lapics[vcpu_id].tpr);
+		return 0xFFFF;
+	}
 
 	i82489dx_set_isr(vcpu_id, vector);
 	i82489dx_clear_irr(vcpu_id, vector);

@@ -35,5 +35,6 @@ void i82489dx_clear_irr(int, int);
 void i82489dx_set_irr(int, int);
 void i82489dx_set_isr(int, int);
 int i82489dx_enabled(int);
+int i82489dx_timer_check(uint32_t);
 
 #endif /* !_I82489DX_H_ */

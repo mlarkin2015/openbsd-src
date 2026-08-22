@@ -297,13 +297,12 @@ i82093aa_evaluate_pin(uint8_t pin)
 			    __func__);
 		}
 	} else {
-//		if (rising) {
-			log_warnx("%s: delivering vector %d to ioapic (edge"
-			    "  mode)", __func__, pin);
+		/* Edge mode: only deliver on a rising edge (inactive->active) */
+		if (rising) {
+			log_debug("%s: delivering vector %d to ioapic (edge "
+			    "mode, rising)", __func__, vector);
 			i82093aa_deliver(dest, delivery_mode, vector, 0);
-//		} else {
-//			log_warnx("%s: edge but not rising", __func__);
-//		}
+		}
 	}
 }
 
@@ -324,17 +323,23 @@ i82093aa_eoi(int vector)
 	uint8_t pin;
 	uint64_t ent;
 
-	log_warnx("%s: EOI for vector %d", __func__, vector);
+	log_debug("%s: EOI for vector %d", __func__, vector);
 	pthread_mutex_lock(&ioapic.mtx);
 
 	for (pin = 0; pin < I82093AA_NUM_PINS; pin++) {
-		ent = ioapic.redtbl[pin] |
-		    ((uint64_t)(ioapic.redtbl[pin + 1]) << 32);
+		ent = ioapic.redtbl[pin * 2] |
+		    ((uint64_t)(ioapic.redtbl[pin * 2 + 1]) << 32);
 		if ((ent & 0xFF) != vector)
 			continue;
 
-		if ((ent & I82093AA_REDLO_TYPE) && (ent & IOAPIC_REDLO_RIRR)) {
-			ioapic.redtbl[pin] &= ~IOAPIC_REDLO_RIRR;
+		/*
+		 * Only level-triggered entries with RIRR set participate
+		 * in EOI; clear RIRR and re-evaluate in case the line is
+		 * still asserted.
+		 */
+		if ((ent & I82093AA_REDLO_TYPE) &&
+		    (ioapic.redtbl[pin * 2] & I82093AA_REDLO_RIRR)) {
+			ioapic.redtbl[pin * 2] &= ~I82093AA_REDLO_RIRR;
 			i82093aa_evaluate_pin(pin);
 		}
 	}
