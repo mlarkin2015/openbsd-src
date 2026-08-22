@@ -41,12 +41,14 @@
 #include "pci.h"
 #include "virtio.h"
 #include "vmd.h"
+#include "i82489dx.h"
 
 #define MMIO_NOTYET 0
 
 static int run_vm(struct vmd_vm *, struct vcpu_reg_state *);
 static void vm_dispatch_vmm(int, short, void *);
 static void *event_thread(void *);
+static void *lapic_timer_thread(void *);
 static void *vcpu_run_loop(void *);
 static int vmm_create_vm(struct vmd_vm *);
 static void pause_vm(struct vmd_vm *);
@@ -70,6 +72,8 @@ pthread_mutex_t vcpu_unpause_mtx[VMM_MAX_VCPUS_PER_VM];
 pthread_mutex_t vm_mtx;
 uint8_t vcpu_hlt[VMM_MAX_VCPUS_PER_VM];
 uint8_t vcpu_done[VMM_MAX_VCPUS_PER_VM];
+
+static volatile int lapic_timer_stop = 0;
 
 /*
  * vm_main
@@ -594,7 +598,7 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	uint8_t evdone = 0;
 	size_t i;
 	int ret;
-	pthread_t *tid, evtid;
+	pthread_t *tid, evtid, laptid;
 	char tname[MAXCOMLEN + 1];
 	struct vm_run_params **vrp;
 	void *exit_status;
@@ -713,6 +717,22 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	}
 
 	log_debug("%s: waiting on events for VM %s", __func__, vmc->vmc_name);
+
+	/*
+	 * Start the LAPIC timer thread. It polls each vcpu's emulated LAPIC
+	 * timer for expiry and wakes the vcpu thread so pending interrupts
+	 * get injected even while the guest is halted.
+	 */
+	lapic_timer_stop = 0;
+	ret = pthread_create(&laptid, NULL, lapic_timer_thread,
+	    (void *)(intptr_t)vmc->vmc_ncpus);
+	if (ret) {
+		errno = ret;
+		log_warn("%s: could not create lapic timer thread", __func__);
+		return (ret);
+	}
+	pthread_set_name_np(laptid, "lapictmr");
+
 	ret = pthread_create(&evtid, NULL, event_thread, &evdone);
 	if (ret) {
 		errno = ret;
@@ -771,10 +791,49 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 		/* Some more threads to wait for, start over */
 	}
 
+	lapic_timer_stop = 1;
+	pthread_join(laptid, &exit_status);
+
 	if (pthread_barrier_destroy(&vm_pause_barrier))
 		log_warnx("could not destroy pause barrier");
 
 	return (ret);
+}
+
+/*
+ * lapic_timer_thread
+ *
+ * Polls the emulated LAPIC timers of all vcpus. On expiry the LAPIC's IRR
+ * is set; waking the vcpu thread here ensures a halted guest still sees
+ * the timer interrupt (the run loop only injects while executing).
+ *
+ * Parameters:
+ *  arg: number of vcpus, cast to intptr_t
+ *
+ * Return values:
+ *  NULL: always
+ */
+static void *
+lapic_timer_thread(void *arg)
+{
+	size_t ncpus = (size_t)(intptr_t)arg;
+	size_t i;
+
+	while (!lapic_timer_stop) {
+		usleep(200);
+
+		for (i = 0; i < ncpus; i++) {
+			if (!vcpu_hlt[i] || vcpu_done[i])
+				continue;
+
+			if (i82489dx_timer_check(i)) {
+				vcpu_unhalt(i);
+				vcpu_signal_run(i);
+			}
+		}
+	}
+
+	return (NULL);
 }
 
 static void *
