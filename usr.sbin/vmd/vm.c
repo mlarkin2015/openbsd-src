@@ -804,8 +804,8 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
  * lapic_timer_thread
  *
  * Polls the emulated LAPIC timers of all vcpus. On expiry the LAPIC's IRR
- * is set; waking the vcpu thread here ensures a halted guest still sees
- * the timer interrupt (the run loop only injects while executing).
+ * is set and VMM_IOC_INTR kicks a running vcpu out of the kernel. Waking
+ * the vcpu condition variable handles the halted case.
  *
  * Parameters:
  *  arg: number of vcpus, cast to intptr_t
@@ -818,15 +818,22 @@ lapic_timer_thread(void *arg)
 {
 	size_t ncpus = (size_t)(intptr_t)arg;
 	size_t i;
+	int error;
 
 	while (!lapic_timer_stop) {
 		usleep(200);
 
 		for (i = 0; i < ncpus; i++) {
-			if (!vcpu_hlt[i] || vcpu_done[i])
+			if (vcpu_done[i])
 				continue;
-
 			if (i82489dx_timer_check(i)) {
+				/* Kick a running VCPU out of VMM_IOC_RUN too. */
+				error = vcpu_intr(current_vm->vm_vmmid, i, 1);
+				if (error != 0) {
+					log_debug("%s: could not interrupt vcpu %zu: %s",
+					    __func__, i, strerror(error));
+					continue;
+				}
 				vcpu_unhalt(i);
 				vcpu_signal_run(i);
 			}
