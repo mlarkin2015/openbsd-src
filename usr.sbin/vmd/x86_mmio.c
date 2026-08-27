@@ -658,6 +658,28 @@ decode_disp(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 		return (DECODE_ERROR);
 	}
 
+	/*
+	 * In 32- and 64-bit addressing, mod=00 with a SIB base of 101
+	 * denotes a base-less disp32 address.  This is the encoding used by
+	 * amd64 for writes to the fixed LAPIC mapping (for example,
+	 * `movl $0, local_apic+LAPIC_EOI').
+	 */
+	if (insn->insn_sib_valid && MODRM_MOD(insn->insn_modrm) == 0 &&
+	    SIB_BASE(insn->insn_sib) == 5) {
+		insn->insn_disp_type = DISP_4;
+		res = next_value(state, 4, &disp);
+		if (res == DECODE_ERROR) {
+			log_warnx("%s: decode error in SIB disp32 processing",
+			    __func__);
+			return (res);
+		}
+		insn->insn_disp = disp;
+		if (insn->insn_cpu_mode == VMM_CPU_MODE_LONG)
+			insn->insn_disp = (int64_t)(int32_t)insn->insn_disp;
+		insn->insn_gva += insn->insn_disp;
+		return (res);
+	}
+
 	/* Disp8 / Disp32 / %rip + Disp32 displacement */
 	if (MODRM_RM(insn->insn_modrm) == 0x5) {
 		if (MODRM_MOD(insn->insn_modrm) == 1) {
@@ -1056,7 +1078,6 @@ done:
 
 	if (insn->insn_needs_rip_fixup) {
 		insn->insn_gva += insn->insn_bytes_len;
-		insn->insn_disp += insn->insn_disp;
 	}
 
 #ifdef MMIO_DEBUG
@@ -1102,7 +1123,7 @@ static int
 emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
 	int ret, opsz;
-	uint64_t gpa, data, mask;
+	uint64_t gpa, data, mask, value_mask;
 	mmio_dev_fn_t mmio_fn;
 
 	log_warnx("%s: entered", __func__);
@@ -1131,9 +1152,21 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		data = 0;
 		opsz = get_operand_size(insn);
 		switch (opsz) {
-		case 2: mask = 0xFFFFFFFFFFFF0000; break;
-		case 4: mask = 0xFFFFFFFF00000000; break;
-		case 8: mask = 0; break;
+		case 2:
+			mask = 0xFFFFFFFFFFFF0000;
+			value_mask = 0xFFFF;
+			break;
+		case 4:
+			/* Writes to a 32-bit register zero its upper half. */
+			mask = 0;
+			value_mask = 0xFFFFFFFF;
+			break;
+		case 8:
+			mask = 0;
+			value_mask = 0xFFFFFFFFFFFFFFFF;
+			break;
+		default:
+			fatalx("invalid MOV operand size %d", opsz);
 		}
 
 		log_warnx("%s: reading %d bytes to %s, prior value "
@@ -1143,7 +1176,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
 		if (!ret) {
 			exit->vrs.vrs_gprs[insn->insn_reg] &= mask;
-			exit->vrs.vrs_gprs[insn->insn_reg] |= data;
+			exit->vrs.vrs_gprs[insn->insn_reg] |= data & value_mask;
 			log_warnx("%s: set %s=0x%llx", __func__,
 			    str_reg(insn->insn_reg),
 			    exit->vrs.vrs_gprs[insn->insn_reg]);
