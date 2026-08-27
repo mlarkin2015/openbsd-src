@@ -27,8 +27,6 @@
 #include "x86_mmio.h"
 #include "x86_vm.h"
 
-#define MMIO_DEBUG 1
-
 extern char* __progname;
 
 struct x86_decode_state {
@@ -281,7 +279,7 @@ dump_insn(struct x86_insn *insn)
 }
 #endif /* MMIO_DEBUG */
 
-static const char *
+__unused static const char *
 str_cpu_mode(int mode)
 {
 	switch (mode) {
@@ -335,7 +333,7 @@ str_operand_enc(struct x86_opcode *opcode)
 	}
 }
 
-static const char *
+__unused static const char *
 str_reg(int reg) {
 	switch (reg) {
 	case VCPU_REGS_RAX: return "RAX";
@@ -360,7 +358,7 @@ str_reg(int reg) {
 	}
 }
 
-static const char *
+__unused static const char *
 str_sreg(int sreg) {
 	switch (sreg) {
 	case VCPU_REGS_CS: return "CS";
@@ -607,7 +605,7 @@ get_modrm_addr(struct x86_insn *insn, struct vcpu_reg_state *vrs)
 			break;
 		}
 
-		log_warnx("%s: computed register-based addr=0x%lx", __func__,
+		DPRINTF("%s: computed register-based addr=0x%lx", __func__,
 		    addr);
 		insn->insn_gva = addr;
 	}
@@ -723,13 +721,13 @@ decode_disp(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 		return (res);
 	}
 
-	log_warnx("%s: mod = %d\n", __func__, MODRM_MOD(insn->insn_modrm));
+	DPRINTF("%s: mod = %d", __func__, MODRM_MOD(insn->insn_modrm));
 
 	switch (MODRM_MOD(insn->insn_modrm)) {
 	case 0x00:
 		insn->insn_disp_type = DISP_0;
 		res = DECODE_MORE;
-		log_warnx("%s: returning DECODE_MORE", __func__);
+		DPRINTF("%s: returning DECODE_MORE", __func__);
 		break;
 	case 0x01:
 		insn->insn_disp_type = DISP_1;
@@ -768,7 +766,7 @@ decode_disp(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 
 	insn->insn_gva += insn->insn_disp;
 
-	log_warnx("%s: returning calculated displacement of 0x%llx", __func__,
+	DPRINTF("%s: returning calculated displacement of 0x%llx", __func__,
 	    insn->insn_disp);
 
 	return (res);
@@ -883,7 +881,7 @@ decode_sib(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 
 			insn->insn_gva = addr;
 
-			log_warnx("%s: SIB calc: scale=%llu, index=%s, base=%s, "
+			DPRINTF("%s: SIB calc: scale=%llu, index=%s, base=%s, "
 			    "addr=0x%lx", __func__, scale_val,
 			    index == 0b100 ? "none" : str_reg(sib_reg_map[index]),
 			    base == 0b101 && mod == 0b00 ? "none" :
@@ -1126,12 +1124,12 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 	uint64_t gpa, data, mask, value_mask;
 	mmio_dev_fn_t mmio_fn;
 
-	log_warnx("%s: entered", __func__);
+	DPRINTF("%s: entered", __func__);
 
 	switch (insn->insn_opcode.op_encoding) {
 	case OP_ENC_FD:		/* Read: From displacement */
 	case OP_ENC_RM:		/* Read: mem->reg */
-		log_warnx("%s: read from gva 0x%lx to %s", __func__,
+		DPRINTF("%s: read from gva 0x%lx to %s", __func__,
 		    insn->insn_gva, str_reg(insn->insn_reg));
 		ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_READ);
 		if (ret) {
@@ -1141,7 +1139,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		if (!mmio_valid_addr(gpa))
 			fatalx("invalid mmio gpa 0x%llx", gpa);
 
-		log_warnx("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
+		DPRINTF("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
 		    insn->insn_gva, gpa);
 		mmio_fn = mmio_find_dev(gpa);
 		if (!mmio_fn) {
@@ -1169,7 +1167,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 			fatalx("invalid MOV operand size %d", opsz);
 		}
 
-		log_warnx("%s: reading %d bytes to %s, prior value "
+		DPRINTF("%s: reading %d bytes to %s, prior value "
 		    "0x%llx", __func__, opsz, str_reg(insn->insn_reg),
 		    exit->vrs.vrs_gprs[insn->insn_reg]);
 
@@ -1177,7 +1175,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		if (!ret) {
 			exit->vrs.vrs_gprs[insn->insn_reg] &= mask;
 			exit->vrs.vrs_gprs[insn->insn_reg] |= data & value_mask;
-			log_warnx("%s: set %s=0x%llx", __func__,
+			DPRINTF("%s: set %s=0x%llx", __func__,
 			    str_reg(insn->insn_reg),
 			    exit->vrs.vrs_gprs[insn->insn_reg]);
 		} else {
@@ -1187,7 +1185,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		return (0);
 	case OP_ENC_TD:		/* Write: To displacement */
 	case OP_ENC_MR:		/* Write: reg->mem */
-		log_warnx("%s: write to gva 0x%lx to %s", __func__,
+		DPRINTF("%s: write to gva 0x%lx to %s", __func__,
 		    insn->insn_gva, str_reg(insn->insn_reg));
 		ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_WRITE);
 		if (ret) {
@@ -1197,12 +1195,12 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		if (!mmio_valid_addr(gpa))
 			fatalx("invalid mmio gpa 0x%llx", gpa);
 
-		log_warnx("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
+		DPRINTF("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
 		    insn->insn_gva, gpa);
 		mmio_fn = mmio_find_dev(gpa);
 		if (mmio_fn) {
 			data = exit->vrs.vrs_gprs[insn->insn_reg];
-			log_warnx("%s: write 0x%llx to mmio addr 0x%llx",
+			DPRINTF("%s: write 0x%llx to mmio addr 0x%llx",
 			    __func__, data, gpa);
 			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
 			if (ret) {
@@ -1215,7 +1213,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		}
 		return (0);
 	case OP_ENC_MI:		/* Write: immediate to mem */
-		log_warnx("%s: write immediate 0x%llx to gva 0x%lx", __func__,
+		DPRINTF("%s: write immediate 0x%llx to gva 0x%lx", __func__,
 		    insn->insn_immediate, insn->insn_gva);
 		ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_WRITE);
 		if (ret) {
@@ -1225,15 +1223,15 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		if (!mmio_valid_addr(gpa))
 			fatalx("invalid mmio gpa 0x%llx", gpa);
 
-		log_warnx("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
+		DPRINTF("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
 		    insn->insn_gva, gpa);
 		mmio_fn = mmio_find_dev(gpa);
 		if (mmio_fn) {
 			data = insn->insn_immediate;
 			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
 			if (!ret) {
-				log_warnx("%s: wrote immediate value 0x%llx to memory", __func__,
-				    data);
+				DPRINTF("%s: wrote immediate value 0x%llx to "
+				    "memory", __func__, data);
 			} else {
 				log_warnx("%s: mmio function indicated failure",
 				    __func__);
