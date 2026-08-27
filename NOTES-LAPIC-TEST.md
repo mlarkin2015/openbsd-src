@@ -44,7 +44,9 @@ overlay in `usr.sbin/vmd/seabios/` therefore makes two firmware changes:
 The overlay builds through `/usr/ports/sysutils/firmware/vmm`; see its README.
 The tested image was 266240 bytes with SHA256
 `eccfc43801fef232ccd9c96ee25a8c8fe5f854f51a5840b29ad2baed80ecaefe`.
-The packaged `/etc/firmware/vmm-bios` was not replaced.
+After both guest tests passed, the packaged image was preserved as
+`/etc/firmware/vmm-bios.stock-1.16.3p1` and the tested image was installed as
+`/etc/firmware/vmm-bios`.
 
 A direct-kernel boot (`vmctl start -b /tmp/vmm-ng4-bsd -c
 openbsd-amd64-test`) exercises the BDA RSDP path and now reports:
@@ -76,8 +78,9 @@ test are:
 
 The firmware-path test with the custom SeaBIOS image now produces the same
 APIC lines, enumerates the virtio devices as `apic 2 int 3/5/6/7`, completes
-rc, and reaches the login prompt.  This proves the fw_cfg RSDP handoff rather
-than relying on the direct-kernel BDA path.
+rc, and reaches the login prompt.  A final ordinary `vmctl start -c` with no
+`-b` override passed after installation as the default firmware.  This proves
+the fw_cfg RSDP handoff rather than relying on the direct-kernel BDA path.
 
 ## Linux firmware-boot validation (Alpine 3.23)
 
