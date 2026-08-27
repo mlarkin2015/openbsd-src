@@ -586,6 +586,7 @@ vcpu_exit_com(struct vm_run_params *vrp)
 {
 	uint8_t intr = 0xFF;
 	struct vm_exit *vei = vrp->vrp_exit;
+	int deassert = 0;
 
 	mutex_lock(&com1_dev.mutex);
 
@@ -598,6 +599,9 @@ vcpu_exit_com(struct vm_run_params *vrp)
 		break;
 	case COM1_IIR:
 		vcpu_process_com_iir(vei);
+		if (vei->vei.vei_dir == VEI_DIR_IN &&
+		    (com1_dev.regs.iir & IIR_NOPEND))
+			deassert = 1;
 		break;
 	case COM1_MCR:
 		vcpu_process_com_mcr(vei);
@@ -614,10 +618,16 @@ vcpu_exit_com(struct vm_run_params *vrp)
 	case COM1_DATA:
 		intr = vcpu_process_com_data(vei, vrp->vrp_vm_id,
 		    vrp->vrp_vcpu_id);
+		if (vei->vei.vei_dir == VEI_DIR_IN &&
+		    (com1_dev.regs.iir & IIR_NOPEND))
+			deassert = 1;
 		break;
 	}
 
 	mutex_unlock(&com1_dev.mutex);
+	if (deassert)
+		vcpu_deassert_irq(vrp->vrp_vm_id, vrp->vrp_vcpu_id,
+		    com1_dev.irq);
 
 	return (intr);
 }
