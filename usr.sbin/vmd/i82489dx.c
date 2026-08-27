@@ -29,6 +29,10 @@
 #include "mmio.h"
 #include "vmd.h"
 
+#ifndef LAPIC_DLMODE_EXTINT
+#define LAPIC_DLMODE_EXTINT	0x00000700
+#endif
+
 #define LAPIC_MAX_VCPUS		VMM_MAX_VCPUS_PER_VM
 
 /* LVT entry indices */
@@ -191,6 +195,27 @@ i82489dx_enabled(int vcpu_id)
 	pthread_mutex_lock(&lapics[vcpu_id].mtx);
 	enabled = (lapics[vcpu_id].svr & LAPIC_SVR_ENABLE) != 0;
 	pthread_mutex_unlock(&lapics[vcpu_id].mtx);
+
+	return enabled;
+}
+
+int
+i82489dx_extint_enabled(int vcpu_id)
+{
+	struct i82489dx *lapic;
+	uint32_t lint0;
+	int enabled;
+
+	if (vcpu_id < 0 || vcpu_id >= lapic_ncpus)
+		return 0;
+
+	lapic = &lapics[vcpu_id];
+	pthread_mutex_lock(&lapic->mtx);
+	lint0 = lapic->lvt[LVT_LINT0];
+	enabled = (lapic->svr & LAPIC_SVR_ENABLE) != 0 &&
+	    (lint0 & LAPIC_LVT_MASKED) == 0 &&
+	    (lint0 & LAPIC_DLMODE_MASK) == LAPIC_DLMODE_EXTINT;
+	pthread_mutex_unlock(&lapic->mtx);
 
 	return enabled;
 }

@@ -370,8 +370,8 @@ i8253_fire(int fd, short type, void *arg)
 	struct timeval tv;
 	struct i8253_channel *ctr = (struct i8253_channel *)arg;
 
-	if (ctr == &i8253_channel[0])
-		vcpu_assert_irq(ctr->vm_id, 0, 0);
+	vcpu_assert_irq(ctr->vm_id, 0, 0);
+	vcpu_deassert_irq(ctr->vm_id, 0, 0);
 
 	if (ctr->mode != TIMER_INTTC) {
 		timerclear(&tv);
