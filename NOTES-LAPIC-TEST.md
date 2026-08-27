@@ -106,6 +106,27 @@ transport's MSI-X selector fields explicitly ignore writes and return
 `vcpu_assert_irq()`.  A `pci=nomsi` comparison was therefore unnecessary and
 would not select a different interrupt path.
 
+## REP INS/OUTS audit
+
+Commit `8f6006ac` ("vmm-ng: integrate dv@'s ins/outs diff") added string-I/O
+support before the LAPIC/IOAPIC work.  Both VMX and SVM report the string and
+REP attributes, data/address sizes, port, and segment to vmd.  vmd walks guest
+memory through RSI/RDI, invokes the normal port handler once per element, and
+returns updated RCX/RSI/RDI state.  The normal amd64 `rep outsb` serial-console
+path is therefore present, and the FreeBSD test reached the kernel panic with
+serial output intact.
+
+The following correctness work is deferred until after the current ACPI/APIC
+bring-up unless a guest demonstrates that it is on the critical path:
+
+- fix VMX's 64-bit address-size decode (currently reported as 48 bits);
+- preserve RCX and honor DF for non-REP string I/O;
+- apply CX/ECX/RCX count width and SI/ESI/RSI wrapping according to the
+  instruction's address size;
+- repair protected-mode `read_vmem()` segment setup and paging semantics; and
+- add an end-to-end REP OUTS regression (the existing vmm regression only
+  checks decoding of one non-REP INS instruction).
+
 Commit `d31f7a9` added the DSDT source as `usr.sbin/vmd/vmm-dsdt.asl` and
 fixed the firmware description.  Follow-up validation added the root bridge
 resource windows and stopped advertising unimplemented PM timer/secondary PM
@@ -127,11 +148,10 @@ virtio-blk and virtio-net through legacy INTx and reaches login.  OpenBSD also
 accepts the root bridge resources, enumerates all four virtio devices as
 `apic 2 int 3/5/6/7`, completes rc, and reaches login.
 
-Linux still repeatedly reports `No irq handler for 0.52` (vector 0x34).
-Console input triggers the message once per character, tying it to legacy
-IRQ4/UART routing rather than PCI INTx.  Linux also reports that it cannot
-disable RTC fixed events because vmd advertises PM1A event/control registers
-but does not emulate them.  Both are separate follow-up items.
+The later LINT0 and PIT pulse repairs removed Linux's repeated
+`No irq handler for 0.52` (vector 0x34) report while retaining serial input.
+PM1A event/control register emulation also removed the RTC fixed-event error.
+No active PM1 event source drives SCI yet.
 
 ## Test plan: uniprocessor OpenBSD or Linux guest, SeaBIOS
 
@@ -156,23 +176,19 @@ Watch for:
 
 - ICR/IPIs (INIT-SIPI) not implemented - SMP bringup still missing.
   ICRLO writes are logged and dropped.
-- LINT0/virtual-wire routing not done: PIC and LAPIC remain parallel paths;
-  intr_ack() in x86_vm.c prefers LAPIC then falls back to PIC.
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
 - Delivery modes other than Fixed delivered as fixed.
 - PCI MSI and MSI-X are not implemented.  Virtio uses legacy INTx despite
   exposing the standard virtio common-configuration vector selector fields.
-- ACPI PM1A event/control and SCI delivery are not implemented.  The FADT
-  still advertises the PM1A blocks, which makes Linux attempt unsupported RTC
-  fixed-event operations.
+- PM1A registers are implemented, but no active PM1 event source asserts SCI.
+- REP INS/OUTS has the deferred architectural corner cases listed above.
 
 ## Next steps after testing
 
-1. Trace the Linux IRQ4/UART vector-0x34 failure, then implement LINT0
-   virtual-wire routing (PIC through LAPIC ExtINT delivery mode).
-2. Implement ACPI PM1A/SCI semantics, or provide complete hardware-reduced
-   sleep-control/status registers before setting `FADT_HW_REDUCED_ACPI`.
+1. Diagnose the FreeBSD XSDT signature/checksum failure seen after firmware
+   boot and verify the table bytes after SeaBIOS has finished POST.
+2. Add active ACPI PM1 event sources and SCI delivery as they become needed.
 3. ICR/INIT-SIPI + per-vCPU state machine (RUNNING/INIT/WAIT_SIPI/HALTED)
    for SMP guests; needs kernel-side SMP audit too (see PLAN-000-MASTER
    working notes re: kernel big lock).
