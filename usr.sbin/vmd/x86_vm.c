@@ -421,6 +421,9 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	pci_init();
 
 	mmio_init();
+	if (mmio_dev_add(PCI_MMIO_BAR_BASE, PCI_MMIO_BAR_END,
+	    pci_handle_mmio) != 0)
+		fatalx("%s: cannot register PCI MMIO window", __func__);
 
 	i82093aa_init(vmc->vmc_ncpus);
 	for (i = 0; i < vmc->vmc_ncpus; i++)
@@ -1031,6 +1034,31 @@ vcpu_deassert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 		if (vcpu_intr(vmm_id, vcpu_id, 0))
 			fatalx("%s: can't deassert INTR for vm_id %d, "
 			    "vcpu_id %d", __func__, vmm_id, vcpu_id);
+	}
+}
+
+/*
+ * Deliver an edge-triggered interrupt vector directly to a local APIC.  This
+ * is the interrupt path used by PCI MSI and MSI-X messages, which bypass the
+ * legacy PIC and I/O APIC input pins.
+ */
+void
+vcpu_assert_vector(uint32_t vmm_id, uint32_t vcpu_id, uint8_t vector)
+{
+	if (vcpu_id >= current_vm->vm_params.vmc_ncpus) {
+		log_debug("%s: invalid destination vcpu %u", __func__, vcpu_id);
+		return;
+	}
+
+	i82489dx_vector_irq(vcpu_id, 0, vector, 0);
+
+	if (intr_pending(vcpu_id)) {
+		if (vcpu_intr(vmm_id, vcpu_id, 1))
+			fatalx("%s: can't assert vector %u on vcpu %u", __func__,
+			    vector, vcpu_id);
+
+		vcpu_unhalt(vcpu_id);
+		vcpu_signal_run(vcpu_id);
 	}
 }
 

@@ -429,7 +429,9 @@ enum pipe_msg_type {
 	NS8250_RATELIMIT,
 	MC146818_RESCHEDULE_PER,
 	VIRTIO_NOTIFY,
-	VIRTIO_RAISE_IRQ,
+	VIRTIO_RAISE_IRQ_RX,
+	VIRTIO_RAISE_IRQ_TX,
+	VIRTIO_RAISE_IRQ_CONFIG,
 	VIRTIO_THREAD_START,
 	VIRTIO_THREAD_PAUSE,
 	VIRTIO_THREAD_STOP,
@@ -538,6 +540,7 @@ int	 intr_pending(int);
 void	 intr_toggle_el(struct vmd_vm *, int, int);
 void	 vcpu_assert_irq(uint32_t, uint32_t, int);
 void	 vcpu_deassert_irq(uint32_t, uint32_t, int);
+void	 vcpu_assert_vector(uint32_t, uint32_t, uint8_t);
 int	 vcpu_exit(struct vm_run_params *);
 uint8_t	 vcpu_exit_pci(struct vm_run_params *);
 

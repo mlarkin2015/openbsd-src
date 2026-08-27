@@ -544,7 +544,9 @@ handle_sync_io(int fd, short event, void *arg)
 		case VIODEV_MSG_IO_WRITE:
 			/* Write IO: no reply needed, but maybe an irq assert */
 			if (vioscsi_write(dev, &msg))
-				virtio_assert_irq(dev, 0);
+				virtio_assert_irq(dev, 0,
+				    (dev->isr & VIRTIO_CONFIG_ISR_CONFIG_CHANGE) ?
+				    VIODEV_QUEUE_CONFIG : (uint16_t)msg.data);
 			break;
 		case VIODEV_MSG_SHUTDOWN:
 			event_del(&dev->sync_iev.ev);

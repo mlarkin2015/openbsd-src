@@ -99,12 +99,10 @@ ACPI: Using IOAPIC for interrupt routing
 The guest mounted its virtio root filesystem, obtained a DHCP lease over the
 virtio network, started sshd, and reached the serial login prompt.
 
-An audit of vmd's PCI and virtio code established that guest MSI/MSI-X is not
-implemented.  vmd does not add a PCI MSI or MSI-X capability.  The virtio
-transport's MSI-X selector fields explicitly ignore writes and return
-`VIRTIO_MSI_NO_VECTOR`; device interrupts use assigned legacy INTx lines via
-`vcpu_assert_irq()`.  A `pci=nomsi` comparison was therefore unnecessary and
-would not select a different interrupt path.
+The initial audit established that vmd had no guest MSI/MSI-X implementation:
+virtio exposed selector registers but returned `VIRTIO_MSI_NO_VECTOR`, and all
+device interrupts used legacy INTx.  The implementation and validation which
+supersede that result are recorded below.
 
 ## REP INS/OUTS audit
 
@@ -132,7 +130,7 @@ fixed the firmware description.  Follow-up validation added the root bridge
 resource windows and stopped advertising unimplemented PM timer/secondary PM
 blocks.  The final tables now:
 
-- set FADT revision 6.5 and `FADT_NO_MSI`, which Linux explicitly honors;
+- set FADT revision 6.5 (the later MSI work clears `FADT_NO_MSI`);
 - clear the unused GPE0 address and length;
 - remove the duplicate `\_SI` object and the unusable LNKA-D link devices;
 - map PCI slots 1-10 INTA directly to vmd's fixed GSIs
@@ -152,6 +150,56 @@ The later LINT0 and PIT pulse repairs removed Linux's repeated
 `No irq handler for 0.52` (vector 0x34) report while retaining serial input.
 PM1A event/control register emulation also removed the RTC fixed-event error.
 No active PM1 event source drives SCI yet.
+
+FreeBSD's subsequent XSDT failure came from placing the table at 0x9e000,
+inside SeaBIOS's POST-time scratch/stack region.  Commit `e6ee385` moves the
+XSDT, MADT, FADT, and DSDT down to 0x90000-0x93000 while leaving the RSDP at
+0x9d000.  FreeBSD now accepts the XSDT and proceeds farther, but vmd later
+terminates the VM while FreeBSD is attaching its first CPU.  That failure is
+deferred until after MSI/MSI-X.
+
+## PCI MSI and MSI-X validation
+
+vmd now provides generic PCI MSI and MSI-X support and uses it for modern
+virtio RNG, network, block, and SCSI devices:
+
+- one 64-bit, single-message MSI capability per device;
+- an MSI-X capability with one configuration vector plus one vector per
+  virtqueue;
+- an MMIO MSI-X table and PBA, including per-vector and function masking,
+  pending-bit recording, and delivery when a vector is unmasked;
+- virtio configuration/queue selector storage across the device subprocess
+  boundary; and
+- MSI-X, then MSI, then legacy INTx interrupt selection.  MSI/MSI-X messages
+  bypass the PIC and IOAPIC and enter the destination LAPIC as edge-triggered
+  vectors.
+
+The FADT no longer advertises `FADT_NO_MSI`.  The message decoder currently
+implements the conventional xAPIC physical-destination format at
+0xfee00000, with fixed delivery.  This is sufficient for vmd's current
+64-vCPU maximum because its LAPIC IDs fit in the xAPIC destination field.
+x2APIC, interrupt remapping, logical destinations, and lowest-priority
+delivery remain future work rather than prerequisites for ordinary MSI.
+
+An OpenBSD firmware boot enumerated all three boot devices on MSI-X and
+reached login:
+
+```
+virtio0: msix per-VQ
+virtio1: msix per-VQ
+virtio2: msix per-VQ
+```
+
+The virtio block root filesystem and virtio network were both active.  Alpine
+Linux 3.23 (kernel 6.18.33) also advertised OS MSI support through ACPI,
+assigned the MSI-X MMIO BARs, mounted its virtio root disk, obtained DHCP over
+virtio-net, and reached login without the former `MSI disabled` report.
+
+To test the fallback independently, MSI-X capability publication was
+temporarily suppressed in an otherwise identical build.  OpenBSD reported
+`msi` for virtio RNG, network, and block, then mounted root, configured the
+network, and reached login.  The suppression was removed and the full MSI-X
+build restored afterward.
 
 ## Test plan: uniprocessor OpenBSD or Linux guest, SeaBIOS
 
@@ -179,18 +227,19 @@ Watch for:
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
 - Delivery modes other than Fixed delivered as fixed.
-- PCI MSI and MSI-X are not implemented.  Virtio uses legacy INTx despite
-  exposing the standard virtio common-configuration vector selector fields.
+- MSI supports one 64-bit message per device.  MSI-X supports at most 16
+  vectors per device.  x2APIC/remapped MSI, logical destinations, and
+  lowest-priority delivery are not implemented.
 - PM1A registers are implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
 
 ## Next steps after testing
 
-1. Diagnose the FreeBSD XSDT signature/checksum failure seen after firmware
-   boot and verify the table bytes after SeaBIOS has finished POST.
+1. Diagnose why vmd terminates the FreeBSD VM while its first CPU attaches.
 2. Add active ACPI PM1 event sources and SCI delivery as they become needed.
 3. ICR/INIT-SIPI + per-vCPU state machine (RUNNING/INIT/WAIT_SIPI/HALTED)
    for SMP guests; needs kernel-side SMP audit too (see PLAN-000-MASTER
    working notes re: kernel big lock).
 4. IOAPIC logical destination mode.
-5. Implement PCI MSI-X delivery for modern virtio guests.
+5. Extend MSI routing only when a guest needs logical/x2APIC delivery or
+   interrupt remapping.
