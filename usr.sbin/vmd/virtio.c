@@ -1871,6 +1871,7 @@ virtio_pci_io(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 	memset(&msg, 0, sizeof(msg));
 	msg.reg = reg;
 	msg.io_sz = sz;
+	msg.irq = dev->irq;
 
 	if (dir == 0) {
 		msg.type = VIODEV_MSG_IO_WRITE;
