@@ -27,22 +27,27 @@
 
 struct i82093aa {
 	uint32_t	reg;
-	uint32_t	win;
-
 	uint32_t	id;
-	uint32_t	redtbl[I82093AA_NUM_PINS * 2];
-    	int		pin_level[I82093AA_NUM_PINS];
-    	int		last_level[I82093AA_NUM_PINS];
+	uint32_t	redtbl[I82093AA_REDTBL_DWORDS];
+	int		pin_level[I82093AA_PIN_COUNT];
+	int		last_level[I82093AA_PIN_COUNT];
 	pthread_mutex_t mtx;
 };
 
-struct i82093aa		ioapic;
+static struct i82093aa ioapic = {
+	.mtx = PTHREAD_MUTEX_INITIALIZER
+};
 
-void
+static void	i82093aa_decode_redent(uint32_t);
+static void	i82093aa_evaluate_pin(uint8_t);
+static int	i82093aa_deliver(uint8_t, int, int, uint8_t, int);
+static void	i82093aa_regsel(int, uint64_t *);
+static void	i82093aa_winop(int, uint64_t *);
+
+static void
 i82093aa_decode_redent(uint32_t reg)
 {
-	uint8_t pin, destmode, masked, triggermode, rirr, polarity, delivs,
-	    delmod, vector;
+	uint8_t pin, dest, delmod, vector;
 	uint32_t lo, hi;
 
 	if (reg < I82093AA_REDTBL0_LO || reg > I82093AA_REDTBL23_HI) {
@@ -50,100 +55,48 @@ i82093aa_decode_redent(uint32_t reg)
 		return;
 	}
 
-	log_warnx("%s: decoding for reg=%d", __func__, reg);
-
 	pin = (reg - I82093AA_REDTBL0_LO) / 2;
-	lo = ioapic.redtbl[(pin * 2)];
-	hi = ioapic.redtbl[(pin * 2) + 1];
-	destmode = lo & I82093AA_REDLO_DESTMODE;
-	masked = lo & I82093AA_REDLO_MASKED;
-	triggermode = lo & I82093AA_REDLO_TYPE;
-	rirr = lo & I82093AA_REDLO_RIRR;
-	polarity = lo & I82093AA_REDLO_POLARITY;
-	delivs = lo & I82093AA_REDLO_DELIVS;
-	delmod = (lo & I82093AA_REDLO_DELMODE_MASK) >> 8;
-	vector = lo & 0xFF;
+	lo = ioapic.redtbl[pin * 2];
+	hi = ioapic.redtbl[pin * 2 + 1];
+	dest = (hi & IOAPIC_REDHI_DEST_MASK) >> IOAPIC_REDHI_DEST_SHIFT;
+	delmod = (lo & IOAPIC_REDLO_DEL_MASK) >> IOAPIC_REDLO_DEL_SHIFT;
+	vector = lo & IOAPIC_REDLO_VECTOR_MASK;
 
-	log_warnx("%s: write to redirection entry %d (%s byte). hi=0x%x "
-	    "lo=0x%x",
-	    __func__,
-	    pin,
-	    reg & 1 ? "high" : "low", hi, lo);
-	log_warnx("%s:  -> destination mode: %s",
-	    __func__,
-	    destmode ? "logical" : "physical");
-	if (destmode) {
-		log_warnx("%s:  -> destination: logical 0x%x",
-		    __func__,
-		    (hi & 0xFF) >> 24);
-	} else {
-		log_warnx("%s:  -> apic id 0x%x",
-		    __func__,
-		    (hi & 0x0F) >> 24);
-	}
-
-	log_warnx("%s:  -> masked: %s",
-	    __func__,
-	    masked ? "true" : "false");
-
-	log_warnx("%s:  -> trigger mode: %s",
-	    __func__,
-	    triggermode ? "level" : "edge");
-
-	log_warnx("%s:  -> rirr: %s",
-	    __func__,
-	    rirr ? "asserted" : "deasserted");
-
-	log_warnx("%s:  -> polarity: %s",
-	    __func__,
-	    polarity ? "low" : "high");
-
-	log_warnx("%s:  -> delivery status: %s",
-	    __func__,
-	    delivs ? "idle" : "send pending");
-
-	switch (delmod) {
-	case 0x0: log_warnx("%s:  -> delivery mode: fixed", __func__); break;
-	case 0x1: log_warnx("%s:  -> delivery mode: lo pri", __func__); break;
-	case 0x2: log_warnx("%s:  -> delivery mode: smi", __func__); break;
-	case 0x3: log_warnx("%s:  -> delivery mode: reserved", __func__); break;
-	case 0x4: log_warnx("%s:  -> delivery mode: nmi", __func__); break;
-	case 0x5: log_warnx("%s:  -> delivery mode: init", __func__); break;
-	case 0x6: log_warnx("%s:  -> delivery mode: reserved", __func__); break;
-	case 0x7: log_warnx("%s:  -> delivery mode: extint", __func__); break;
-	}
-
-	log_warnx("%s:  -> vector: 0x%x (%d)",
-	    __func__,
-	    vector, vector);
+	log_debug("%s: pin %u %s write: hi=0x%08x lo=0x%08x "
+	    "dest=%u/%s delivery=%u vector=%u %s/%s %s rirr=%u",
+	    __func__, pin, reg & 1 ? "high" : "low", hi, lo, dest,
+	    lo & IOAPIC_REDLO_DSTMOD ? "logical" : "physical", delmod,
+	    vector, lo & IOAPIC_REDLO_LEVEL ? "level" : "edge",
+	    lo & IOAPIC_REDLO_ACTLO ? "active-low" : "active-high",
+	    lo & IOAPIC_REDLO_MASK ? "masked" : "unmasked",
+	    !!(lo & IOAPIC_REDLO_RIRR));
 }
 
-void
+static void
 i82093aa_winop(int dir, uint64_t *data)
 {
-	uint32_t d;
-	uint8_t pin;
+	uint32_t d, old, writable;
+	uint8_t idx, pin;
 
 	pthread_mutex_lock(&ioapic.mtx);
 
 	if (dir == MMIO_DIR_READ) {
-		log_warnx("%s: requested read from register 0x%x", __func__,
-		    ioapic.reg);
-
 		d = 0;
 
 		switch (ioapic.reg) {
 		case IOAPIC_ID:
-			log_warnx("%s: ======= READ IOAPIC ID - returning %d",
-			    __func__, ioapic.id);
 			d = (ioapic.id << IOAPIC_ID_SHIFT);
 			break;
 		case IOAPIC_VER:
 			d = I82093AA_VERSION |
-			    (I82093AA_NUM_PINS << IOAPIC_MAX_SHIFT);
+			    (I82093AA_MAX_PIN << IOAPIC_MAX_SHIFT);
+			break;
+		case IOAPIC_ARB:
+			d = (ioapic.id << IOAPIC_ID_SHIFT);
 			break;
 		case I82093AA_REDTBL0_LO ... I82093AA_REDTBL23_HI:
-			d = ioapic.redtbl[ioapic.reg];
+			idx = ioapic.reg - I82093AA_REDTBL0_LO;
+			d = ioapic.redtbl[idx];
 			break;
 		default:
 			log_warnx("%s: unknown register id 0x%x", __func__,
@@ -153,16 +106,30 @@ i82093aa_winop(int dir, uint64_t *data)
 		*data &= 0xFFFFFFFF00000000ULL;
 		*data |= d;
 	} else if (dir == MMIO_DIR_WRITE) {
-		log_warnx("%s: requested write to register 0x%x, data=0x%x",
-		    __func__, ioapic.reg, (uint32_t)*data);
+		d = (uint32_t)*data;
 		switch (ioapic.reg) {
+		case IOAPIC_ID:
+			ioapic.id = (d & IOAPIC_ID_MASK) >> IOAPIC_ID_SHIFT;
+			break;
+		case IOAPIC_VER:
+		case IOAPIC_ARB:
+			/* Read-only. */
+			break;
 		case I82093AA_REDTBL0_LO ... I82093AA_REDTBL23_HI:
 			pin = (ioapic.reg - I82093AA_REDTBL0_LO) / 2;
-			ioapic.redtbl[ioapic.reg - I82093AA_REDTBL0_LO] =
-			    (uint32_t)*data;
-			log_warnx("%s: set REDTBL[0x%x] = 0x%x", __func__,
-			    ioapic.reg - I82093AA_REDTBL0_LO,
-			    ioapic.redtbl[ioapic.reg - I82093AA_REDTBL0_LO]);
+			idx = ioapic.reg - I82093AA_REDTBL0_LO;
+			old = ioapic.redtbl[idx];
+			if ((idx & 1) == 0) {
+				writable = IOAPIC_REDLO_MASK | IOAPIC_REDLO_LEVEL |
+				    IOAPIC_REDLO_ACTLO | IOAPIC_REDLO_DSTMOD |
+				    IOAPIC_REDLO_DEL_MASK |
+				    IOAPIC_REDLO_VECTOR_MASK;
+				d = (d & writable) |
+				    (old & (IOAPIC_REDLO_RIRR |
+				    IOAPIC_REDLO_DELSTS));
+			} else
+				d &= IOAPIC_REDHI_DEST_MASK;
+			ioapic.redtbl[idx] = d;
 
 			i82093aa_decode_redent(ioapic.reg);
 			i82093aa_evaluate_pin(pin);
@@ -178,23 +145,19 @@ i82093aa_winop(int dir, uint64_t *data)
 	pthread_mutex_unlock(&ioapic.mtx);
 }
 
-void
+static void
 i82093aa_regsel(int dir, uint64_t *data)
 {
 	uint64_t d;
 
 	pthread_mutex_lock(&ioapic.mtx);
 
-	log_warnx("%s: mmio op to register select (dir=%d)", __func__, dir);
 	if (dir == MMIO_DIR_READ) {
 		d = *data & 0xFFFFFFFF00000000ULL;
-		log_warnx("%s: returning 0x%x", __func__, ioapic.reg);
 		d |= ioapic.reg;
 		*data = d;
 	} else if (dir == MMIO_DIR_WRITE) {
-		log_warnx("%s: setting regwin = 0x%x", __func__,
-		    (uint32_t)*data);
-		ioapic.reg = (uint32_t)*data;
+		ioapic.reg = (uint32_t)*data & 0xff;
 	} else {
 		log_warnx("%s: impossible direction %d", __func__, dir);
 	}
@@ -205,7 +168,8 @@ i82093aa_regsel(int dir, uint64_t *data)
 int
 i82093aa_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 {
-	log_warnx("%s: dir=%d addr=0x%lx data=0x%llx", __func__, dir, addr,
+	log_debug("%s: vcpu=%u dir=%d addr=0x%lx data=0x%llx", __func__,
+	    vcpu_id, dir, addr,
 	    *data);
 
 	if (addr == (IOAPIC_BASE_DEFAULT + IOAPIC_REG)) {
@@ -223,8 +187,16 @@ i82093aa_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 void
 i82093aa_init(int numcpus)
 {
-	ioapic.mtx = PTHREAD_MUTEX_INITIALIZER;
-	ioapic.id = numcpus + 1;
+	uint8_t pin;
+
+	ioapic.reg = 0;
+	ioapic.id = (numcpus + 1) & 0xf;
+	for (pin = 0; pin < I82093AA_PIN_COUNT; pin++) {
+		ioapic.redtbl[pin * 2] = IOAPIC_REDLO_MASK;
+		ioapic.redtbl[pin * 2 + 1] = 0;
+		ioapic.pin_level[pin] = 0;
+		ioapic.last_level[pin] = 0;
+	}
 	mmio_dev_add(IOAPIC_BASE_DEFAULT, IOAPIC_BASE_DEFAULT + 0xFFFF,
 	    (mmio_dev_fn_t)i82093aa_mmio);
 }
@@ -232,7 +204,11 @@ i82093aa_init(int numcpus)
 void
 i82093aa_assert_pin(uint8_t pin)
 {
-	log_warnx("%s: asserting pin %d", __func__, pin);
+	if (pin >= I82093AA_PIN_COUNT) {
+		log_warnx("%s: invalid pin %u", __func__, pin);
+		return;
+	}
+	log_debug("%s: asserting pin %u", __func__, pin);
 	pthread_mutex_lock(&ioapic.mtx);
 	ioapic.pin_level[pin] = 1;
 	i82093aa_evaluate_pin(pin);
@@ -242,79 +218,82 @@ i82093aa_assert_pin(uint8_t pin)
 void
 i82093aa_deassert_pin(uint8_t pin)
 {
-	log_warnx("%s: deasserting pin %d", __func__, pin);
+	if (pin >= I82093AA_PIN_COUNT) {
+		log_warnx("%s: invalid pin %u", __func__, pin);
+		return;
+	}
+	log_debug("%s: deasserting pin %u", __func__, pin);
 	pthread_mutex_lock(&ioapic.mtx);
 	ioapic.pin_level[pin] = 0;
 	i82093aa_evaluate_pin(pin);
 	pthread_mutex_unlock(&ioapic.mtx);
 }
 
-void
+static void
 i82093aa_evaluate_pin(uint8_t pin)
 {
 	uint64_t ent;
 	uint8_t delivery_mode, vector, dest;
-	int masked, level, polarity, active, rising;
+	int dest_mode, masked, level, active, rising;
 
-	if (pin > I82093AA_NUM_PINS + 1) {
-		log_warnx("%s: impossible pin %d", __func__, pin);
+	if (pin >= I82093AA_PIN_COUNT) {
+		log_warnx("%s: invalid pin %u", __func__, pin);
 		return;
 	}
 
-	log_warnx("%s: evaluating pin %d", __func__, pin);
-
-	ent = ioapic.redtbl[(pin * 2)] | ((uint64_t)(ioapic.redtbl[(pin * 2) + 1]) << 32);
-	log_warnx("%s: pin %d ent=0x%llx", __func__, pin, ent);
-	masked = ent & I82093AA_REDLO_MASKED;
-	level = ent & I82093AA_REDLO_TYPE;
-	polarity = ent & I82093AA_REDLO_POLARITY;
-	active = ioapic.pin_level[pin] ^ polarity;
+	ent = ioapic.redtbl[pin * 2] |
+	    ((uint64_t)ioapic.redtbl[pin * 2 + 1] << 32);
+	masked = (ent & IOAPIC_REDLO_MASK) != 0;
+	level = (ent & IOAPIC_REDLO_LEVEL) != 0;
+	/* Device backends report logical assertion, not electrical level. */
+	active = ioapic.pin_level[pin] != 0;
 	rising = active && !ioapic.last_level[pin];
 
-	delivery_mode = (ent & I82093AA_REDLO_DEL) >> 8;
-	vector = ent & 0xFF;
-   	dest = (ent >> I82093AA_REDIR_SHIFT) & 0xFF;
+	dest_mode = (ent & IOAPIC_REDLO_DSTMOD) != 0;
+	delivery_mode = (ent & IOAPIC_REDLO_DEL_MASK) >>
+	    IOAPIC_REDLO_DEL_SHIFT;
+	vector = ent & IOAPIC_REDLO_VECTOR_MASK;
+	dest = (ent >> I82093AA_REDIR_SHIFT) & 0xff;
 
 	ioapic.last_level[pin] = active;
 
-	if (masked) {
-		log_warnx("%s: pin %d masked; no action taken", __func__, pin);
+	if (masked)
 		return;
-	}
-
-	log_warnx("%s: level=%d active=%d ent=%llu (ent & RIRR=%llu), pol=%d "
-	    "rising=%d", __func__, level, active, ent, (ent & I82093AA_REDLO_RIRR),
-	    polarity, rising);
 
 	if (level) {
-		if (active && !(ent & I82093AA_REDLO_RIRR)) {
-			log_warnx("%s: delivering vector %d to ioapic (level"
-			    "  mode)", __func__, pin);
-			i82093aa_deliver(dest, delivery_mode, vector, 1);
-			ioapic.redtbl[(pin * 2)] |= I82093AA_REDLO_RIRR;
-		} else {
-			log_warnx("%s: level high but !active or ent mask failed",
-			    __func__);
-		}
+		if (active && !(ent & IOAPIC_REDLO_RIRR) &&
+		    i82093aa_deliver(dest, dest_mode, delivery_mode, vector, 1))
+			ioapic.redtbl[pin * 2] |= IOAPIC_REDLO_RIRR;
 	} else {
-		/* Edge mode: only deliver on a rising edge (inactive->active) */
-		if (rising) {
-			log_debug("%s: delivering vector %d to ioapic (edge "
-			    "mode, rising)", __func__, vector);
-			i82093aa_deliver(dest, delivery_mode, vector, 0);
-		}
+		if (rising)
+			i82093aa_deliver(dest, dest_mode, delivery_mode,
+			    vector, 0);
 	}
 }
 
-void
-i82093aa_deliver(uint8_t dest, int destmode, uint8_t vector, int level)
+static int
+i82093aa_deliver(uint8_t dest, int dest_mode, int delivery_mode,
+    uint8_t vector, int level)
 {
-	int vcpu_id = dest;
+	if (dest_mode) {
+		log_debug("%s: logical destination 0x%x unsupported", __func__,
+		    dest);
+		return 0;
+	}
+	if (delivery_mode != IOAPIC_REDLO_DEL_FIXED &&
+	    delivery_mode != IOAPIC_REDLO_DEL_LOPRI) {
+		log_debug("%s: delivery mode %d unsupported", __func__,
+		    delivery_mode);
+		return 0;
+	}
+	if (vector < 32 || !i82489dx_enabled(dest))
+		return 0;
 
-	log_warnx("%s: delivering irq %d to destination apic id %d", __func__,
-	    vector, dest);
+	log_debug("%s: vector %u to physical APIC %u", __func__, vector,
+	    dest);
+	i82489dx_vector_irq(dest, 0, vector, level);
 
-	i82489dx_vector_irq(vcpu_id, destmode, vector, level);
+	return 1;
 }
 
 void
@@ -326,7 +305,7 @@ i82093aa_eoi(int vector)
 	log_debug("%s: EOI for vector %d", __func__, vector);
 	pthread_mutex_lock(&ioapic.mtx);
 
-	for (pin = 0; pin < I82093AA_NUM_PINS; pin++) {
+	for (pin = 0; pin < I82093AA_PIN_COUNT; pin++) {
 		ent = ioapic.redtbl[pin * 2] |
 		    ((uint64_t)(ioapic.redtbl[pin * 2 + 1]) << 32);
 		if ((ent & 0xFF) != vector)
@@ -337,9 +316,9 @@ i82093aa_eoi(int vector)
 		 * in EOI; clear RIRR and re-evaluate in case the line is
 		 * still asserted.
 		 */
-		if ((ent & I82093AA_REDLO_TYPE) &&
-		    (ioapic.redtbl[pin * 2] & I82093AA_REDLO_RIRR)) {
-			ioapic.redtbl[pin * 2] &= ~I82093AA_REDLO_RIRR;
+		if ((ent & IOAPIC_REDLO_LEVEL) &&
+		    (ioapic.redtbl[pin * 2] & IOAPIC_REDLO_RIRR)) {
+			ioapic.redtbl[pin * 2] &= ~IOAPIC_REDLO_RIRR;
 			i82093aa_evaluate_pin(pin);
 		}
 	}
