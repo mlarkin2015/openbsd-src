@@ -30,11 +30,18 @@ struct vm_run_params;
 #define VMD_MADT_OEM_TABLEID	"VMD MADT"
 #define VMD_ASLCOMPILER_ID	"VMD "
 
+/*
+ * Keep the payload tables at the bottom of vmd's reserved 0x90000-0xfffff
+ * range.  The top of conventional memory is firmware scratch/EBDA space and
+ * is not stable across SeaBIOS POST.  The RSDP remains in its own EBDA page
+ * for the direct-kernel boot path; firmware boot also copies it to the
+ * F-segment through fw_cfg.
+ */
+#define VMD_XSDT_PADDR		0x90000
+#define VMD_MADT_PADDR		0x91000
+#define VMD_FADT_PADDR		0x92000
+#define VMD_DSDT_PADDR		0x93000
 #define VMD_RSDP_PADDR		0x9D000
-#define VMD_XSDT_PADDR		0x9E000
-#define VMD_MADT_PADDR		0x9F000
-#define VMD_FADT_PADDR		0xA0000
-#define VMD_DSDT_PADDR		0xA1000
 
 #define VMD_PM1A_EVT_BASE	0xB000
 #define VMD_PM1A_EVT_LEN	4
