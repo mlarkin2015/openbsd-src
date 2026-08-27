@@ -31,6 +31,21 @@ and the fw_cfg romfile loader, so that firmware does not consume the generated
 ACPI tables.  vmd now also publishes the RSDP with the SeaBIOS table-loader
 protocol for firmware builds which enable that support.
 
+Enabling the loader alone is not sufficient with unmodified SeaBIOS 1.16.3.
+Its `qemu_cfg_init()` is gated by `runningOnQEMU()`, and its QEMU detection
+rejects vmd's OpenBSD host bridge at PCI 00:00.0.  The reproducible port
+overlay in `usr.sbin/vmd/seabios/` therefore makes two firmware changes:
+
+- enable `CONFIG_FW_ROMFILE_LOAD` while leaving SeaBIOS's own ACPI generator
+  disabled; vmd remains the sole owner of the guest ACPI table set; and
+- recognize the OpenBSD vmm PCHB so SeaBIOS initializes vmd's QEMU-compatible
+  fw_cfg interface.
+
+The overlay builds through `/usr/ports/sysutils/firmware/vmm`; see its README.
+The tested image was 266240 bytes with SHA256
+`eccfc43801fef232ccd9c96ee25a8c8fe5f854f51a5840b29ad2baed80ecaefe`.
+The packaged `/etc/firmware/vmm-bios` was not replaced.
+
 A direct-kernel boot (`vmctl start -b /tmp/vmm-ng4-bsd -c
 openbsd-amd64-test`) exercises the BDA RSDP path and now reports:
 
@@ -58,6 +73,42 @@ test are:
 - `a5357a0` lowers the UART interrupt line after the guest acknowledges it,
   allowing edge-triggered IRQ4 to retrigger and the serial console to drain.
 - `1daeca6` disables unconditional MMIO decoder tracing in normal builds.
+
+The firmware-path test with the custom SeaBIOS image now produces the same
+APIC lines, enumerates the virtio devices as `apic 2 int 3/5/6/7`, completes
+rc, and reaches the login prompt.  This proves the fw_cfg RSDP handoff rather
+than relying on the direct-kernel BDA path.
+
+## Linux firmware-boot validation (Alpine 3.23)
+
+Alpine Linux 3.23 with kernel 6.18.33 booted from its virtio disk using the
+same custom SeaBIOS image and reached the login prompt.  Positive evidence:
+
+```
+ACPI: RSDP 0x00000000000F1CF0 000024 (v02 VMD   )
+ACPI: APIC 0x000000000009F000 000040 (v01 VMD ...)
+IOAPIC[0]: apic_id 2, version 17, address 0xfec00000, GSI 0-23
+APIC: Switch to symmetric I/O mode setup
+..TIMER: vector=0x30 apic1=0 pin1=0 apic2=-1 pin2=-1
+ACPI: Using IOAPIC for interrupt routing
+```
+
+The guest mounted its virtio root filesystem, obtained a DHCP lease over the
+virtio network, started sshd, and reached the serial login prompt.  Linux also
+identified several ACPI/legacy interrupt defects which remain to be fixed:
+
+- FADT advertises `Gpe0Block=0xb020` with a zero length.  An unused GPE block
+  must have both address and length zero.
+- The installed `/etc/firmware/vmm.dsdt` fails ACPICA loading with a duplicate
+  `\_SI` object (`AE_ALREADY_EXISTS`).
+- LNKA through LNKD `_CRS` evaluation fails, so Linux cannot derive a GSI for
+  PCI INTx.  The modern virtio devices nevertheless booted, but this does not
+  validate PCI INTx fallback with MSI disabled.
+- Linux repeatedly reports `No irq handler for 0.52` (vector 0x34).  Console
+  input triggers the message once per character, tying it to legacy IRQ4/UART
+  routing.  Trace Linux's IOAPIC redirection/mask programming before deciding
+  whether this is a stale IOAPIC delivery or part of the missing virtual-wire
+  path.
 
 ## Test plan: uniprocessor OpenBSD or Linux guest, SeaBIOS
 
@@ -87,11 +138,16 @@ Watch for:
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
 - Delivery modes other than Fixed delivered as fixed.
+- The external vmm DSDT has invalid/incomplete PCI interrupt-link resources;
+  repair `_PRT`/LNKA-D and remove the duplicate `_SI` object.
+- FADT GPE0 address/length fields are inconsistent.
 
 ## Next steps after testing
 
-1. Fix any timer-frequency mismatch found in testing.
-2. LINT0 virtual-wire routing (PIC through LAPIC ExtINT delivery mode).
+1. Repair the DSDT PCI routing objects and FADT GPE0 fields, then repeat the
+   Linux boot with MSI disabled to exercise PCI INTx through the IOAPIC.
+2. Trace the Linux IRQ4/UART vector-0x34 failure, then implement LINT0
+   virtual-wire routing (PIC through LAPIC ExtINT delivery mode).
 3. ICR/INIT-SIPI + per-vCPU state machine (RUNNING/INIT/WAIT_SIPI/HALTED)
    for SMP guests; needs kernel-side SMP audit too (see PLAN-000-MASTER
    working notes re: kernel big lock).
