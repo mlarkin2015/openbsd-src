@@ -26,14 +26,7 @@ void i82489dx_init(uint32_t);
 int i82489dx_mmio(uint32_t, int, paddr_t, uint64_t *);
 void i82489dx_vector_irq(uint32_t, int, uint8_t, int);
 int i82489dx_is_pending(int);
-void i82489dx_eoi(int);
 int i82489dx_ack(int);
-int i82489dx_get_highest_irr(int);
-int i82489dx_get_highest_isr(int);
-void i82489dx_clear_isr(int, int);
-void i82489dx_clear_irr(int, int);
-void i82489dx_set_irr(int, int);
-void i82489dx_set_isr(int, int);
 int i82489dx_enabled(int);
 int i82489dx_timer_check(uint32_t);
 
