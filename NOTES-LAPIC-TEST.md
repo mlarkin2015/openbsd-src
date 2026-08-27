@@ -23,19 +23,56 @@ warnings (LOWMEM_KB redefinition warning is pre-existing).
 
 Kernel side untouched - no kernel rebuild needed for these changes.
 
+## Follow-up validation and repairs (2026-08-27)
+
+The original firmware-boot test did not prove that the APIC implementation
+was active.  OpenBSD's packaged vmm SeaBIOS configuration disables both ACPI
+and the fw_cfg romfile loader, so that firmware does not consume the generated
+ACPI tables.  vmd now also publishes the RSDP with the SeaBIOS table-loader
+protocol for firmware builds which enable that support.
+
+A direct-kernel boot (`vmctl start -b /tmp/vmm-ng4-bsd -c
+openbsd-amd64-test`) exercises the BDA RSDP path and now reports:
+
+```
+acpi0: tables DSDT FACP APIC
+acpimadt0 at acpi0 addr 0xfee00000: PC-AT compat
+ioapic0 at mainbus0: apid 2 pa 0xfec00000, version 11, 24 pins
+cpu0: apic clock running at 100MHz
+```
+
+The same guest mounted its virtio root disk, completed rc, started its
+daemons, and reached the login prompt.  Follow-up repairs made during that
+test are:
+
+- `0461f95` publishes the generated ACPI tables through the SeaBIOS loader.
+- `7a28201` repairs IOAPIC register selection, redirection-table masks,
+  logical line state, remote IRR, and EOI delivery.
+- `abb61ff` decodes base-less SIB disp32 MMIO operands and fixes 32-bit MOV
+  zero extension, with a regression using the guest's LAPIC EOI bytes.
+- `55da1d2` returns the virtio device IRQ in synchronous ISR replies; without
+  it an IRQ6 acknowledgement deasserted IRQ0 and caused an interrupt storm.
+- `c40808e` corrects the LAPIC's 100 MHz timer timebase, keeps CCR reads from
+  consuming expiry, adds synchronized ISR/IRR/TMR state and PPR arbitration,
+  and wakes running as well as halted vCPUs.
+- `a5357a0` lowers the UART interrupt line after the guest acknowledges it,
+  allowing edge-triggered IRQ4 to retrigger and the serial console to drain.
+- `1daeca6` disables unconditional MMIO decoder tracing in normal builds.
+
 ## Test plan: uniprocessor OpenBSD or Linux guest, SeaBIOS
 
 Watch for:
 
-1. Boot progress:
+1. Boot progress (passed with an OpenBSD direct-kernel boot):
    - OpenBSD: should pass clock calibration / "cpu0: TSC frequency" without
      hanging.
    - Linux: LAPIC timer calibration should complete
      ("tsc: Refined TSC clocksource calibration").
-2. Clock accuracy: if guest clock runs fast/slow, the assumed 100 MHz LAPIC
-   bus clock may disagree with what CPUID leaves 0x15/0x16 advertise.
-   Fix = align them (i82489dx.c i82489dx_timer_ccr uses ns/(1000/div)).
-3. Level IRQs under load: virtio-blk/net are level-triggered via IOAPIC.
+2. Clock accuracy: the LAPIC now advances at 100 MHz before applying DCR;
+   the OpenBSD guest calibrated it at 100 MHz.  Longer wall-clock drift tests
+   are still useful.
+3. Level IRQs under load: basic virtio-blk boot I/O passed.  Virtio-blk/net
+   are level-triggered via IOAPIC.
    The RIRR fix should prevent wedging; if virtio stalls under load,
    suspect i82093aa_evaluate_pin/i82093aa_eoi interaction first.
 4. Logging: interrupt delivery is now log_debug; run vmd verbose to see
@@ -43,8 +80,6 @@ Watch for:
 
 ## Known remaining gaps (not yet done)
 
-- Timer thread only wakes HALTED vcpus (vcpu_hlt check in lapic_timer_thread);
-  running guests pick up expiry via the normal run loop. OK for unicpu.
 - ICR/IPIs (INIT-SIPI) not implemented - SMP bringup still missing.
   ICRLO writes are logged and dropped.
 - LINT0/virtual-wire routing not done: PIC and LAPIC remain parallel paths;
