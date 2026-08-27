@@ -27,6 +27,19 @@ DefinitionBlock ("", "DSDT", 2, "VMD   ", "VMD DSDT", 1)
 			Name (_SEG, Zero)
 			Name (_BBN, Zero)
 			Name (_UID, Zero)
+			Name (_CRS, ResourceTemplate ()
+			{
+				WordBusNumber (ResourceProducer, MinFixed, MaxFixed,
+				    PosDecode, 0, 0, 0x00FF, 0, 0x0100)
+				IO (Decode16, 0x0CF8, 0x0CF8, 1, 8)
+				WordIO (ResourceProducer, MinFixed, MaxFixed,
+				    PosDecode, EntireRange, 0, 0x1000, 0xFFFF, 0,
+				    0xF000, , , , TypeStatic)
+				DWordMemory (ResourceProducer, PosDecode, MinFixed,
+				    MaxFixed, NonCacheable, ReadWrite, 0, 0xF0000000,
+				    0xFFBFFFFF, 0, 0x0FC00000, , , ,
+				    AddressRangeMemory, TypeStatic)
+			})
 
 			/*
 			 * vmd assigns one legacy INTx line to each interrupting
