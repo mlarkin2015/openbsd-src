@@ -97,21 +97,41 @@ ACPI: Using IOAPIC for interrupt routing
 ```
 
 The guest mounted its virtio root filesystem, obtained a DHCP lease over the
-virtio network, started sshd, and reached the serial login prompt.  Linux also
-identified several ACPI/legacy interrupt defects which remain to be fixed:
+virtio network, started sshd, and reached the serial login prompt.
 
-- FADT advertises `Gpe0Block=0xb020` with a zero length.  An unused GPE block
-  must have both address and length zero.
-- The installed `/etc/firmware/vmm.dsdt` fails ACPICA loading with a duplicate
-  `\_SI` object (`AE_ALREADY_EXISTS`).
-- LNKA through LNKD `_CRS` evaluation fails, so Linux cannot derive a GSI for
-  PCI INTx.  The modern virtio devices nevertheless booted, but this does not
-  validate PCI INTx fallback with MSI disabled.
-- Linux repeatedly reports `No irq handler for 0.52` (vector 0x34).  Console
-  input triggers the message once per character, tying it to legacy IRQ4/UART
-  routing.  Trace Linux's IOAPIC redirection/mask programming before deciding
-  whether this is a stale IOAPIC delivery or part of the missing virtual-wire
-  path.
+An audit of vmd's PCI and virtio code established that guest MSI/MSI-X is not
+implemented.  vmd does not add a PCI MSI or MSI-X capability.  The virtio
+transport's MSI-X selector fields explicitly ignore writes and return
+`VIRTIO_MSI_NO_VECTOR`; device interrupts use assigned legacy INTx lines via
+`vcpu_assert_irq()`.  A `pci=nomsi` comparison was therefore unnecessary and
+would not select a different interrupt path.
+
+Commit `d31f7a9` added the DSDT source as `usr.sbin/vmd/vmm-dsdt.asl` and
+fixed the firmware description.  Follow-up validation added the root bridge
+resource windows and stopped advertising unimplemented PM timer/secondary PM
+blocks.  The final tables now:
+
+- set FADT revision 6.5 and `FADT_NO_MSI`, which Linux explicitly honors;
+- clear the unused GPE0 address and length;
+- remove the duplicate `\_SI` object and the unusable LNKA-D link devices;
+- map PCI slots 1-10 INTA directly to vmd's fixed GSIs
+  3,5,6,7,9,10,11,12,14,15; and
+- describe the PCI bus, I/O window 0x1000-0xffff, and MMIO window
+  0xf0000000-0xffbfffff in `_CRS`.
+
+The DSDT compiles with ACPICA `iasl -we` with no errors, warnings, or remarks,
+and a disassemble/recompile round trip is byte-identical.  The final Alpine
+boot has no duplicate-object, link `_CRS`, GSI-derivation, PCI BAR-window, GPE,
+or PM-timer errors.  It reports `PCI: Using ACPI for IRQ routing`, then boots
+virtio-blk and virtio-net through legacy INTx and reaches login.  OpenBSD also
+accepts the root bridge resources, enumerates all four virtio devices as
+`apic 2 int 3/5/6/7`, completes rc, and reaches login.
+
+Linux still repeatedly reports `No irq handler for 0.52` (vector 0x34).
+Console input triggers the message once per character, tying it to legacy
+IRQ4/UART routing rather than PCI INTx.  Linux also reports that it cannot
+disable RTC fixed events because vmd advertises PM1A event/control registers
+but does not emulate them.  Both are separate follow-up items.
 
 ## Test plan: uniprocessor OpenBSD or Linux guest, SeaBIOS
 
@@ -141,17 +161,20 @@ Watch for:
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
 - Delivery modes other than Fixed delivered as fixed.
-- The external vmm DSDT has invalid/incomplete PCI interrupt-link resources;
-  repair `_PRT`/LNKA-D and remove the duplicate `_SI` object.
-- FADT GPE0 address/length fields are inconsistent.
+- PCI MSI and MSI-X are not implemented.  Virtio uses legacy INTx despite
+  exposing the standard virtio common-configuration vector selector fields.
+- ACPI PM1A event/control and SCI delivery are not implemented.  The FADT
+  still advertises the PM1A blocks, which makes Linux attempt unsupported RTC
+  fixed-event operations.
 
 ## Next steps after testing
 
-1. Repair the DSDT PCI routing objects and FADT GPE0 fields, then repeat the
-   Linux boot with MSI disabled to exercise PCI INTx through the IOAPIC.
-2. Trace the Linux IRQ4/UART vector-0x34 failure, then implement LINT0
+1. Trace the Linux IRQ4/UART vector-0x34 failure, then implement LINT0
    virtual-wire routing (PIC through LAPIC ExtINT delivery mode).
+2. Implement ACPI PM1A/SCI semantics, or provide complete hardware-reduced
+   sleep-control/status registers before setting `FADT_HW_REDUCED_ACPI`.
 3. ICR/INIT-SIPI + per-vCPU state machine (RUNNING/INIT/WAIT_SIPI/HALTED)
    for SMP guests; needs kernel-side SMP audit too (see PLAN-000-MASTER
    working notes re: kernel big lock).
 4. IOAPIC logical destination mode.
+5. Implement PCI MSI-X delivery for modern virtio guests.

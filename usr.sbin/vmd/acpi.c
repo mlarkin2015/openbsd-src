@@ -182,18 +182,21 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	/* PM register lengths */
 	fadt.pm1_evt_len = 4;
 	fadt.pm1_cnt_len = 2;
-	fadt.pm_tmr_len = 4;
+	fadt.pm_tmr_len = 0;
 	fadt.gpe0_blk_len = 0;
 	fadt.p_lvl2_lat = 100;
 	fadt.p_lvl3_lat = 1000;
 
-	/* PM register block addresses - use 0xB000 range */
-	fadt.pm1a_evt_blk = 0xB000;  /* PM1a Event Block */
-	fadt.pm1b_evt_blk = 0xB004;       /* PM1b Event Block (not used) */
-	fadt.pm1a_cnt_blk = 0xB008;  /* PM1a Control Block */
-	fadt.pm1b_cnt_blk = 0xB00C;       /* PM1b Control Block (not used) */
-	fadt.pm_tmr_blk = 0xB010;    /* PM Timer Block */
-	fadt.gpe0_blk = 0;                /* GPE0 Block (not implemented) */
+	/*
+	 * PM1A is retained for non-hardware-reduced ACPI.  Do not advertise
+	 * optional register blocks which vmd does not implement.
+	 */
+	fadt.pm1a_evt_blk = 0xB000;
+	fadt.pm1b_evt_blk = 0;
+	fadt.pm1a_cnt_blk = 0xB008;
+	fadt.pm1b_cnt_blk = 0;
+	fadt.pm_tmr_blk = 0;
+	fadt.gpe0_blk = 0;
 
 	/* IAPC Boot Architecture Flags */
 	fadt.iapc_boot_arch = FADT_LEGACY_DEVICES | FADT_NO_MSI;
