@@ -21,17 +21,11 @@
 
 #include <sys/types.h>
 
-#define I82093AA_NUM_PINS		0x17
+#define I82093AA_MAX_PIN		0x17
+#define I82093AA_PIN_COUNT		(I82093AA_MAX_PIN + 1)
 #define I82093AA_VERSION		0x000011
 #define I82093AA_REDIR_SHIFT		56
-#define I82093AA_REDLO_DEL		3
-#define I82093AA_REDLO_DELMODE_MASK	0x300
-#define I82093AA_REDLO_DESTMODE		(1 << 11)
-#define I82093AA_REDLO_DELIVS		(1 << 12)
-#define I82093AA_REDLO_POLARITY		(1 << 13)
-#define I82093AA_REDLO_RIRR		(1 << 14)
-#define I82093AA_REDLO_TYPE		(1 << 15)
-#define I82093AA_REDLO_MASKED		(1 << 16)
+#define I82093AA_REDTBL_DWORDS		(I82093AA_PIN_COUNT * 2)
 
 #define I82093AA_REDTBL0_LO		0x10
 #define I82093AA_REDTBL0_HI		0x11
@@ -82,15 +76,10 @@
 #define I82093AA_REDTBL23_LO		0x3E
 #define I82093AA_REDTBL23_HI		0x3F
 
-void i82093aa_decode_redent(uint32_t);
-void i82093aa_winop(int, uint64_t *);
-void i82093aa_regsel(int, uint64_t *);
 int i82093aa_mmio(uint32_t, int, paddr_t, uint64_t *);
 void i82093aa_init(int);
 void i82093aa_assert_pin(uint8_t);
 void i82093aa_deassert_pin(uint8_t);
-void i82093aa_evaluate_pin(uint8_t);
-void i82093aa_deliver(uint8_t, int, uint8_t, int);
 void i82093aa_eoi(int);
 
 #endif /* !_I82093AA_H_ */
