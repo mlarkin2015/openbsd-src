@@ -28,6 +28,7 @@ void i82489dx_vector_irq(uint32_t, int, uint8_t, int);
 int i82489dx_is_pending(int);
 int i82489dx_ack(int);
 int i82489dx_enabled(int);
+int i82489dx_extint_enabled(int);
 int i82489dx_timer_check(uint32_t);
 
 #endif /* !_I82489DX_H_ */

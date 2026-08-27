@@ -73,6 +73,7 @@ struct ns8250_dev {
 	uint64_t byte_out;
 	uint32_t baudrate;
 	uint32_t pause_ct;
+	uint8_t tx_intr_pending;
 };
 
 void ns8250_init(int, uint32_t);
