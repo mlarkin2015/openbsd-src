@@ -296,7 +296,7 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	fadt.gpe0_blk = 0;
 
 	/* IAPC Boot Architecture Flags */
-	fadt.iapc_boot_arch = FADT_LEGACY_DEVICES | FADT_NO_MSI;
+	fadt.iapc_boot_arch = FADT_LEGACY_DEVICES;
 
 	/* FADT flags */
 	fadt.flags = 0;
