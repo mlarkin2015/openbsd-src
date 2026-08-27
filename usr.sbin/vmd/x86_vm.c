@@ -426,6 +426,14 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	for (i = 0; i < vmc->vmc_ncpus; i++)
 		i82489dx_init(i);
 
+	acpi_pm1_init();
+	for (i = VMD_PM1A_EVT_BASE;
+	    i < VMD_PM1A_EVT_BASE + VMD_PM1A_EVT_LEN; i++)
+		ioports_map[i] = vcpu_exit_acpi_pm1;
+	for (i = VMD_PM1A_CNT_BASE;
+	    i < VMD_PM1A_CNT_BASE + VMD_PM1A_CNT_LEN; i++)
+		ioports_map[i] = vcpu_exit_acpi_pm1;
+
 	acpi_init(vmc->vmc_ncpus);
 
 	/* Initialize virtio devices */
