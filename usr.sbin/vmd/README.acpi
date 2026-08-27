@@ -1,0 +1,10 @@
+The vmm-dsdt.asl file is the source for /etc/firmware/vmm.dsdt.
+
+Build and validate it with ACPICA iasl:
+
+	iasl -tc -p vmm-dsdt vmm-dsdt.asl
+	iasl -d vmm-dsdt.aml
+	iasl -tc vmm-dsdt.dsl
+
+Install vmm-dsdt.aml as /etc/firmware/vmm.dsdt.  vmd loads the table at
+guest physical address 0xa1000 and references it from the FADT.
