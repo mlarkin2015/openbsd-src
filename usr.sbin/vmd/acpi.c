@@ -27,6 +27,7 @@
 #include <sys/types.h>
 
 #include "acpi.h"
+#include "fw_cfg.h"
 #include "vmd.h"
 
 /*
@@ -41,10 +42,8 @@ acpi_calculate_checksum(uint8_t *tbl, size_t len)
 	size_t i;
 
 	cksum = 0;
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < len; i++)
 		cksum += tbl[i];
-		log_warnx("%s: computing checksum tbl[%zd]=0x%x, running sum %d", __func__, i, tbl[i], cksum);
-	}
 
 	return (256 - cksum);
 }
@@ -55,10 +54,8 @@ acpi_verify_checksum(uint8_t *tbl, size_t len)
 	size_t i;
 	uint8_t cksum = 0;
 
-	for (i = 0 ; i < len ; i++) {
-		log_warnx("%s: checksum[%zd] = 0x%x", __func__, i, tbl[i]);
+	for (i = 0 ; i < len ; i++)
 		cksum += tbl[i];
-	}
 
 	if (cksum)
 		log_warnx("%s: ACPI table checksum error, got %d", __func__,
@@ -359,6 +356,7 @@ acpi_create_rsdp(paddr_t pa, paddr_t xsdt_pa)
 	    sizeof(rsdp));
 
 	acpi_verify_checksum((uint8_t *)&rsdp, sizeof(rsdp));
+	fw_cfg_add_acpi_rsdp(&rsdp, sizeof(rsdp));
 
 	log_warnx("%s: writing RSDP to %lx", __func__, pa);
 	if (write_mem(pa, &rsdp, sizeof(rsdp)))
