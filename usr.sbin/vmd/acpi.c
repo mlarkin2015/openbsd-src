@@ -162,6 +162,8 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	memset(&fadt, 0, sizeof(fadt));
 
 	acpi_populate_header(&fadt.hdr, VMD_FADT_OEM_TABLEID);
+	fadt.hdr.revision = 6;
+	fadt.fadt_minor = 5;
 
 	/* Header */
 	memcpy(fadt.hdr_signature, FADT_SIG, 4);
@@ -172,7 +174,6 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	fadt.x_dsdt = dsdt_pa;          /* ACPI 2.0+ 64-bit address */
 
 	/* System configuration */
-	fadt.int_model = FADT_INT_MULTI_APIC;
 	fadt.pm_profile = FADT_PM_DESKTOP;
 
 	/* SCI interrupt - typically uses IRQ 9 for ACPI */
@@ -192,10 +193,10 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	fadt.pm1a_cnt_blk = 0xB008;  /* PM1a Control Block */
 	fadt.pm1b_cnt_blk = 0xB00C;       /* PM1b Control Block (not used) */
 	fadt.pm_tmr_blk = 0xB010;    /* PM Timer Block */
-	fadt.gpe0_blk = 0xB020;           /* GPE0 Block (not used) */
+	fadt.gpe0_blk = 0;                /* GPE0 Block (not implemented) */
 
 	/* IAPC Boot Architecture Flags */
-	fadt.iapc_boot_arch = FADT_LEGACY_DEVICES;  /* Support legacy devices */
+	fadt.iapc_boot_arch = FADT_LEGACY_DEVICES | FADT_NO_MSI;
 
 	/* FADT flags */
 	fadt.flags = 0;
