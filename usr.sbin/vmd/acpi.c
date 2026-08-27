@@ -30,6 +30,103 @@
 #include "fw_cfg.h"
 #include "vmd.h"
 
+struct acpi_pm1 {
+	pthread_mutex_t	mtx;
+	uint16_t	status;
+	uint16_t	enable;
+	uint16_t	control;
+};
+
+static struct acpi_pm1 acpi_pm1 = {
+	.mtx = PTHREAD_MUTEX_INITIALIZER
+};
+
+#define VMD_PM1_ENABLE_MASK	(ACPI_PM1_TMR_EN | ACPI_PM1_GBL_EN | \
+	ACPI_PM1_PWRBTN_EN | ACPI_PM1_SLPBTN_EN | ACPI_PM1_RTC_EN | \
+	ACPI_PM1_PCIEXP_WAKE_DIS)
+#define VMD_PM1_CONTROL_MASK	(ACPI_PM1_SCI_EN | ACPI_PM1_BM_RLD | \
+	ACPI_PM1_GBL_RLS | ACPI_PM1_SLP_TYPX_MASK | ACPI_PM1_SLP_EN)
+
+void
+acpi_pm1_init(void)
+{
+	mutex_lock(&acpi_pm1.mtx);
+	acpi_pm1.status = 0;
+	acpi_pm1.enable = 0;
+	/* There is no SMI command interface; firmware leaves ACPI mode on. */
+	acpi_pm1.control = ACPI_PM1_SCI_EN;
+	mutex_unlock(&acpi_pm1.mtx);
+}
+
+static uint8_t
+acpi_pm1_read_byte(uint16_t port)
+{
+	if (port >= VMD_PM1A_EVT_BASE &&
+	    port < VMD_PM1A_EVT_BASE + sizeof(acpi_pm1.status))
+		return acpi_pm1.status >> ((port - VMD_PM1A_EVT_BASE) * 8);
+	if (port >= VMD_PM1A_EVT_BASE + sizeof(acpi_pm1.status) &&
+	    port < VMD_PM1A_EVT_BASE + VMD_PM1A_EVT_LEN)
+		return acpi_pm1.enable >>
+		    ((port - VMD_PM1A_EVT_BASE - sizeof(acpi_pm1.status)) * 8);
+	if (port >= VMD_PM1A_CNT_BASE &&
+	    port < VMD_PM1A_CNT_BASE + VMD_PM1A_CNT_LEN)
+		return acpi_pm1.control >> ((port - VMD_PM1A_CNT_BASE) * 8);
+
+	return 0xff;
+}
+
+static void
+acpi_pm1_write_byte(uint16_t port, uint8_t data)
+{
+	uint16_t mask;
+
+	if (port >= VMD_PM1A_EVT_BASE &&
+	    port < VMD_PM1A_EVT_BASE + sizeof(acpi_pm1.status)) {
+		mask = (uint16_t)data << ((port - VMD_PM1A_EVT_BASE) * 8);
+		/* PM1 status bits are write-one-to-clear. */
+		acpi_pm1.status &= ~(mask & ACPI_PM1_ALL_STS);
+	} else if (port >= VMD_PM1A_EVT_BASE + sizeof(acpi_pm1.status) &&
+	    port < VMD_PM1A_EVT_BASE + VMD_PM1A_EVT_LEN) {
+		mask = 0xffU <<
+		    ((port - VMD_PM1A_EVT_BASE - sizeof(acpi_pm1.status)) * 8);
+		acpi_pm1.enable = (acpi_pm1.enable & ~mask) |
+		    ((uint16_t)data <<
+		    ((port - VMD_PM1A_EVT_BASE - sizeof(acpi_pm1.status)) * 8));
+		acpi_pm1.enable &= VMD_PM1_ENABLE_MASK;
+	} else if (port >= VMD_PM1A_CNT_BASE &&
+	    port < VMD_PM1A_CNT_BASE + VMD_PM1A_CNT_LEN) {
+		mask = 0xffU << ((port - VMD_PM1A_CNT_BASE) * 8);
+		acpi_pm1.control = (acpi_pm1.control & ~mask) |
+		    ((uint16_t)data << ((port - VMD_PM1A_CNT_BASE) * 8));
+		acpi_pm1.control &= VMD_PM1_CONTROL_MASK;
+	}
+}
+
+uint8_t
+vcpu_exit_acpi_pm1(struct vm_run_params *vrp)
+{
+	struct vm_exit *vei = vrp->vrp_exit;
+	uint32_t data = 0;
+	uint16_t port;
+	uint8_t i;
+
+	mutex_lock(&acpi_pm1.mtx);
+	if (vei->vei.vei_dir == VEI_DIR_IN) {
+		for (i = 0; i < vei->vei.vei_size; i++)
+			data |= (uint32_t)acpi_pm1_read_byte(vei->vei.vei_port + i)
+			    << (i * 8);
+		set_return_data(vei, data);
+	} else {
+		port = vei->vei.vei_port;
+		for (i = 0; i < vei->vei.vei_size; i++)
+			acpi_pm1_write_byte(port + i,
+			    (uint8_t)(vei->vei.vei_data >> (i * 8)));
+	}
+	mutex_unlock(&acpi_pm1.mtx);
+
+	return 0xff;
+}
+
 /*
  * acpi_calculate_checksum
  *
@@ -180,8 +277,8 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	fadt.sci_int = 9;
 
 	/* PM register lengths */
-	fadt.pm1_evt_len = 4;
-	fadt.pm1_cnt_len = 2;
+	fadt.pm1_evt_len = VMD_PM1A_EVT_LEN;
+	fadt.pm1_cnt_len = VMD_PM1A_CNT_LEN;
 	fadt.pm_tmr_len = 0;
 	fadt.gpe0_blk_len = 0;
 	fadt.p_lvl2_lat = 100;
@@ -191,9 +288,9 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	 * PM1A is retained for non-hardware-reduced ACPI.  Do not advertise
 	 * optional register blocks which vmd does not implement.
 	 */
-	fadt.pm1a_evt_blk = 0xB000;
+	fadt.pm1a_evt_blk = VMD_PM1A_EVT_BASE;
 	fadt.pm1b_evt_blk = 0;
-	fadt.pm1a_cnt_blk = 0xB008;
+	fadt.pm1a_cnt_blk = VMD_PM1A_CNT_BASE;
 	fadt.pm1b_cnt_blk = 0;
 	fadt.pm_tmr_blk = 0;
 	fadt.gpe0_blk = 0;

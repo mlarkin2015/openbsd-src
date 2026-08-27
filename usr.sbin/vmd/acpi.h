@@ -21,6 +21,8 @@
 
 #include <dev/acpi/acpireg.h>
 
+struct vm_run_params;
+
 #define VMD_ACPI_EBDA_PTR	0x040E
 
 #define VMD_OEMID		"VMD   "
@@ -34,6 +36,11 @@
 #define VMD_FADT_PADDR		0xA0000
 #define VMD_DSDT_PADDR		0xA1000
 
+#define VMD_PM1A_EVT_BASE	0xB000
+#define VMD_PM1A_EVT_LEN	4
+#define VMD_PM1A_CNT_BASE	0xB008
+#define VMD_PM1A_CNT_LEN	2
+
 #define VMD_FADT_OEM_TABLEID	"VMD FADT"
 #define VMD_DSDT_OEM_TABLEID	"VMD DSDT"
 
@@ -43,6 +50,8 @@ void acpi_create_fadt(paddr_t, paddr_t);
 void acpi_create_madt(paddr_t, size_t);
 void acpi_create_xsdt(paddr_t, paddr_t *, size_t);
 void acpi_create_rsdp(paddr_t, paddr_t);
+void acpi_pm1_init(void);
+uint8_t vcpu_exit_acpi_pm1(struct vm_run_params *);
 void acpi_init(size_t);
 
 #endif /* !_ACPI_H_ */
