@@ -269,6 +269,15 @@ tested, but has not yet been installed and exercised by a multiprocessor guest:
   rejection of logical-destination IPIs.  Config regressions cover valid and
   excessive vCPU counts.  GENERIC.MP, vmd and vmctl all build successfully.
 
+The first 2-vCPU OpenBSD field test attached both `cpu0` and `cpu1`, proving
+that INIT-SIPI reached and ran the AP trampoline, but then entered a tight IPI
+wait loop.  The compiler emits the LAPIC ICR delivery-status test as group-3
+opcode `f7 /0` (`testl $0x1000, ...`), which the MMIO decoder rejected.  vmd
+now decodes and emulates the 16/32/64-bit `TEST r/m, immediate` form, including
+logical-instruction flags and 64-bit immediate sign extension without operand
+writeback.  An exact RIP-relative LAPIC ICR regression passes; guest retesting
+is pending.
+
 ## Known remaining gaps
 
 - Concurrent guest execution, INIT-SIPI timing and repeated AP reset have not

@@ -83,6 +83,7 @@ enum x86_opcode_type {
 	OP_MOVZX,
 	OP_OUT,
 	OP_OUTS,
+	OP_TEST,
 	OP_TWO_BYTE,		/* Opcode is two bytes, not one. */
 	OP_UNSUPPORTED,		/* Valid decode, but no current support. */
 };
