@@ -18,6 +18,7 @@
 
 #include <sys/types.h>
 
+#include <machine/psl.h>
 #include <machine/specialreg.h>
 #include <machine/vmmvar.h>
 
@@ -104,11 +105,113 @@ test_movl_zero_extends(void)
 		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RAX]);
 }
 
+static void
+test_andl_mmio(void)
+{
+	static const uint8_t bytes[] = { 0x23, 0x08 };
+	struct vm_exit exit;
+	struct x86_insn insn;
+	uint64_t expected_flags;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE | CR0_PG;
+	exit.vrs.vrs_crs[VCPU_REGS_CR4] = CR4_PAE;
+	exit.vrs.vrs_msrs[VCPU_REGS_EFER] = EFER_LME;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_L;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xffffffff80000000ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RAX] = 0xfffffffff0001020ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RCX] = 0xfeedfaceffff00ffULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] =
+	    PSL_MBO | PSL_I | PSL_C | PSL_PF | PSL_AF | PSL_Z | PSL_N | PSL_V;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode 32-bit MMIO AND");
+	mmio_read_value = 0x00ff0f0f;
+	if (insn_emulate(&exit, &insn, 0) != 0)
+		errx(1, "could not emulate 32-bit MMIO AND");
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RCX] != 0x00ff000f)
+		errx(1, "32-bit AND produced RCX 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RCX]);
+	expected_flags = PSL_MBO | PSL_I | PSL_PF;
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] != expected_flags)
+		errx(1, "32-bit AND produced RFLAGS 0x%llx, expected 0x%llx",
+		    (unsigned long long)
+		    exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS],
+		    (unsigned long long)expected_flags);
+}
+
+static void
+test_movl_immediate_rex_b(void)
+{
+	static const uint8_t bytes[] = {
+		0x41, 0xc7, 0x06, 0x01, 0x00, 0x00, 0x00
+	};
+	struct vm_exit exit;
+	struct x86_insn insn;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE | CR0_PG;
+	exit.vrs.vrs_crs[VCPU_REGS_CR4] = CR4_PAE;
+	exit.vrs.vrs_msrs[VCPU_REGS_EFER] = EFER_LME;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_L;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xffffffff8115e540ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RSI] = 0xffffffff827d6e50ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_R14] = 0xfffff800fec00000ULL;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode REX.B MMIO MOV immediate");
+	if (insn.insn_gva != exit.vrs.vrs_gprs[VCPU_REGS_R14])
+		errx(1, "REX.B MOV decoded address 0x%llx, expected R14",
+		    (unsigned long long)insn.insn_gva);
+	if (insn.insn_immediate_len != 4 || insn.insn_immediate != 1)
+		errx(1, "REX.B MOV decoded immediate 0x%llx/%u",
+		    (unsigned long long)insn.insn_immediate,
+		    insn.insn_immediate_len);
+}
+
+static void
+test_movl_rex_sib(void)
+{
+	static const uint8_t bytes[] = { 0x43, 0x8b, 0x04, 0x8c };
+	struct vm_exit exit;
+	struct x86_insn insn;
+	uint64_t expected;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE | CR0_PG;
+	exit.vrs.vrs_crs[VCPU_REGS_CR4] = CR4_PAE;
+	exit.vrs.vrs_msrs[VCPU_REGS_EFER] = EFER_LME;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_L;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xffffffff80000000ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RSP] = 0x11111111;
+	exit.vrs.vrs_gprs[VCPU_REGS_RCX] = 0x22222222;
+	exit.vrs.vrs_gprs[VCPU_REGS_R12] = 0xfffff800fec00000ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_R9] = 4;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode REX.B/REX.X SIB MMIO MOV");
+	expected = exit.vrs.vrs_gprs[VCPU_REGS_R12] +
+	    exit.vrs.vrs_gprs[VCPU_REGS_R9] * 4;
+	if (insn.insn_gva != expected)
+		errx(1, "REX SIB MOV decoded address 0x%llx, expected 0x%llx",
+		    (unsigned long long)insn.insn_gva,
+		    (unsigned long long)expected);
+}
+
 int
 main(void)
 {
 	test_lapic_eoi_absolute_sib();
 	test_movl_zero_extends();
+	test_andl_mmio();
+	test_movl_immediate_rex_b();
+	test_movl_rex_sib();
 	return 0;
 }
 
