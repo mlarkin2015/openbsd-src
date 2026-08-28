@@ -63,6 +63,7 @@ static enum decode_result decode_sib(struct x86_decode_state *,
     struct vcpu_reg_state *, struct x86_insn *);
 static enum decode_result decode_imm(struct x86_decode_state *,
     struct x86_insn *);
+static int get_operand_size(struct x86_insn *);
 
 static int mmio_valid_addr(uint64_t);
 
@@ -74,8 +75,10 @@ static int is_valid_state(struct x86_decode_state *, const char *);
 static void invalid_mmio_gpa(struct x86_insn *, struct vm_exit *, uint64_t);
 
 static int emulate_and(struct x86_insn *, struct vm_exit *, uint32_t);
+static void emulate_logic_flags(struct vm_exit *, uint64_t, int);
 static int emulate_mov(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_movzx(struct x86_insn *, struct vm_exit *, uint32_t);
+static int emulate_test(struct x86_insn *, struct vm_exit *, uint32_t);
 
 /* Lookup table for 1-byte opcodes, in opcode alphabetical order. */
 const enum x86_opcode_type x86_1byte_opcode_tbl[255] = {
@@ -93,6 +96,9 @@ const enum x86_opcode_type x86_1byte_opcode_tbl[255] = {
 	[0xA2] = OP_MOV,
 	[0xA3] = OP_MOV,
 	[0xC7] = OP_MOV,
+
+	/* TEST immediate against r/m */
+	[0xF7] = OP_TEST,
 
 	/* MOVS */
 	[0xA4] = OP_UNSUPPORTED,
@@ -117,6 +123,9 @@ const enum x86_operand_enc x86_1byte_operand_enc_tbl[255] = {
 	[0xA2] = OP_ENC_TD,
 	[0xA3] = OP_ENC_TD,
 	[0xC7] = OP_ENC_MI,
+
+	/* TEST immediate against r/m */
+	[0xF7] = OP_ENC_MI,
 
 	/* MOVS */
 	[0xA4] = OP_ENC_ZO,
@@ -344,6 +353,7 @@ str_opcode(struct x86_opcode *opcode)
 	case OP_MOVZX: return "MOVZX";
 	case OP_OUT: return "OUT";
 	case OP_OUTS: return "OUTS";
+	case OP_TEST: return "TEST";
 	case OP_UNSUPPORTED: return "UNSUPPORTED";
 	default: return "UNKNOWN";
 	}
@@ -925,7 +935,7 @@ decode_imm(struct x86_decode_state *state, struct x86_insn *insn)
 	if (insn->insn_opcode.op_encoding != OP_ENC_MI)
 		return (DECODE_DONE);
 
-	/* Exceptions related to MOV instructions. */
+	/* Exceptions related to MOV and group-3 TEST instructions. */
 	if (insn->insn_opcode.op_type == OP_MOV) {
 		switch (insn->insn_opcode.op_bytes[0]) {
 		case 0xC6:
@@ -942,6 +952,15 @@ decode_imm(struct x86_decode_state *state, struct x86_insn *insn)
 			    __func__);
 			return (DECODE_ERROR);
 		}
+	} else if (insn->insn_opcode.op_type == OP_TEST) {
+		if (insn->insn_opcode.op_bytes[0] != 0xf7 ||
+		    !insn->insn_modrm_valid ||
+		    MODRM_REGOP(insn->insn_modrm) != 0) {
+			log_warnx("%s: unsupported F7 group operation /%u",
+			    __func__, MODRM_REGOP(insn->insn_modrm));
+			return (DECODE_ERROR);
+		}
+		num_bytes = get_operand_size(insn) == 2 ? 2 : 4;
 	} else {
 		/* Fallback to interpreting based on cpu mode and REX. */
 		if (insn->insn_cpu_mode == VMM_CPU_MODE_REAL)
@@ -1136,10 +1155,28 @@ get_operand_size(struct x86_insn *insn)
 	return 2;
 }
 
+/* Set the status flags shared by AND and TEST. */
+static void
+emulate_logic_flags(struct vm_exit *exit, uint64_t result, int opsz)
+{
+	uint64_t rflags, sign;
+
+	rflags = exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS];
+	rflags &= ~(PSL_C | PSL_PF | PSL_AF | PSL_Z | PSL_N | PSL_V);
+	if (result == 0)
+		rflags |= PSL_Z;
+	sign = 1ULL << (opsz * 8 - 1);
+	if (result & sign)
+		rflags |= PSL_N;
+	if (__builtin_parity((unsigned int)(result & 0xff)) == 0)
+		rflags |= PSL_PF;
+	exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS] = rflags;
+}
+
 static int
 emulate_and(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
-	uint64_t data, gpa, mask, old, result, rflags, sign;
+	uint64_t data, gpa, mask, old, result;
 	mmio_dev_fn_t mmio_fn;
 	int opsz, ret;
 
@@ -1195,16 +1232,69 @@ emulate_and(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		exit->vrs.vrs_gprs[insn->insn_reg] = result;
 
 	/* AND clears CF and OF; AF is undefined and is cleared here. */
-	rflags = exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS];
-	rflags &= ~(PSL_C | PSL_PF | PSL_AF | PSL_Z | PSL_N | PSL_V);
-	if (result == 0)
-		rflags |= PSL_Z;
-	sign = 1ULL << (opsz * 8 - 1);
-	if (result & sign)
-		rflags |= PSL_N;
-	if (__builtin_parity((unsigned int)(result & 0xff)) == 0)
-		rflags |= PSL_PF;
-	exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS] = rflags;
+	emulate_logic_flags(exit, result, opsz);
+
+	return (0);
+}
+
+static int
+emulate_test(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
+{
+	uint64_t data, gpa, immediate, mask, result;
+	mmio_dev_fn_t mmio_fn;
+	int opsz, ret;
+
+	if (insn->insn_opcode.op_encoding != OP_ENC_MI ||
+	    !insn->insn_modrm_valid || MODRM_REGOP(insn->insn_modrm) != 0) {
+		log_warnx("%s: unsupported encoding or F7 group operation",
+		    __func__);
+		return (EINVAL);
+	}
+
+	ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_READ);
+	if (ret != 0) {
+		log_warnx("%s: error translating gva 0x%lx", __func__,
+		    insn->insn_gva);
+		return (0);
+	}
+	if (!mmio_valid_addr(gpa))
+		invalid_mmio_gpa(insn, exit, gpa);
+
+	mmio_fn = mmio_find_dev(gpa);
+	if (mmio_fn == NULL) {
+		log_warnx("%s: no mmio fn for gpa 0x%llx", __func__, gpa);
+		return (0);
+	}
+
+	data = 0;
+	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+	if (ret != 0) {
+		log_warnx("%s: mmio function indicated failure", __func__);
+		return (0);
+	}
+
+	opsz = get_operand_size(insn);
+	switch (opsz) {
+	case 2:
+		mask = 0xffff;
+		immediate = insn->insn_immediate & mask;
+		break;
+	case 4:
+		mask = 0xffffffff;
+		immediate = insn->insn_immediate & mask;
+		break;
+	case 8:
+		mask = 0xffffffffffffffffULL;
+		immediate = (uint64_t)(int64_t)(int32_t)
+		    insn->insn_immediate;
+		break;
+	default:
+		fatalx("invalid TEST operand size %d", opsz);
+	}
+	result = (data & immediate) & mask;
+
+	/* TEST has AND's flags semantics without writing either operand. */
+	emulate_logic_flags(exit, result, opsz);
 
 	return (0);
 }
@@ -1430,6 +1520,10 @@ insn_emulate(struct vm_exit *exit, struct x86_insn *insn, uint32_t vcpu_id)
 
 	case OP_MOVZX:
 		res = emulate_movzx(insn, exit, vcpu_id);
+		break;
+
+	case OP_TEST:
+		res = emulate_test(insn, exit, vcpu_id);
 		break;
 
 	default:

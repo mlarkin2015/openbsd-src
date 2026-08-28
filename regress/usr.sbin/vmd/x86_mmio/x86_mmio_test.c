@@ -32,17 +32,75 @@
 #include "x86_mmio.h"
 
 static uint64_t mmio_read_value;
+static int mmio_last_dir;
 
 static int
 test_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
 {
 	(void)vcpu_id;
 	(void)addr;
+	mmio_last_dir = dir;
 
 	if (dir != MMIO_DIR_READ)
 		return -1;
 	*data = mmio_read_value;
 	return 0;
+}
+
+static void
+test_testl_lapic_icr_busy(void)
+{
+	/* testl $LAPIC_DLSTAT_BUSY, local_apic+LAPIC_ICRLO(%rip) */
+	static const uint8_t bytes[] = {
+		0xf7, 0x05, 0xf6, 0x02, 0xe0, 0x0e,
+		0x00, 0x10, 0x00, 0x00
+	};
+	struct vm_exit exit;
+	struct x86_insn insn;
+	uint64_t expected_flags, old_rax;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE | CR0_PG;
+	exit.vrs.vrs_crs[VCPU_REGS_CR4] = CR4_PAE;
+	exit.vrs.vrs_msrs[VCPU_REGS_EFER] = EFER_LME;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_L;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xfffffffff0000000ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RAX] = old_rax = 0xfeedfaceULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] =
+	    PSL_MBO | PSL_I | PSL_C | PSL_AF | PSL_N | PSL_V;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode LAPIC ICR busy TEST");
+	if (insn.insn_gva != 0xfffffffffee00300ULL)
+		errx(1, "TEST decoded address 0x%llx",
+		    (unsigned long long)insn.insn_gva);
+	if (insn.insn_immediate_len != 4 ||
+	    insn.insn_immediate != 0x1000)
+		errx(1, "TEST decoded immediate 0x%llx/%u",
+		    (unsigned long long)insn.insn_immediate,
+		    insn.insn_immediate_len);
+
+	mmio_read_value = 0;
+	mmio_last_dir = -1;
+	if (insn_emulate(&exit, &insn, 1) != 0)
+		errx(1, "could not emulate LAPIC ICR busy TEST");
+	if (mmio_last_dir != MMIO_DIR_READ)
+		errx(1, "TEST performed MMIO direction %d", mmio_last_dir);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RAX] != old_rax)
+		errx(1, "TEST modified RAX to 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RAX]);
+	expected_flags = PSL_MBO | PSL_I | PSL_PF | PSL_Z;
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] != expected_flags)
+		errx(1, "TEST produced RFLAGS 0x%llx, expected 0x%llx",
+		    (unsigned long long)
+		    exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS],
+		    (unsigned long long)expected_flags);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RIP] !=
+	    0xfffffffff0000000ULL + sizeof(bytes))
+		errx(1, "TEST advanced RIP to 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RIP]);
 }
 
 static void
@@ -207,6 +265,7 @@ test_movl_rex_sib(void)
 int
 main(void)
 {
+	test_testl_lapic_icr_busy();
 	test_lapic_eoi_absolute_sib();
 	test_movl_zero_extends();
 	test_andl_mmio();
