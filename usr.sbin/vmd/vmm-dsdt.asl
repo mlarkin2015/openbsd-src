@@ -79,6 +79,17 @@ DefinitionBlock ("", "DSDT", 2, "VMD   ", "VMD DSDT", 1)
 			})
 		}
 
+		Device (COM1)
+		{
+			Name (_HID, EisaId ("PNP0501"))
+			Name (_UID, One)
+			Name (_CRS, ResourceTemplate ()
+			{
+				IO (Decode16, 0x03F8, 0x03F8, 1, 8)
+				IRQNoFlags () { 4 }
+			})
+		}
+
 		Device (PS2K)
 		{
 			Name (_HID, EisaId ("PNP0303"))

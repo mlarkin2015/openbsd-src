@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include <sys/types.h>
+#include <machine/psl.h>
 #include <machine/specialreg.h>
 
 #include "vmd.h"
@@ -70,12 +71,17 @@ static enum decode_result next_byte(struct x86_decode_state *, uint8_t *);
 static enum decode_result next_value(struct x86_decode_state *, size_t,
     uint64_t *);
 static int is_valid_state(struct x86_decode_state *, const char *);
+static void invalid_mmio_gpa(struct x86_insn *, struct vm_exit *, uint64_t);
 
+static int emulate_and(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_mov(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_movzx(struct x86_insn *, struct vm_exit *, uint32_t);
 
 /* Lookup table for 1-byte opcodes, in opcode alphabetical order. */
 const enum x86_opcode_type x86_1byte_opcode_tbl[255] = {
+	/* AND r/m to register */
+	[0x23] = OP_AND,
+
 	/* MOV */
 	[0x88] = OP_MOV,
 	[0x89] = OP_MOV,
@@ -97,6 +103,9 @@ const enum x86_opcode_type x86_1byte_opcode_tbl[255] = {
 
 /* Lookup table for 1-byte operand encodings, in opcode alphabetical order. */
 const enum x86_operand_enc x86_1byte_operand_enc_tbl[255] = {
+	/* AND r/m to register */
+	[0x23] = OP_ENC_RM,
+
 	/* MOV */
 	[0x88] = OP_ENC_MR,
 	[0x89] = OP_ENC_MR,
@@ -131,6 +140,28 @@ mmio_valid_addr(uint64_t gpa)
 {
 	return ((gpa >= PCI_MMIO_BAR_BASE) &&
 	    (gpa <= PCI_MMIO_BAR_END));
+}
+
+static void
+invalid_mmio_gpa(struct x86_insn *insn, struct vm_exit *exit, uint64_t gpa)
+{
+	uint64_t *r = exit->vrs.vrs_gprs;
+
+	log_warnx("invalid MMIO address: rip=0x%llx gva=0x%lx gpa=0x%llx",
+	    r[VCPU_REGS_RIP], insn->insn_gva, gpa);
+	log_warnx("MMIO regs: rax=%llx rcx=%llx rdx=%llx rbx=%llx",
+	    r[VCPU_REGS_RAX], r[VCPU_REGS_RCX], r[VCPU_REGS_RDX],
+	    r[VCPU_REGS_RBX]);
+	log_warnx("MMIO regs: rsp=%llx rbp=%llx rsi=%llx rdi=%llx",
+	    r[VCPU_REGS_RSP], r[VCPU_REGS_RBP], r[VCPU_REGS_RSI],
+	    r[VCPU_REGS_RDI]);
+	log_warnx("MMIO regs: r8=%llx r9=%llx r10=%llx r11=%llx",
+	    r[VCPU_REGS_R8], r[VCPU_REGS_R9], r[VCPU_REGS_R10],
+	    r[VCPU_REGS_R11]);
+	log_warnx("MMIO regs: r12=%llx r13=%llx r14=%llx r15=%llx",
+	    r[VCPU_REGS_R12], r[VCPU_REGS_R13], r[VCPU_REGS_R14],
+	    r[VCPU_REGS_R15]);
+	fatalx("invalid mmio gpa 0x%llx", gpa);
 }
 
 /*
@@ -306,6 +337,7 @@ static const char *
 str_opcode(struct x86_opcode *opcode)
 {
 	switch (opcode->op_type) {
+	case OP_AND: return "AND";
 	case OP_IN: return "IN";
 	case OP_INS: return "INS";
 	case OP_MOV: return "MOV";
@@ -566,7 +598,7 @@ get_modrm_reg(struct x86_insn *insn)
 static int
 get_modrm_addr(struct x86_insn *insn, struct vcpu_reg_state *vrs)
 {
-	uint8_t mod, rm;
+	uint8_t mod, reg, rm;
 	vaddr_t addr = 0x0UL;
 
 	if (insn == NULL || vrs == NULL)
@@ -576,33 +608,14 @@ get_modrm_addr(struct x86_insn *insn, struct vcpu_reg_state *vrs)
 		rm = MODRM_RM(insn->insn_modrm);
 		mod = MODRM_MOD(insn->insn_modrm);
 
-		switch (rm) {
-		case 0b000:
-			addr = vrs->vrs_gprs[VCPU_REGS_RAX];
-			break;
-		case 0b001:
-			addr = vrs->vrs_gprs[VCPU_REGS_RCX];
-			break;
-		case 0b010:
-			addr = vrs->vrs_gprs[VCPU_REGS_RDX];
-			break;
-		case 0b011:
-			addr = vrs->vrs_gprs[VCPU_REGS_RBX];
-			break;
-		case 0b100:
-			if (mod == 0b11)
-				addr = vrs->vrs_gprs[VCPU_REGS_RSP];
-			break;
-		case 0b101:
-			if (mod != 0b00)
-				addr = vrs->vrs_gprs[VCPU_REGS_RBP];
-			break;
-		case 0b110:
-			addr = vrs->vrs_gprs[VCPU_REGS_RSI];
-			break;
-		case 0b111:
-			addr = vrs->vrs_gprs[VCPU_REGS_RDI];
-			break;
+		/* r/m=100 selects a SIB byte except for register operands. */
+		if (!(rm == 0b100 && mod != 0b11) &&
+		    /* mod=00, r/m=101 is RIP-relative. */
+		    !(rm == 0b101 && mod == 0b00)) {
+			reg = rm;
+			if (insn->insn_prefix.pfx_rex & REX_B)
+				reg += 8;
+			addr = vrs->vrs_gprs[reg];
 		}
 
 		DPRINTF("%s: computed register-based addr=0x%lx", __func__,
@@ -794,7 +807,7 @@ decode_opcode(struct x86_decode_state *state, struct x86_insn *insn)
 	switch(type) {
 	case OP_UNKNOWN:
 	case OP_UNSUPPORTED:
-		log_warnx("%s: unsupported opcode", __func__);
+		log_warnx("%s: unsupported opcode 0x%02x", __func__, byte);
 		return (DECODE_ERROR);
 
 	case OP_TWO_BYTE:
@@ -804,7 +817,8 @@ decode_opcode(struct x86_decode_state *state, struct x86_insn *insn)
 
 		type = x86_2byte_opcode_tbl[byte2];
 		if (type == OP_UNKNOWN || type == OP_UNSUPPORTED) {
-			log_warnx("%s: unsupported 2-byte opcode", __func__);
+			log_warnx("%s: unsupported 2-byte opcode 0x0f%02x",
+			    __func__, byte2);
 			return (DECODE_ERROR);
 		}
 
@@ -835,13 +849,9 @@ decode_sib(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
     struct x86_insn *insn)
 {
 	enum decode_result res;
-	uint8_t byte, mod, scale, index, base;
+	uint8_t byte, mod, scale, index, base, index_reg, base_reg;
 	uint64_t scale_val;
 	vaddr_t addr = 0;
-	static const int sib_reg_map[8] = {
-		VCPU_REGS_RAX, VCPU_REGS_RCX, VCPU_REGS_RDX, VCPU_REGS_RBX,
-		VCPU_REGS_RSP, VCPU_REGS_RBP, VCPU_REGS_RSI, VCPU_REGS_RDI
-	};
 
 	if (!is_valid_state(state, __func__) || insn == NULL)
 		return (-1);
@@ -865,27 +875,36 @@ decode_sib(struct x86_decode_state *state, struct vcpu_reg_state *vrs,
 			scale = SIB_SCALE(byte);
 			index = SIB_INDEX(byte);
 			base = SIB_BASE(byte);
+			base_reg = base;
+			if (insn->insn_prefix.pfx_rex & REX_B)
+				base_reg += 8;
+			index_reg = index;
+			if (insn->insn_prefix.pfx_rex & REX_X)
+				index_reg += 8;
 
 			/* Calculate scale factor: 0->1, 1->2, 2->4, 3->8 */
 			scale_val = 1ULL << scale;
 
 			/* Add base register value (unless special case) */
 			if (base != 0b101 || mod != 0b00) {
-				addr += vrs->vrs_gprs[sib_reg_map[base]];
+				addr += vrs->vrs_gprs[base_reg];
 			}
 
-			/* Add index * scale (unless index is RSP which means no index) */
-			if (index != 0b100) {
-				addr += vrs->vrs_gprs[sib_reg_map[index]] * scale_val;
+			/* index=100 is no index unless REX.X extends it to R12. */
+			if (index != 0b100 ||
+			    (insn->insn_prefix.pfx_rex & REX_X)) {
+				addr += vrs->vrs_gprs[index_reg] * scale_val;
 			}
 
 			insn->insn_gva = addr;
 
 			DPRINTF("%s: SIB calc: scale=%llu, index=%s, base=%s, "
 			    "addr=0x%lx", __func__, scale_val,
-			    index == 0b100 ? "none" : str_reg(sib_reg_map[index]),
+			    index == 0b100 &&
+			    !(insn->insn_prefix.pfx_rex & REX_X) ? "none" :
+			    str_reg(index_reg),
 			    base == 0b101 && mod == 0b00 ? "none" :
-			    str_reg(sib_reg_map[base]), addr);
+			    str_reg(base_reg), addr);
 		}
 	}
 
@@ -1118,6 +1137,79 @@ get_operand_size(struct x86_insn *insn)
 }
 
 static int
+emulate_and(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
+{
+	uint64_t data, gpa, mask, old, result, rflags, sign;
+	mmio_dev_fn_t mmio_fn;
+	int opsz, ret;
+
+	if (insn->insn_opcode.op_encoding != OP_ENC_RM) {
+		log_warnx("%s: unsupported encoding %s", __func__,
+		    str_operand_enc(&insn->insn_opcode));
+		return (EINVAL);
+	}
+
+	ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_READ);
+	if (ret) {
+		log_warnx("%s: error translating gva 0x%lx", __func__,
+		    insn->insn_gva);
+		return (0);
+	}
+	if (!mmio_valid_addr(gpa))
+		invalid_mmio_gpa(insn, exit, gpa);
+
+	mmio_fn = mmio_find_dev(gpa);
+	if (mmio_fn == NULL) {
+		log_warnx("%s: no mmio fn for gpa 0x%llx", __func__, gpa);
+		return (0);
+	}
+
+	data = 0;
+	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+	if (ret) {
+		log_warnx("%s: mmio function indicated failure", __func__);
+		return (0);
+	}
+
+	opsz = get_operand_size(insn);
+	switch (opsz) {
+	case 2:
+		mask = 0xffff;
+		break;
+	case 4:
+		mask = 0xffffffff;
+		break;
+	case 8:
+		mask = 0xffffffffffffffffULL;
+		break;
+	default:
+		fatalx("invalid AND operand size %d", opsz);
+	}
+
+	old = exit->vrs.vrs_gprs[insn->insn_reg];
+	result = (old & data) & mask;
+	if (opsz == 2)
+		exit->vrs.vrs_gprs[insn->insn_reg] =
+		    (old & ~mask) | result;
+	else
+		exit->vrs.vrs_gprs[insn->insn_reg] = result;
+
+	/* AND clears CF and OF; AF is undefined and is cleared here. */
+	rflags = exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS];
+	rflags &= ~(PSL_C | PSL_PF | PSL_AF | PSL_Z | PSL_N | PSL_V);
+	if (result == 0)
+		rflags |= PSL_Z;
+	sign = 1ULL << (opsz * 8 - 1);
+	if (result & sign)
+		rflags |= PSL_N;
+	if (__builtin_parity((unsigned int)(result & 0xff)) == 0)
+		rflags |= PSL_PF;
+	exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS] = rflags;
+
+	return (0);
+}
+
+static int
 emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
 	int ret, opsz;
@@ -1137,7 +1229,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 			return 0;
 		}
 		if (!mmio_valid_addr(gpa))
-			fatalx("invalid mmio gpa 0x%llx", gpa);
+			invalid_mmio_gpa(insn, exit, gpa);
 
 		DPRINTF("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
 		    insn->insn_gva, gpa);
@@ -1193,7 +1285,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 			return (0);
 		}
 		if (!mmio_valid_addr(gpa))
-			fatalx("invalid mmio gpa 0x%llx", gpa);
+			invalid_mmio_gpa(insn, exit, gpa);
 
 		DPRINTF("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
 		    insn->insn_gva, gpa);
@@ -1221,7 +1313,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 			return (0);
 		}
 		if (!mmio_valid_addr(gpa))
-			fatalx("invalid mmio gpa 0x%llx", gpa);
+			invalid_mmio_gpa(insn, exit, gpa);
 
 		DPRINTF("%s: gva 0x%lx translated to gpa 0x%llx", __func__,
 		    insn->insn_gva, gpa);
@@ -1328,6 +1420,10 @@ insn_emulate(struct vm_exit *exit, struct x86_insn *insn, uint32_t vcpu_id)
 	int res;
 
 	switch (insn->insn_opcode.op_type) {
+	case OP_AND:
+		res = emulate_and(insn, exit, vcpu_id);
+		break;
+
 	case OP_MOV:
 		res = emulate_mov(insn, exit, vcpu_id);
 		break;
