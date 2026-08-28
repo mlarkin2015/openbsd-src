@@ -1,6 +1,6 @@
 # PLAN-000-MASTER: Bringing vmm/vmd to Windows Guest Support
 
-**Status**: planning. **Date**: 2026-08-21.
+**Status**: implementation in progress. **Date**: 2026-08-28.
 **Scope**: OpenBSD hypervisor (kernel `vmm(4)` + userspace `vmd(8)`) capable of
 installing and running Microsoft Windows 10/11 as guests.
 
@@ -10,7 +10,30 @@ master disagree, this master wins.
 
 ---
 
-## Verified current state (source audit, 2026-08)
+## 2026-08-28 implementation milestone
+
+The following work is complete and guest-validated; it supersedes stale gap
+descriptions in the original 2026-08-21 audit below:
+
+- per-vCPU xAPIC MMIO state, LVT timer, IRR/ISR/TMR/PPR arbitration and EOI;
+- IOAPIC edge/level delivery, remote-IRR/EOI behavior, PIC-through-LINT0 and
+  ACPI legacy routing;
+- ACPI-capable SeaBIOS/fw_cfg handoff and corrected RSDP/XSDT/MADT/FADT/DSDT;
+- generic PCI MSI and MSI-X delivery used by modern virtio devices;
+- MMIO AND and REX.B/REX.X address decoding needed by FreeBSD; and
+- ACPI COM1 enumeration plus virtio block GET_ID support.  FreeBSD 15.1 now
+  reaches and operates its serial installer; OpenBSD and Alpine Linux reach
+  login with APIC and MSI/MSI-X active.
+
+The remaining SMP gate is narrower than the original plan suggested.  The
+kernel explicitly rejects `vcp_ncpus != 1`, vmd lacks an AP wait-for-SIPI
+lifecycle, and LAPIC ICR writes are still dropped.  CPUID topology and the
+per-vCPU MSR_APICBASE BSP bit also need correction.  Conversely, vmd already
+has one run thread and LAPIC per configured vCPU, vmm(4) already allocates and
+addresses per-vCPU objects, and `vmmioctl()` drops the kernel big lock before
+entering `VMM_IOC_RUN`.
+
+## Verified current state (original source audit, 2026-08-21)
 
 What exists and works today:
 
@@ -20,10 +43,10 @@ What exists and works today:
   `etc/screen-and-debug`, `bootorder` (`fw_cfg.c:97-120`).
 - ACPI: RSDP/XSDT/MADT(LAPIC+IOAPIC)/FADT generated in C (`acpi.c`); DSDT loaded
   from `/etc/firmware/vmm.dsdt`, optional.
-- IOAPIC emulation (`i82093aa.c`) + skeletal local APIC (`i82489dx.c`);
-  interrupts delivered INTx-only.
+- IOAPIC emulation (`i82093aa.c`) + local APIC (`i82489dx.c`).  The original
+  skeletal implementation has since been replaced as described above.
 - VirtIO 1.0 feature negotiation (`virtio.c:1005+`); devices: net, blk, scsi,
-  rng, vmmci. Disks raw + qcow2. **No MSI-X anywhere.**
+  rng, vmmci. Disks raw + qcow2.  MSI/MSI-X has since been implemented.
 - Kernel CPUID leaves: "OpenBSDVMM58" @0x40000000, KVM compat @0x40000100
   (`vmm_machdep.c:6563+`). VMCALL/VMMCALL exits currently inject #UD.
 - EPT-violation → userspace MMIO dispatch (`x86_mmio.c`). SEV/SEV-ES scaffolding.
@@ -32,7 +55,7 @@ What does **not** exist (gaps that gate Windows):
 
 | Gap | Impact on Windows |
 |---|---|
-| Local APIC timer / LVT / ICR (INIT-SIPI) / EOI incomplete | SMP bringup broken; timekeeping broken |
+| Kernel multi-vCPU admission, AP lifecycle, ICR INIT-SIPI incomplete | SMP bringup broken |
 | No display device (VGA/virtio-gpu) | Windows Setup is graphical — cannot install blind |
 | No input (i8042 PS/2, USB tablet) | Cannot interact with Setup |
 | No IDE/AHCI storage (i82093aa is an IOAPIC, not IDE) | Storage = virtio only, needs driver ISO during setup |
@@ -63,10 +86,11 @@ What does **not** exist (gaps that gate Windows):
 
 Everything else depends on these. Order within the phase:
 
-1. **LAPIC completion** (kernel, `vmm_machdep.c` + userspace `i82489dx.c`):
-   LVT timer (periodic/oneshot/TSC-deadline) backed by host timers, ICR +
-   INIT-SIPI delivery for SMP, EOI/level-triggered correctness, IPI handling.
-   Validate with SMP Linux guest + existing `regress/sys/arch/amd64/vmm*`.
+1. **LAPIC/SMP completion** (kernel, `vmm.c`/`vmm_machdep.c` + userspace
+   `vm.c`/`i82489dx.c`): timer, EOI and basic delivery are complete.  Remaining:
+   admit multiple kernel vCPUs, park APs until SIPI, implement ICR fixed/INIT/
+   SIPI delivery, and correct CPUID/APICBASE topology.  Validate with SMP
+   OpenBSD, Linux and FreeBSD plus `regress/sys/arch/amd64/vmm*`.
 2. **OVMF as ROM** (userspace): load `ovmf.fd` through the existing bios path;
    map flash read-only in EPT; add NVRAM varstore pflash region (below firmware
    flash) with EPT write-trap persistence to `/var/vm/<vm>/nvram`;
@@ -112,8 +136,8 @@ enlightened timers/EOI.
 1. TPM 2.0: ACPI `_HID MSFT0101` + TIS MMIO @0xFED40000 + TPM2 table
    (corrected PLAN-005); minimal command subset using libc SHA/libcrypto;
    state persisted by parent process.
-2. MSI-X support in `virtio.c` + per-device vectors (corrected PLAN-003 §3.2);
-   needed for virtio multiqueue and cleaner interrupt semantics.
+2. **Complete:** MSI-X support in `virtio.c` + per-device vectors (corrected
+   PLAN-003 §3.2), including MSI fallback and guest boot validation.
 3. Config validation warnings (PLAN-007 §7.2), vm.conf(5) docs, qcow2 conversion
    guidance instead of vhdx support.
 4. Optional here: minimal xHCI with tablet device replacing/augmenting i8042.
@@ -191,42 +215,34 @@ enlightened Windows.
 
 ## Working notes (LAPIC/SMP track, 2026-08)
 
-1. **Unicpu assumption**: vmd is currently unicpu-only; the single global LAPIC
-   (`struct i82489dx lapic`, `i82489dx.c:46`) is a consequence, not an oversight.
-   Per-vCPU LAPICs are required for SMP and are the first item of the LAPIC work.
+1. **Current admission boundary**: vmd has per-vCPU LAPICs, run threads, halt
+   state, timer polling and targeted interrupt kicks.  The immediate blocker is
+   the explicit `vcp_ncpus != 1` rejection in kernel `vm_create()`.  Removing it
+   must be paired with parking AP threads until INIT-SIPI; otherwise every vCPU
+   would execute the BSP firmware reset vector concurrently.
 2. **Kernel-side SMP work required (vmm(4))**: userspace SMP support alone is not
    sufficient. Known kernel concerns to audit:
    - vcpu ID assumptions: code paths may implicitly assume one vcpu per VM
      (e.g. `VMM_IOC_RUN` dispatch, interrupt/INTR-flag plumbing via
      `vrp_irqready`, TLB/shootdown handling keyed on vm not vcpu).
-   - The kernel **global (big) lock is held across several vmm operations**
-     (`VMM_IOC_CREATE`, `VMM_IOC_RUN` entry paths, memory map mutations),
-     serializing guest execution across vCPUs even once multiple exist. True SMP
-     requires narrowing lock hold times (per-VM rwlock, lockless run entry) or
-     accepting that "SMP" guests timeshare the kernel lock initially — measure
-     before optimizing.
+   - The earlier big-lock concern was incorrect for this tree: `vmmioctl()`
+     calls `KERNEL_UNLOCK()` before dispatching `VMM_IOC_RUN` and reacquires it
+     only on return.  Each vCPU has its own `vc_lock`; concurrent execution still
+     needs measurement and race auditing, but no global run serialization is
+     currently known.
    - Per-vcpu state in `struct vm_info`/`struct vcpu` (IRq injection flags,
      halt/pause state) must become strictly per-vcpu; check `vcpu_intr()`,
      `vcpu_halt()`, msr bitmap sharing, and EPT invalidation scope (single-EPT
      per VM means IPI-based shootdowns must target all vCPUs).
-3. **IOAPIC sufficiency assessment** (i82093aa.c): adequate for basic fixed/
-     edge routing today, with these defects to fix during the LAPIC track:
-   - `i82093aa_eoi()` indexes `redtbl[pin]` / `redtbl[pin+1]` instead of
-     `redtbl[pin*2]` / `redtbl[pin*2+1]` — it scans the wrong entries and also
-     uses system-header `IOAPIC_REDLO_RIRR` (0x4000) mixed with local
-     `I82093AA_REDLO_RIRR` (1<<14 = 0x4000, same value but different names;
-     `IOAPIC_REDLO_TYPE` does not exist anywhere — this cannot compile as-is or
-     resolves to something unintended). Needs cleanup + correctness fix.
-   - Edge mode delivers on *every* evaluation regardless of rising edge (the
-     rising-edge check at `i82093aa.c:~300` is commented out) — spurious
-     interrupts for edge-triggered devices.
+3. **IOAPIC sufficiency assessment** (`i82093aa.c`): redirection indexing,
+     edge detection, remote IRR and EOI re-evaluation have been repaired and
+     validated with OpenBSD, Linux and FreeBSD.  Remaining topology work:
    - Destination is passed straight through as a vcpu id
      (`i82093aa_deliver`: `int vcpu_id = dest`) ignoring physical-vs-logical
      dest mode; logical mode + lowest-priority delivery are unimplemented.
    - Delivery modes other than Fixed (NMI, ExtINT, SMI, Init) accepted but all
      delivered as fixed vectors.
-   - No EOI-broadcast suppression: every LAPIC EOI re-evaluates every pin whose
-     vector matches, even if that pin never routed through the EOIing LAPIC.
+   - EOI broadcast suppression is not implemented.
 
 ## Risk register
 
