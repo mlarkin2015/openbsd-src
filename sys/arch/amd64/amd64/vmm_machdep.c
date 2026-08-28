@@ -504,7 +504,17 @@ vm_intr_pending(struct vm_intr_params *vip)
 		goto out;
 	}
 
-	vcpu->vc_intr = vip->vip_intr;
+	/*
+	 * VMM_IOC_RUN supplies vmd's current interrupt-pending snapshot, but
+	 * another vCPU can assert an interrupt after that snapshot and before
+	 * the target enters the kernel.  Do not write vc_intr here: the target
+	 * owns it while holding vc_lock, and a direct write can be overwritten
+	 * by the stale VMM_IOC_RUN snapshot.  Instead, latch assertions until
+	 * the target consumes them at run entry.  Deassertions are reconciled
+	 * by the next VMM_IOC_RUN; an extra interrupt-window exit is harmless.
+	 */
+	if (vip->vip_intr)
+		atomic_setbits_int(&vcpu->vc_intr_latch, 1);
 #ifdef MULTIPROCESSOR
 	ci = READ_ONCE(vcpu->vc_curcpu);
 	if (ci != NULL)
@@ -2828,6 +2838,7 @@ vcpu_reset_regs(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 		vcpu->vc_gueststate.vg_exit_reason = 0;
 		vcpu->vc_inject.vie_type = VCPU_INJECT_NONE;
 		vcpu->vc_intr = 0;
+		atomic_swap_uint(&vcpu->vc_intr_latch, 0);
 		vcpu->vc_irqready = 0;
 	}
 
@@ -3706,10 +3717,13 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 	 * needs to be fixed up depends on what vmd populated in the
 	 * exit data structure.
 	 */
-	if (vrp->vrp_intr_pending)
-		vcpu->vc_intr = 1;
-	else
-		vcpu->vc_intr = 0;
+	/*
+	 * Merge the userspace level snapshot with assertions which raced the
+	 * transition into VMM_IOC_RUN.  Assertions arriving after the swap stay
+	 * visible through vc_intr_latch until this run returns to userspace.
+	 */
+	vcpu->vc_intr = vrp->vrp_intr_pending |
+	    atomic_swap_uint(&vcpu->vc_intr_latch, 0);
 
 	switch (vcpu->vc_gueststate.vg_exit_reason) {
 	case VMX_EXIT_IO:
@@ -3763,7 +3777,7 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 
 			vcpu->vc_inject.vie_type = VCPU_INJECT_NONE;
 		}
-	} else if (!vcpu->vc_intr) {
+	} else if (!(vcpu->vc_intr || READ_ONCE(vcpu->vc_intr_latch))) {
 		/*
 		 * Disable window exiting
 		 */
@@ -4031,7 +4045,8 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 			 * If not ready for interrupts, but interrupts pending,
 			 * enable interrupt window exiting.
 			 */
-			if (vcpu->vc_irqready == 0 && vcpu->vc_intr) {
+			if (vcpu->vc_irqready == 0 &&
+			    (vcpu->vc_intr || READ_ONCE(vcpu->vc_intr_latch))) {
 				if (vmread(VMCS_PROCBASED_CTLS, &procbased)) {
 					printf("%s: can't read procbased ctls "
 					    "on intwin exit\n", __func__);
@@ -4055,7 +4070,9 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 			if (ret || vcpu_must_stop(vcpu))
 				break;
 
-			if (vcpu->vc_intr && vcpu->vc_irqready) {
+			if ((vcpu->vc_intr ||
+			    READ_ONCE(vcpu->vc_intr_latch)) &&
+			    vcpu->vc_irqready) {
 				ret = EAGAIN;
 				break;
 			}
@@ -6762,10 +6779,9 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 	struct schedstate_percpu *spc;
 	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
 
-	if (vrp->vrp_intr_pending)
-		vcpu->vc_intr = 1;
-	else
-		vcpu->vc_intr = 0;
+	/* See vcpu_run_vmx(): preserve assertions racing VMM_IOC_RUN entry. */
+	vcpu->vc_intr = vrp->vrp_intr_pending |
+	    atomic_swap_uint(&vcpu->vc_intr_latch, 0);
 
 	/*
 	 * If we are returning from userspace (vmd) because we exited
@@ -6982,7 +6998,8 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			 * If not ready for interrupts, but interrupts pending,
 			 * enable interrupt window exiting.
 			 */
-			if (vcpu->vc_irqready == 0 && vcpu->vc_intr) {
+			if (vcpu->vc_irqready == 0 &&
+			    (vcpu->vc_intr || READ_ONCE(vcpu->vc_intr_latch))) {
 				vmcb->v_intercept1 |= SVM_INTERCEPT_VINTR;
 				vmcb->v_irq = 1;
 				vmcb->v_intr_misc = SVM_INTR_MISC_V_IGN_TPR;
@@ -6998,7 +7015,9 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			if (ret || vcpu_must_stop(vcpu))
 				break;
 
-			if (vcpu->vc_intr && vcpu->vc_irqready) {
+			if ((vcpu->vc_intr ||
+			    READ_ONCE(vcpu->vc_intr_latch)) &&
+			    vcpu->vc_irqready) {
 				ret = EAGAIN;
 				break;
 			}

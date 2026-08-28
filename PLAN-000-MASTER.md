@@ -25,15 +25,19 @@ descriptions in the original 2026-08-21 audit below:
   reaches and operates its serial installer; OpenBSD and Alpine Linux reach
   login with APIC and MSI/MSI-X active.
 
-The initial SMP gate is now implemented and validated through a complete
-2-vCPU OpenBSD GENERIC.MP boot.  `vmm(4)` admits up to 64 vCPUs; vmd parks AP
-threads until INIT-SIPI; the LAPIC ICR handles physical fixed, INIT and STARTUP
-IPIs; and CPUID/APICBASE identify the configured topology and BSP correctly.
+The initial SMP gate is now implemented and validated through complete
+2-, 4- and 8-vCPU OpenBSD GENERIC.MP boots.  `vmm(4)` admits up to 64 vCPUs;
+vmd parks AP threads until INIT-SIPI; the LAPIC ICR handles physical fixed,
+INIT and STARTUP IPIs; and CPUID/APICBASE identify the configured topology and
+BSP correctly.
 `vm.conf` and `vmctl` expose validated vCPU-count controls.  Host builds and
 focused LAPIC/config regressions pass.  AMD SVM reset now clears stale virtual-
 interrupt-window state, which had delivered dummy vector zero when the AP first
-enabled interrupts.  An in-guest kernel-build stress run is in progress; SMP
-Linux/FreeBSD, repeated reset, pause and reboot validation remain next.
+enabled interrupts.  An atomic kernel assertion latch prevents concurrent
+`VMM_IOC_INTR` calls from being lost to a stale `VMM_IOC_RUN` pending snapshot;
+this fixed the four/eight-vCPU fsck/mountroot TLB-shootdown hang.  Longer
+stress, SMP Linux/FreeBSD, repeated reset, pause and reboot validation remain
+next.
 
 ## Verified current state (original source audit, 2026-08-21)
 
