@@ -55,6 +55,7 @@ static int vmm_create_vm(struct vmd_vm *);
 static void pause_vm(struct vmd_vm *);
 static void unpause_vm(struct vmd_vm *);
 static int start_vm(struct vmd_vm *, int);
+static void vm_stats_report(int, short, void *);
 
 int con_fd;
 struct vmd_vm *current_vm;
@@ -85,6 +86,165 @@ static uint8_t vcpu_runstate[VMM_MAX_VCPUS_PER_VM];
 static uint8_t vcpu_sipi_vector[VMM_MAX_VCPUS_PER_VM];
 
 static volatile int lapic_timer_stop = 0;
+
+#define VM_STATS_INTERVAL	5
+
+enum vm_stat_counter {
+	VMSTAT_RUN,
+	VMSTAT_EXIT_NONE,
+	VMSTAT_EXIT_IO,
+	VMSTAT_EXIT_MMIO,
+	VMSTAT_EXIT_INTRWIN,
+	VMSTAT_EXIT_HLT,
+	VMSTAT_EXIT_OTHER,
+	VMSTAT_INJECT,
+	VMSTAT_INTR_ASSERT,
+	VMSTAT_INTR_DEASSERT,
+	VMSTAT_COUNT
+};
+
+static uint64_t vm_stats[VMM_MAX_VCPUS_PER_VM][VMSTAT_COUNT];
+static uint64_t vm_stats_prev[VMM_MAX_VCPUS_PER_VM][VMSTAT_COUNT];
+static struct i82489dx_stats lapic_stats_prev;
+static struct virtio_net_stats virtio_net_stats_prev;
+static struct event vm_stats_event;
+
+static inline void
+vm_stats_inc(uint32_t vcpu_id, enum vm_stat_counter counter)
+{
+	if (log_getverbose() == 1 && vcpu_id < VMM_MAX_VCPUS_PER_VM)
+		__atomic_fetch_add(&vm_stats[vcpu_id][counter], 1,
+		    __ATOMIC_RELAXED);
+}
+
+static void
+vm_stats_count_exit(uint32_t vcpu_id, uint16_t reason)
+{
+	vm_stats_inc(vcpu_id, VMSTAT_RUN);
+	if (reason == VM_EXIT_NONE)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_NONE);
+	else if (reason == VMX_EXIT_IO || reason == SVM_VMEXIT_IOIO)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_IO);
+	else if (reason == VMX_EXIT_EPT_VIOLATION || reason == SVM_VMEXIT_NPF)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_MMIO);
+	else if (reason == VMX_EXIT_INT_WINDOW || reason == SVM_VMEXIT_VINTR)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_INTRWIN);
+	else if (reason == VMX_EXIT_HLT || reason == SVM_VMEXIT_HLT)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_HLT);
+	else if (reason != VM_EXIT_TERMINATED)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_OTHER);
+}
+
+static uint64_t
+stats_delta(uint64_t current, uint64_t *previous)
+{
+	uint64_t delta = current - *previous;
+
+	*previous = current;
+	return (delta);
+}
+
+static void
+vm_stats_report(int fd, short event, void *arg)
+{
+	struct i82489dx_stats lapic, lapic_delta;
+	struct virtio_net_stats net, net_delta;
+	struct timeval tv = { VM_STATS_INTERVAL, 0 };
+	uint64_t delta[VMSTAT_COUNT], current, avg_wait = 0, avg_hold = 0;
+	size_t i, j, ncpus;
+	int enabled;
+
+	(void)fd;
+	(void)event;
+	ncpus = (size_t)(intptr_t)arg;
+	enabled = log_getverbose() == 1;
+	for (i = 0; i < ncpus; i++) {
+		for (j = 0; j < VMSTAT_COUNT; j++) {
+			current = __atomic_load_n(&vm_stats[i][j],
+			    __ATOMIC_RELAXED);
+			delta[j] = stats_delta(current, &vm_stats_prev[i][j]);
+		}
+		if (enabled) {
+			log_info("stats %ds vcpu%zu: run=%llu none=%llu io=%llu "
+			    "mmio=%llu intrwin=%llu hlt=%llu other=%llu "
+			    "inject=%llu intr-assert=%llu intr-deassert=%llu",
+			    VM_STATS_INTERVAL, i,
+			    (unsigned long long)delta[VMSTAT_RUN],
+			    (unsigned long long)delta[VMSTAT_EXIT_NONE],
+			    (unsigned long long)delta[VMSTAT_EXIT_IO],
+			    (unsigned long long)delta[VMSTAT_EXIT_MMIO],
+			    (unsigned long long)delta[VMSTAT_EXIT_INTRWIN],
+			    (unsigned long long)delta[VMSTAT_EXIT_HLT],
+			    (unsigned long long)delta[VMSTAT_EXIT_OTHER],
+			    (unsigned long long)delta[VMSTAT_INJECT],
+			    (unsigned long long)delta[VMSTAT_INTR_ASSERT],
+			    (unsigned long long)delta[VMSTAT_INTR_DEASSERT]);
+		}
+	}
+
+	i82489dx_stats_snapshot(&lapic);
+#define LAPIC_DELTA(_field) \
+	lapic_delta._field = stats_delta(lapic._field, \
+	    &lapic_stats_prev._field)
+	LAPIC_DELTA(mmio_reads);
+	LAPIC_DELTA(mmio_writes);
+	LAPIC_DELTA(tpr_writes);
+	LAPIC_DELTA(eois);
+	LAPIC_DELTA(icr_writes);
+	LAPIC_DELTA(ipi_targets);
+	LAPIC_DELTA(timer_irqs);
+	LAPIC_DELTA(vectors);
+	LAPIC_DELTA(acks);
+#undef LAPIC_DELTA
+	if (enabled) {
+		log_info("stats %ds lapic: mmio-read=%llu mmio-write=%llu "
+		    "tpr-write=%llu eoi=%llu icr=%llu ipi-target=%llu "
+		    "timer=%llu vector=%llu ack=%llu", VM_STATS_INTERVAL,
+		    (unsigned long long)lapic_delta.mmio_reads,
+		    (unsigned long long)lapic_delta.mmio_writes,
+		    (unsigned long long)lapic_delta.tpr_writes,
+		    (unsigned long long)lapic_delta.eois,
+		    (unsigned long long)lapic_delta.icr_writes,
+		    (unsigned long long)lapic_delta.ipi_targets,
+		    (unsigned long long)lapic_delta.timer_irqs,
+		    (unsigned long long)lapic_delta.vectors,
+		    (unsigned long long)lapic_delta.acks);
+	}
+
+	virtio_net_stats_snapshot(&net);
+#define NET_DELTA(_field) \
+	net_delta._field = stats_delta(net._field, \
+	    &virtio_net_stats_prev._field)
+	NET_DELTA(rx_kicks);
+	NET_DELTA(tx_kicks);
+	NET_DELTA(rx_irqs);
+	NET_DELTA(tx_irqs);
+	NET_DELTA(config_irqs);
+	NET_DELTA(sync_wait_ns);
+	NET_DELTA(sync_hold_ns);
+	NET_DELTA(sync_ops);
+#undef NET_DELTA
+	if (net_delta.sync_ops != 0) {
+		avg_wait = net_delta.sync_wait_ns / net_delta.sync_ops;
+		avg_hold = net_delta.sync_hold_ns / net_delta.sync_ops;
+	}
+	if (enabled) {
+		log_info("stats %ds net-vm: kick-rx=%llu kick-tx=%llu "
+		    "irq-rx=%llu irq-tx=%llu irq-config=%llu sync-ops=%llu "
+		    "wait-avg-ns=%llu hold-avg-ns=%llu", VM_STATS_INTERVAL,
+		    (unsigned long long)net_delta.rx_kicks,
+		    (unsigned long long)net_delta.tx_kicks,
+		    (unsigned long long)net_delta.rx_irqs,
+		    (unsigned long long)net_delta.tx_irqs,
+		    (unsigned long long)net_delta.config_irqs,
+		    (unsigned long long)net_delta.sync_ops,
+		    (unsigned long long)avg_wait,
+		    (unsigned long long)avg_hold);
+	}
+
+	if (evtimer_add(&vm_stats_event, &tv) == -1)
+		log_warnx("%s: could not reschedule stats timer", __func__);
+}
 
 /*
  * vm_main
@@ -755,6 +915,11 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	}
 
 	log_debug("%s: waiting on events for VM %s", __func__, vmc->vmc_name);
+	evtimer_set(&vm_stats_event, vm_stats_report,
+	    (void *)(intptr_t)vmc->vmc_ncpus);
+	if (evtimer_add(&vm_stats_event,
+	    (&(struct timeval) { VM_STATS_INTERVAL, 0 })) == -1)
+		log_warnx("%s: could not start stats timer", __func__);
 
 	/*
 	 * Start the LAPIC timer thread. It polls each vcpu's emulated LAPIC
@@ -1031,6 +1196,8 @@ vcpu_run_loop(void *arg)
 			}
 		} else
 			vrp->vrp_inject.vie_type = VCPU_INJECT_NONE;
+		if (vrp->vrp_inject.vie_type != VCPU_INJECT_NONE)
+			vm_stats_inc(n, VMSTAT_INJECT);
 
 		/* Still more interrupts pending? */
 		vrp->vrp_intr_pending = intr_pending(n);
@@ -1042,6 +1209,7 @@ vcpu_run_loop(void *arg)
 			    __func__, current_vm->vm_vmid, n);
 			break;
 		}
+		vm_stats_count_exit(n, vrp->vrp_exit_reason);
 
 		/* INIT supersedes any ordinary exit which raced with its kick. */
 		mutex_lock(&vcpu_run_mtx[n]);
@@ -1137,6 +1305,8 @@ vcpu_intr(uint32_t vmm_id, uint32_t vcpu_id, uint8_t intr)
 	vip.vip_vm_id = vmm_id;
 	vip.vip_vcpu_id = vcpu_id; /* XXX always 0? */
 	vip.vip_intr = intr;
+	vm_stats_inc(vcpu_id,
+	    intr ? VMSTAT_INTR_ASSERT : VMSTAT_INTR_DEASSERT);
 
 	if (ioctl(env->vmd_vmm_fd, VMM_IOC_INTR, &vip) == -1)
 		return (errno);
