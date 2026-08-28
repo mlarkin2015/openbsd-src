@@ -1460,7 +1460,12 @@ intr_ack(int vcpu_id)
 
 	log_debug("%s: PIC took the IRQ", __func__);
 
-	return i8259_ack();
+	vec = i8259_ack();
+	if (vec == 0)
+		log_warnx("%s: PIC returned interrupt vector zero for "
+		    "vcpu %d", __func__, vcpu_id);
+
+	return vec;
 }
 
 void
