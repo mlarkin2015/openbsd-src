@@ -112,8 +112,13 @@ options and will be obtained from the base or input image respectively.
 .El
 .It Cm load Ar filename
 Load additional configuration from the specified file.
-.It Cm log brief | verbose
-Disable or enable verbose debug logging.
+.It Cm log brief | stats | verbose
+Select brief logging, periodic virtual machine performance counters, or
+verbose debug logging.
+The
+.Cm stats
+mode reports five-second deltas for vCPU exits, interrupt and LAPIC activity,
+and virtio network queue processing.
 .It Cm pause Ar id
 Pause a VM with the specified
 .Ar id .

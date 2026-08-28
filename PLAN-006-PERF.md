@@ -28,8 +28,34 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
 - No paravirtualized EOI
 - No memory balloon device
 - No live migration support
-- vCPU run loop: single-threaded per VM (multiple vCPUs use pthreads)
+- Each vCPU has its own run-loop pthread; emulated device and LAPIC work still
+  returns to the VM process
 - Event-driven I/O via `event(3)`
+- `vmctl log stats` provides five-second vCPU-exit, LAPIC/IPI and virtio-net
+  queue/lock counters for controlled performance work
+- The current virtio-net device exposes one queue pair, even to SMP guests
+
+## SMP network measurements (2026-08-28)
+
+Matched 1/2/4/8-vCPU OpenBSD guest tests show that throughput peaks at two
+vCPUs and then flattens or declines.  The queue-notification mutex averages
+only about 0.06-0.10 us of wait time under load, while a representative
+eight-vCPU, four-stream interval produces roughly 147,000 fixed ICR writes
+and 495,000 LAPIC MMIO writes in five seconds.  A stats-disabled control run
+matches the instrumented throughput.
+
+Before implementing the broader items below, prioritize:
+
+1. an in-kernel fixed-IPI/EOI LAPIC fast path, followed by AMD AVIC and Intel
+   APICv/virtual-interrupt delivery feasibility work;
+2. virtio-net multiqueue, MSI-X queue affinity and interrupt batching; and
+3. another identical scaling matrix to separate APIC savings from useful
+   queue parallelism.
+
+x2APIC alone changes MMIO register access into intercepted MSR access; without
+kernel or hardware acceleration it does not remove the dominant exit and
+userspace-emulation cost.  Posted interrupts are most useful as part of the
+hardware LAPIC design and do not eliminate userspace virtio processing.
 
 ## What to Build
 

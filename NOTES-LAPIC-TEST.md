@@ -306,6 +306,74 @@ interrupt-window exit.  After installing the new host kernel, four- and
 eight-vCPU OpenBSD guests passed the former fsck/mountroot failure point; the
 eight-vCPU guest remained running under load.
 
+## SMP network scaling instrumentation (2026-08-28)
+
+`vmctl log stats` now selects a diagnostic level between `brief` and
+`verbose`.  It reports five-second deltas without enabling the existing
+per-event debug trace:
+
+- per-vCPU returns to userspace, split into I/O, MMIO, interrupt-window, HLT
+  and other exits, plus interrupt injection and `VMM_IOC_INTR` activity;
+- xAPIC MMIO reads/writes, EOIs, ICR writes and fixed-IPI target count, LAPIC
+  timer expiry, queued vectors and acknowledged vectors;
+- virtio-net queue kicks and interrupts in both the VM and device processes,
+  packet/byte batching and packets per interrupt; and
+- time waiting for and holding the VM process's global virtio synchronization
+  mutex around a modern virtio-net queue notification.
+
+The counters are intended for measurement, not a stable management API.
+`vmctl log brief` disables their hot-path collection.  `vmctl log verbose`
+retains the former full debug-log behavior.
+
+The test guest's `/bsdm` GENERIC.MP kernel was installed as `/bsd`; normal
+firmware boots then reported the requested two, four and eight CPUs.  TCP
+throughput was measured with iperf3 between that guest and the host on the
+same vport, for 10-12 seconds per direction.  The results are noisy but
+reproduce the reported tendency for two vCPUs to be the best point:
+
+| vCPUs | guest -> host, 1 stream | host -> guest, 1 stream | guest -> host, 4 streams | host -> guest, 4 streams |
+|------:|-------------------------:|-------------------------:|--------------------------:|--------------------------:|
+| 1 | 0.72 Gbit/s | 1.32 Gbit/s | 1.12 Gbit/s | 1.05 Gbit/s |
+| 2 | 0.82 Gbit/s | 1.71 Gbit/s | 1.62 Gbit/s | 2.27 Gbit/s |
+| 4 | 0.80 Gbit/s | 1.45 Gbit/s | 1.06 Gbit/s | 2.18 Gbit/s |
+| 8 | 0.58 Gbit/s | 1.43 Gbit/s | 1.21 Gbit/s | 2.17 Gbit/s |
+
+An eight-vCPU, four-stream guest-to-host control run produced 1.21 Gbit/s
+with statistics enabled and 1.20 Gbit/s with them disabled, so the diagnostic
+collection is not the source of the scaling loss.
+
+The virtio mutex is also not the observed bottleneck.  Its average wait was
+generally 59-103 ns under load and did not increase with vCPU count; the
+average serialized queue service was about 3-5 us.  In contrast, the xAPIC
+work grows very large during parallel TCP load.  Representative five-second
+samples recorded approximately 56,000 ICR writes with two vCPUs, 116,000
+with four, and 147,000 with eight.  The eight-vCPU sample also contained
+495,000 LAPIC MMIO writes--about 99,000 userland-assisted LAPIC writes per
+second.  Idle LAPIC timer traffic scales linearly as well: approximately 500,
+1,000 and 2,000 timer interrupts per five seconds at two, four and eight
+vCPUs respectively.
+
+This supports the IPI-overhead hypothesis, especially for multiple flows,
+and identifies the userspace xAPIC path as a more important target than the
+virtio queue mutex.  The guest currently reports `vio0: 1 queue`, so adding
+vCPUs does not add network queues; it instead adds scheduler/network-stack
+cross-CPU coordination and per-vCPU timer traffic around one device queue.
+
+The likely optimization order is:
+
+1. reduce or eliminate userspace LAPIC EOI/ICR traffic, first by moving the
+   common fixed-IPI/EOI fast path into vmm(4), then considering AMD AVIC and
+   Intel APICv/virtual-interrupt delivery;
+2. add virtio-net multiqueue and MSI-X vector/queue affinity, with interrupt
+   batching or moderation, so extra guest CPUs can perform useful network
+   work; and
+3. evaluate posted interrupts as part of the hardware LAPIC work.  They do
+   not by themselves remove the userspace virtio device transition.
+
+x2APIC would simplify APIC register decoding, but an intercepted x2APIC MSR
+still exits unless it is handled in the kernel or accelerated by hardware.
+It is therefore not expected to remove the dominant overhead on its own.
+
 ## Known remaining gaps
 
 - Concurrent execution, INIT-SIPI and interrupt delivery through boot are
@@ -325,6 +393,8 @@ eight-vCPU guest remained running under load.
   lowest-priority delivery are not implemented.
 - PM1A registers are implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
+- Virtio-net exposes one queue pair; SMP guests have no receive/transmit
+  multiqueue or queue-affinity scaling yet.
 
 ## Next steps after testing
 
@@ -336,7 +406,11 @@ eight-vCPU guest remained running under load.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
    `/dev/vmm` ioctl path already drops the kernel big lock before VMM_IOC_RUN,
    so no global execution serialization is currently known.
-4. Add active ACPI PM1 event sources and SCI delivery as they become needed.
-5. Add LAPIC/IOAPIC logical destination and lowest-priority delivery.
-6. Extend MSI routing only when a guest needs logical/x2APIC delivery or
+4. Prototype an in-kernel LAPIC fixed-IPI/EOI fast path and repeat the
+   instrumented network tests before undertaking full AVIC/APICv support.
+5. Add virtio-net multiqueue and MSI-X queue affinity, then repeat the same
+   single- and four-stream matrix.
+6. Add active ACPI PM1 event sources and SCI delivery as they become needed.
+7. Add LAPIC/IOAPIC logical destination and lowest-priority delivery.
+8. Extend MSI routing only when a guest needs logical/x2APIC delivery or
    interrupt remapping.

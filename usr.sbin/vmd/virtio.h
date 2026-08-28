@@ -317,6 +317,17 @@ struct virtio_net_hdr {
 	*/
 };
 
+struct virtio_net_stats {
+	uint64_t rx_kicks;
+	uint64_t tx_kicks;
+	uint64_t rx_irqs;
+	uint64_t tx_irqs;
+	uint64_t config_irqs;
+	uint64_t sync_wait_ns;
+	uint64_t sync_hold_ns;
+	uint64_t sync_ops;
+};
+
 enum vmmci_cmd {
 	VMMCI_NONE = 0,
 	VMMCI_SHUTDOWN,
@@ -401,6 +412,7 @@ uint32_t virtio_io_cfg(struct virtio_dev *, int, uint8_t, uint32_t, uint8_t);
 
 void virtio_update_qs(struct virtio_dev *);
 void virtio_update_qa(struct virtio_dev *);
+void virtio_net_stats_snapshot(struct virtio_net_stats *);
 
 enum vm_disk_fmt virtio_get_disktype(int);
 ssize_t virtio_qcow2_get_base(int, char *, size_t, const char *);

@@ -48,6 +48,7 @@ read_reg(uint32_t vcpu, uint16_t reg)
 int
 main(void)
 {
+	struct i82489dx_stats stats;
 	unsigned int i;
 
 	test_vm.vm_vmmid = 7;
@@ -100,6 +101,13 @@ main(void)
 	i82489dx_reset(2);
 	assert(read_reg(2, LAPIC_SVR) == 0);
 
+	/* Diagnostic counters cover the same MMIO and fixed-IPI operations. */
+	i82489dx_stats_snapshot(&stats);
+	assert(stats.mmio_reads == 4);
+	assert(stats.mmio_writes == 9);
+	assert(stats.icr_writes == 6);
+	assert(stats.ipi_targets == 2);
+
 	return (0);
 }
 
@@ -146,6 +154,12 @@ void
 log_debug(const char *fmt, ...)
 {
 	(void)fmt;
+}
+
+int
+log_getverbose(void)
+{
+	return (1);
 }
 
 void

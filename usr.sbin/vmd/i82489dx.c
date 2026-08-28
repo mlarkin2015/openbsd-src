@@ -71,6 +71,7 @@ struct i82489dx {
 	int		timer_periodic;
 
 	uint32_t	curvec;
+	struct i82489dx_stats stats;
 };
 
 /*
@@ -92,6 +93,13 @@ static int	i82489dx_highest_pending(struct i82489dx *);
 static uint32_t	i82489dx_ppr(struct i82489dx *);
 static void	i82489dx_set_map(uint32_t *, int);
 static void	i82489dx_clear_map(uint32_t *, int);
+
+static inline void
+i82489dx_stats_add(uint64_t *counter, uint64_t value)
+{
+	if (log_getverbose() == 1)
+		*counter += value;
+}
 
 uint32_t
 i82489dx_divisor(uint32_t dcr)
@@ -284,6 +292,10 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 	}
 
 	pthread_mutex_lock(&lapic->mtx);
+	if (dir == MMIO_DIR_READ)
+		i82489dx_stats_add(&lapic->stats.mmio_reads, 1);
+	else
+		i82489dx_stats_add(&lapic->stats.mmio_writes, 1);
 
 	if (dir == MMIO_DIR_READ && (reg & 0xf) == 0) {
 		if (reg >= LAPIC_ISR && reg < LAPIC_ISR + 0x80) {
@@ -319,8 +331,10 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 		if (dir == MMIO_DIR_READ)
 			*data = (*data & 0xFFFFFFFF00000000ULL) |
 			    (lapic->tpr & LAPIC_TPRI_MASK);
-		else
+		else {
+			i82489dx_stats_add(&lapic->stats.tpr_writes, 1);
 			lapic->tpr = (uint32_t)*data & LAPIC_TPRI_MASK;
+		}
 		break;
 	case LAPIC_APRI:
 		if (dir == MMIO_DIR_READ)
@@ -333,6 +347,7 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 		break;
 	case LAPIC_EOI:
 		if (dir == MMIO_DIR_WRITE) {
+			i82489dx_stats_add(&lapic->stats.eois, 1);
 			eoi_vector = i82489dx_highest_in_map(lapic->isr);
 			if (eoi_vector != 0xffff) {
 				i82489dx_clear_map(lapic->isr, eoi_vector);
@@ -380,6 +395,7 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 			    lapic->icrlo;
 		else {
 			d = (uint32_t)*data;
+			i82489dx_stats_add(&lapic->stats.icr_writes, 1);
 			lapic->icrlo = d & (LAPIC_LVTT_VEC_MASK |
 			    LAPIC_DLMODE_MASK | LAPIC_DSTMODE_LOG |
 			    LAPIC_LVL_ASSERT | LAPIC_LVL_TRIG |
@@ -535,6 +551,13 @@ i82489dx_icr(uint32_t source, uint32_t hi, uint32_t lo)
 	log_debug("%s: vcpu %u mode=0x%x vector=0x%x targets=0x%llx",
 	    __func__, source, mode, vector, (unsigned long long)targets);
 
+	if (mode == LAPIC_DLMODE_FIXED && source < (uint32_t)lapic_ncpus) {
+		pthread_mutex_lock(&lapics[source].mtx);
+		i82489dx_stats_add(&lapics[source].stats.ipi_targets,
+		    (uint64_t)__builtin_popcountll(targets));
+		pthread_mutex_unlock(&lapics[source].mtx);
+	}
+
 	switch (mode) {
 	case LAPIC_DLMODE_FIXED:
 		for (i = 0; i < lapic_ncpus; i++) {
@@ -682,6 +705,7 @@ i82489dx_timer_check(uint32_t vcpu_id)
 	    vcpu_id, vector);
 	i82489dx_set_map(lapic->irr, vector);
 	i82489dx_clear_map(lapic->tmr, vector);
+	i82489dx_stats_add(&lapic->stats.timer_irqs, 1);
 	pending = i82489dx_highest_pending(lapic) != 0xffff;
 
 out:
@@ -719,6 +743,7 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 	    __func__, vector, level, dest_vcpu,
 	    destmode ? "logical" : "physical");
 	i82489dx_set_map(lapic->irr, vector);
+	i82489dx_stats_add(&lapic->stats.vectors, 1);
 	if (level)
 		i82489dx_set_map(lapic->tmr, vector);
 	else
@@ -758,8 +783,33 @@ i82489dx_ack(int vcpu_id)
 	if (vector != 0xffff) {
 		i82489dx_set_map(lapic->isr, vector);
 		i82489dx_clear_map(lapic->irr, vector);
+		i82489dx_stats_add(&lapic->stats.acks, 1);
 	}
 	pthread_mutex_unlock(&lapic->mtx);
 
 	return vector;
+}
+
+/* Return cumulative LAPIC activity across all initialized vCPUs. */
+void
+i82489dx_stats_snapshot(struct i82489dx_stats *stats)
+{
+	struct i82489dx *lapic;
+	int i;
+
+	memset(stats, 0, sizeof(*stats));
+	for (i = 0; i < lapic_ncpus; i++) {
+		lapic = &lapics[i];
+		pthread_mutex_lock(&lapic->mtx);
+		stats->mmio_reads += lapic->stats.mmio_reads;
+		stats->mmio_writes += lapic->stats.mmio_writes;
+		stats->tpr_writes += lapic->stats.tpr_writes;
+		stats->eois += lapic->stats.eois;
+		stats->icr_writes += lapic->stats.icr_writes;
+		stats->ipi_targets += lapic->stats.ipi_targets;
+		stats->timer_irqs += lapic->stats.timer_irqs;
+		stats->vectors += lapic->stats.vectors;
+		stats->acks += lapic->stats.acks;
+		pthread_mutex_unlock(&lapic->mtx);
+	}
 }
