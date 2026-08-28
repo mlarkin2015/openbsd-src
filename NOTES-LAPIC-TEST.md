@@ -288,14 +288,34 @@ vector `0xff`; a real PIC vector zero remains faithfully delivered and logged.
 
 With both fixes installed, an OpenBSD GENERIC.MP guest attached cpu0 and cpu1,
 mounted root and completed boot with two vCPUs.  A concurrent in-guest kernel
-build/stress run was started successfully; its long-run result is still in
-progress at the time of this note.
+build/stress run was started successfully.
+
+Increasing the guest to four and eight vCPUs then exposed a lost interrupt
+wakeup during fsck/mountroot I/O.  One vCPU could snapshot an empty vmd LAPIC
+queue just before another vCPU queued an IPI and issued `VMM_IOC_INTR`.  If the
+target entered `VMM_IOC_RUN` in between, the stale userspace snapshot
+overwrote the kernel assertion; the host IPI could also miss because the
+target had not yet published its current physical CPU.  This stranded guest
+TLB shootdowns and left several vCPU threads spinning.
+
+`vmm(4)` now records asynchronous assertions in an atomic per-vCPU latch.
+VMX and SVM merge that latch with vmd's level snapshot at run entry and also
+consult assertions arriving after the merge.  Deassertion is reconciled at
+the next run entry, so its only possible stale effect is one extra harmless
+interrupt-window exit.  After installing the new host kernel, four- and
+eight-vCPU OpenBSD guests passed the former fsck/mountroot failure point; the
+eight-vCPU guest remained running under load.
 
 ## Known remaining gaps
 
-- Basic concurrent execution and initial INIT-SIPI are validated by a 2-vCPU
-  OpenBSD boot.  Long stress, repeated AP reset, pause/unpause, guest reboot,
-  and SMP Linux/FreeBSD remain to be validated.
+- Concurrent execution, INIT-SIPI and interrupt delivery through boot are
+  validated with OpenBSD guests at two, four and eight vCPUs.  Longer stress,
+  repeated AP reset, pause/unpause, guest reboot, and SMP Linux/FreeBSD remain
+  to be validated.
+- Four/eight-vCPU field validation was on AMD SVM.  The common assertion latch
+  and Intel VMX run path are both updated and build-tested, and VMX reset
+  reconstructs its interrupt-window control without SVM's dummy vector, but an
+  SMP boot on Intel hardware remains to be exercised.
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
 - LAPIC ICR logical destination, lowest-priority, NMI, SMI and ExtINT delivery
@@ -308,7 +328,7 @@ progress at the time of this note.
 
 ## Next steps after testing
 
-1. Complete the 2-vCPU OpenBSD kernel-build stress run, then boot SMP Linux and
+1. Continue longer OpenBSD stress at eight vCPUs, then boot SMP Linux and
    FreeBSD guests; confirm every AP attaches and stress timer/IPI/virtio
    interrupt delivery.
 2. Exercise pause/unpause and guest reboot with APs both parked and running,
