@@ -22,6 +22,18 @@
 
 #include <sys/types.h>
 
+struct i82489dx_stats {
+	uint64_t mmio_reads;
+	uint64_t mmio_writes;
+	uint64_t tpr_writes;
+	uint64_t eois;
+	uint64_t icr_writes;
+	uint64_t ipi_targets;
+	uint64_t timer_irqs;
+	uint64_t vectors;
+	uint64_t acks;
+};
+
 void i82489dx_init(uint32_t);
 void i82489dx_reset(uint32_t);
 int i82489dx_mmio(uint32_t, int, paddr_t, uint64_t *);
@@ -31,5 +43,6 @@ int i82489dx_ack(int);
 int i82489dx_enabled(int);
 int i82489dx_extint_enabled(int);
 int i82489dx_timer_check(uint32_t);
+void i82489dx_stats_snapshot(struct i82489dx_stats *);
 
 #endif /* !_I82489DX_H_ */

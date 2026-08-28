@@ -71,7 +71,7 @@ struct ctl_command ctl_commands[] = {
 	{ "create",	CMD_CREATE,	ctl_create,
 		"[-b base | -i disk] [-s size] disk", 1 },
 	{ "load",	CMD_LOAD,	ctl_load,	"filename" },
-	{ "log",	CMD_LOG,	ctl_log,	"[brief | verbose]" },
+	{ "log",	CMD_LOG,	ctl_log,	"[brief | stats | verbose]" },
 	{ "pause",	CMD_PAUSE,	ctl_pause,	"id" },
 	{ "reload",	CMD_RELOAD,	ctl_reload,	"" },
 	{ "reset",	CMD_RESET,	ctl_reset,	"[all | switches | vms]" },
@@ -777,6 +777,8 @@ ctl_log(struct parse_result *res, int argc, char *argv[])
 
 	if (strncasecmp("brief", argv[1], strlen(argv[1])) == 0)
 		res->verbose = 0;
+	else if (strncasecmp("stats", argv[1], strlen(argv[1])) == 0)
+		res->verbose = 1;
 	else if (strncasecmp("verbose", argv[1], strlen(argv[1])) == 0)
 		res->verbose = 2;
 	else

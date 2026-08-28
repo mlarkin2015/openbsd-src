@@ -35,6 +35,7 @@
 #include <event.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "atomicio.h"
@@ -69,6 +70,9 @@ pthread_mutex_t vcpu_sync_mtx;
 /* Guards the in-process entropy device state. */
 static pthread_mutex_t viornd_mtx;
 
+/* Diagnostic counters are active only in the dedicated stats log mode. */
+static struct virtio_net_stats virtio_net_stats;
+
 /* Devices emulated in subprocesses are inserted into this list. */
 SLIST_HEAD(virtio_dev_head, virtio_dev) virtio_devs;
 
@@ -88,6 +92,36 @@ static void virtio_dev_init(struct vmd_vm *, struct virtio_dev *, uint8_t,
 static int virtio_dev_launch(struct vmd_vm *, struct virtio_dev *);
 static void virtio_dispatch_dev(int, short, void *);
 static int handle_dev_msg(struct viodev_msg *, struct virtio_dev *);
+
+static inline void
+virtio_net_stats_add(uint64_t *counter, uint64_t value)
+{
+	__atomic_fetch_add(counter, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t
+timespec_delta_ns(const struct timespec *start, const struct timespec *end)
+{
+	return ((uint64_t)(end->tv_sec - start->tv_sec) * 1000000000ULL +
+	    end->tv_nsec - start->tv_nsec);
+}
+
+void
+virtio_net_stats_snapshot(struct virtio_net_stats *stats)
+{
+#define VIRTIO_NET_STATS_LOAD(_field) \
+	stats->_field = __atomic_load_n(&virtio_net_stats._field, \
+	    __ATOMIC_RELAXED)
+	VIRTIO_NET_STATS_LOAD(rx_kicks);
+	VIRTIO_NET_STATS_LOAD(tx_kicks);
+	VIRTIO_NET_STATS_LOAD(rx_irqs);
+	VIRTIO_NET_STATS_LOAD(tx_irqs);
+	VIRTIO_NET_STATS_LOAD(config_irqs);
+	VIRTIO_NET_STATS_LOAD(sync_wait_ns);
+	VIRTIO_NET_STATS_LOAD(sync_hold_ns);
+	VIRTIO_NET_STATS_LOAD(sync_ops);
+#undef VIRTIO_NET_STATS_LOAD
+}
 static int virtio_dev_closefds(struct virtio_dev *);
 static void virtio_pci_add_intr_caps(uint8_t, uint16_t);
 static void virtio_pci_add_cap(uint8_t, uint8_t, uint8_t, uint32_t);
@@ -1916,9 +1950,21 @@ handle_dev_msg(struct viodev_msg *msg, struct virtio_dev *gdev)
 {
 	switch (msg->type) {
 	case VIODEV_MSG_KICK:
-		if (msg->state == INTR_STATE_ASSERT)
+		if (msg->state == INTR_STATE_ASSERT) {
+			if (gdev->device_id == PCI_PRODUCT_VIRTIO_NETWORK &&
+			    log_getverbose() == 1) {
+				if (msg->vq_idx == RXQ)
+					virtio_net_stats_add(
+					    &virtio_net_stats.rx_irqs, 1);
+				else if (msg->vq_idx == TXQ)
+					virtio_net_stats_add(
+					    &virtio_net_stats.tx_irqs, 1);
+				else if (msg->vq_idx == VIODEV_QUEUE_CONFIG)
+					virtio_net_stats_add(
+					    &virtio_net_stats.config_irqs, 1);
+			}
 			virtio_inject_irq(gdev, msg->vq_idx);
-		else if (msg->state == INTR_STATE_DEASSERT)
+		} else if (msg->state == INTR_STATE_DEASSERT)
 			pci_deassert_irq(gdev->pci_id);
 		break;
 	case VIODEV_MSG_READY:
@@ -1956,9 +2002,22 @@ virtio_pci_io(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 	struct imsgbuf *ibuf = &dev->sync_iev.ibuf;
 	struct imsg imsg;
 	struct viodev_msg msg;
-	int ret = 0;
+	struct timespec start, acquired, done;
+	int net_notify, ret = 0, stats_enabled;
+	uint16_t vq_idx = 0;
+
+	stats_enabled = log_getverbose() == 1;
+	net_notify = stats_enabled &&
+	    dev->device_id == PCI_PRODUCT_VIRTIO_NETWORK &&
+	    dir == VEI_DIR_OUT && (reg & 0xff00) == VIO1_NOTIFY_BAR_OFFSET;
+	if (net_notify) {
+		vq_idx = (uint16_t)*data;
+		clock_gettime(CLOCK_MONOTONIC, &start);
+	}
 
 	mutex_lock(&vcpu_sync_mtx);
+	if (net_notify)
+		clock_gettime(CLOCK_MONOTONIC, &acquired);
 	if (virtio_pci_msix_io(dev, dir, reg, data, sz))
 		goto out;
 
@@ -2040,6 +2099,18 @@ virtio_pci_io(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 	ret = 0;
 out:
 	mutex_unlock(&vcpu_sync_mtx);
+	if (net_notify) {
+		clock_gettime(CLOCK_MONOTONIC, &done);
+		if (vq_idx == RXQ)
+			virtio_net_stats_add(&virtio_net_stats.rx_kicks, 1);
+		else if (vq_idx == TXQ)
+			virtio_net_stats_add(&virtio_net_stats.tx_kicks, 1);
+		virtio_net_stats_add(&virtio_net_stats.sync_wait_ns,
+		    timespec_delta_ns(&start, &acquired));
+		virtio_net_stats_add(&virtio_net_stats.sync_hold_ns,
+		    timespec_delta_ns(&acquired, &done));
+		virtio_net_stats_add(&virtio_net_stats.sync_ops, 1);
+	}
 	return (ret);
 }
 

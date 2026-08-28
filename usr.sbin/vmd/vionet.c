@@ -84,6 +84,7 @@ static void read_pipe_rx(int, short, void *);
 static void read_pipe_tx(int, short, void *);
 static void vionet_assert_irq(struct virtio_dev *, uint16_t);
 static void vionet_deassert_pic_irq(struct virtio_dev *);
+static void vionet_stats_report(int, short, void *);
 
 /* Device Globals */
 struct event ev_tap;
@@ -103,6 +104,92 @@ struct iovec iov_rx[VIRTIO_QUEUE_SIZE_MAX];
 struct iovec iov_tx[VIRTIO_QUEUE_SIZE_MAX];
 pthread_rwlock_t lock = NULL;		/* Guards device config state. */
 int rx_enabled = 0;	/* 1: we expect to read the tap, 0: wait for notify. */
+
+#define VIONET_STATS_INTERVAL	5
+
+struct vionet_perf_stats {
+	uint64_t rx_packets;
+	uint64_t rx_bytes;
+	uint64_t tx_packets;
+	uint64_t tx_bytes;
+	uint64_t rx_kicks;
+	uint64_t tx_kicks;
+	uint64_t rx_irqs;
+	uint64_t tx_irqs;
+	uint64_t config_irqs;
+};
+
+static struct vionet_perf_stats vionet_stats;
+static struct vionet_perf_stats vionet_stats_prev;
+static struct event vionet_stats_event;
+
+static inline void
+vionet_stats_add(uint64_t *counter, uint64_t value)
+{
+	if (log_getverbose() == 1)
+		__atomic_fetch_add(counter, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t
+vionet_stats_delta(uint64_t current, uint64_t *previous)
+{
+	uint64_t delta = current - *previous;
+
+	*previous = current;
+	return (delta);
+}
+
+static void
+vionet_stats_report(int fd, short event, void *arg)
+{
+	struct vionet_perf_stats current, delta;
+	struct timeval tv = { VIONET_STATS_INTERVAL, 0 };
+	uint64_t rx_per_irq = 0, tx_per_irq = 0;
+
+	(void)fd;
+	(void)event;
+	(void)arg;
+#define VIONET_STATS_DELTA(_field) do { \
+	current._field = __atomic_load_n(&vionet_stats._field, \
+	    __ATOMIC_RELAXED); \
+	delta._field = vionet_stats_delta(current._field, \
+	    &vionet_stats_prev._field); \
+} while (0)
+	VIONET_STATS_DELTA(rx_packets);
+	VIONET_STATS_DELTA(rx_bytes);
+	VIONET_STATS_DELTA(tx_packets);
+	VIONET_STATS_DELTA(tx_bytes);
+	VIONET_STATS_DELTA(rx_kicks);
+	VIONET_STATS_DELTA(tx_kicks);
+	VIONET_STATS_DELTA(rx_irqs);
+	VIONET_STATS_DELTA(tx_irqs);
+	VIONET_STATS_DELTA(config_irqs);
+#undef VIONET_STATS_DELTA
+	if (delta.rx_irqs != 0)
+		rx_per_irq = delta.rx_packets / delta.rx_irqs;
+	if (delta.tx_irqs != 0)
+		tx_per_irq = delta.tx_packets / delta.tx_irqs;
+	if (log_getverbose() == 1) {
+		log_info("stats %ds net-dev: rx-packets=%llu rx-bytes=%llu "
+		    "rx-kicks=%llu rx-irqs=%llu rx-packets/irq=%llu "
+		    "tx-packets=%llu tx-bytes=%llu tx-kicks=%llu "
+		    "tx-irqs=%llu tx-packets/irq=%llu config-irqs=%llu",
+		    VIONET_STATS_INTERVAL,
+		    (unsigned long long)delta.rx_packets,
+		    (unsigned long long)delta.rx_bytes,
+		    (unsigned long long)delta.rx_kicks,
+		    (unsigned long long)delta.rx_irqs,
+		    (unsigned long long)rx_per_irq,
+		    (unsigned long long)delta.tx_packets,
+		    (unsigned long long)delta.tx_bytes,
+		    (unsigned long long)delta.tx_kicks,
+		    (unsigned long long)delta.tx_irqs,
+		    (unsigned long long)tx_per_irq,
+		    (unsigned long long)delta.config_irqs);
+	}
+	if (evtimer_add(&vionet_stats_event, &tv) == -1)
+		log_warnx("%s: could not reschedule stats timer", __func__);
+}
 
 __dead void
 vionet_main(int fd, int fd_vmm)
@@ -209,6 +296,11 @@ vionet_main(int fd, int fd_vmm)
 
 	/* Initialize libevent so we can start wiring event handlers. */
 	ev_base_main = event_base_new();
+	evtimer_set(&vionet_stats_event, vionet_stats_report, NULL);
+	event_base_set(ev_base_main, &vionet_stats_event);
+	if (evtimer_add(&vionet_stats_event,
+	    (&(struct timeval) { VIONET_STATS_INTERVAL, 0 })) == -1)
+		log_warnx("%s: could not start stats timer", __func__);
 
 	/* Add our handler for receiving messages from the RX/TX threads. */
 	event_base_set(ev_base_main, &pipe_main.read_ev);
@@ -322,11 +414,13 @@ vionet_rx(struct virtio_dev *dev, int fd)
 	struct virtio_net_hdr *hdr = NULL;
 	struct virtio_vq_info *vq_info;
 	struct iovec *iov;
-	int notify = 0;
+	int notify = 0, stats_enabled;
 	ssize_t sz;
+	uint64_t stats_bytes = 0, stats_packets = 0;
 	uint8_t status = 0;
 
 	status = dev->status & VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK;
+	stats_enabled = log_getverbose() == 1;
 	if (status != VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK) {
 		log_warnx("%s: driver not ready", __func__);
 		return (0);
@@ -440,6 +534,8 @@ vionet_rx(struct virtio_dev *dev, int fd)
 		 * in the copy or zerocopy operations.
 		 */
 		sz += sizeof(struct virtio_net_hdr);
+		stats_packets++;
+		stats_bytes += sz - sizeof(struct virtio_net_hdr);
 
 		/* Mark our buffers as used. */
 		used->ring[used->idx & vq_info->mask].id = hdr_idx;
@@ -455,8 +551,16 @@ vionet_rx(struct virtio_dev *dev, int fd)
 	}
 
 	vq_info->last_avail = idx;
+	if (stats_enabled) {
+		vionet_stats_add(&vionet_stats.rx_packets, stats_packets);
+		vionet_stats_add(&vionet_stats.rx_bytes, stats_bytes);
+	}
 	return (notify);
 reset:
+	if (stats_enabled) {
+		vionet_stats_add(&vionet_stats.rx_packets, stats_packets);
+		vionet_stats_add(&vionet_stats.rx_bytes, stats_bytes);
+	}
 	return (-1);
 }
 
@@ -641,10 +745,12 @@ vionet_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 {
 	switch (vq_idx) {
 	case RXQ:
+		vionet_stats_add(&vionet_stats.rx_kicks, 1);
 		rx_enabled = 1;
 		vm_pipe_send(&pipe_rx, VIRTIO_NOTIFY);
 		break;
 	case TXQ:
+		vionet_stats_add(&vionet_stats.tx_kicks, 1);
 		vm_pipe_send(&pipe_tx, VIRTIO_NOTIFY);
 		break;
 	default:
@@ -664,7 +770,7 @@ vionet_tx(struct virtio_dev *dev)
 	uint16_t idx, hdr_idx;
 	size_t chain_len, iov_cnt;
 	ssize_t dhcpsz = 0, sz;
-	int notify = 0;
+	int notify = 0, stats_enabled;
 	char *vr = NULL, *dhcppkt = NULL;
 	struct vionet_dev *vionet = &dev->vionet;
 	struct vring_desc *desc, *table;
@@ -675,8 +781,10 @@ vionet_tx(struct virtio_dev *dev)
 	struct iovec *iov;
 	struct packet pkt;
 	uint8_t status = 0;
+	uint64_t stats_bytes = 0, stats_packets = 0;
 
 	status = dev->status & VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK;
+	stats_enabled = log_getverbose() == 1;
 	if (status != VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK) {
 		log_warnx("%s: driver not ready", __func__);
 		return (0);
@@ -799,6 +907,10 @@ vionet_tx(struct virtio_dev *dev)
 			log_warn("%s", __func__);
 			goto reset;
 		}
+		if (sz >= 0) {
+			stats_packets++;
+			stats_bytes += sz;
+		}
 		chain_len += sizeof(struct virtio_net_hdr);
 drop:
 		used->ring[used->idx & vq_info->mask].id = hdr_idx;
@@ -831,8 +943,16 @@ drop:
 		notify = 1;
 
 	vq_info->last_avail = idx;
+	if (stats_enabled) {
+		vionet_stats_add(&vionet_stats.tx_packets, stats_packets);
+		vionet_stats_add(&vionet_stats.tx_bytes, stats_bytes);
+	}
 	return (notify);
 reset:
+	if (stats_enabled) {
+		vionet_stats_add(&vionet_stats.tx_packets, stats_packets);
+		vionet_stats_add(&vionet_stats.tx_bytes, stats_bytes);
+	}
 	return (-1);
 }
 
@@ -1565,6 +1685,12 @@ vionet_assert_irq(struct virtio_dev *dev, uint16_t vq_idx)
 	int			ret;
 
 	memset(&msg, 0, sizeof(msg));
+	if (vq_idx == RXQ)
+		vionet_stats_add(&vionet_stats.rx_irqs, 1);
+	else if (vq_idx == TXQ)
+		vionet_stats_add(&vionet_stats.tx_irqs, 1);
+	else if (vq_idx == VIODEV_QUEUE_CONFIG)
+		vionet_stats_add(&vionet_stats.config_irqs, 1);
 	msg.irq = dev->irq;
 	msg.vcpu = 0; /* XXX: smp */
 	msg.vq_idx = vq_idx;
