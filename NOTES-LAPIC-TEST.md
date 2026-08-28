@@ -245,22 +245,38 @@ Watch for:
 4. Logging: interrupt delivery is now log_debug; run vmd verbose to see
    traces.
 
-## Known remaining gaps (not yet done)
+## Initial SMP implementation (guest validation pending)
 
-- The kernel still rejects `vcp_ncpus != 1` in `vm_create()`.  Its VM/vCPU
-  allocation, per-vCPU locks, run ioctl and interrupt-kick interfaces already
-  carry vCPU IDs, but none have yet been validated with concurrent guest CPUs.
-- AP lifecycle is missing.  vmd currently resets every vCPU to the BSP boot
-  state and starts every vCPU thread immediately; APs instead need to remain
-  in a distinct wait-for-SIPI state until selected by the BSP.
-- ICR/IPIs (especially INIT-SIPI) are not implemented.  ICRLO/ICRHI writes are
-  logged and dropped.
-- CPUID leaf 1 does not advertise a logical-processor count or HTT, topology
-  leaf 0x0b is zeroed, and MSR_APICBASE incorrectly reports the BSP bit on
-  every vCPU.  These must reflect the configured vCPU topology.
+The first SMP bring-up milestone is implemented and host-build/regression
+tested, but has not yet been installed and exercised by a multiprocessor guest:
+
+- `vmm(4)` now admits 1-64 vCPUs and clears stale exit/injection state when a
+  stopped vCPU is reset.
+- vmd resets only vCPU 0 to the firmware entry point.  AP threads are created
+  but remain parked in `WAIT_SIPI`; INIT resets the target LAPIC and vCPU, and
+  SIPI starts it at `CS.base = vector << 12`, `RIP = 0`.
+- xAPIC ICR physical destinations and self/all destination shorthands deliver
+  fixed, INIT and STARTUP IPIs.  Logical destinations and other delivery modes
+  remain unsupported and are ignored rather than misrouted.
+- CPUID leaf 1 reports the configured logical-processor count and APIC ID,
+  leaf 0x0b describes one thread per core in one package, and MSR_APICBASE sets
+  the BSP bit only on vCPU 0.
+- `vm.conf` accepts `cpus count`; `vmctl start -p count` provides the equivalent
+  command-line control.  Both validate the 1-64 range, while VM instances
+  inherit their parent's count unless explicitly permitted to override it.
+- The new `regress/usr.sbin/vmd/lapic` test covers ICR readback, physical and
+  shorthand targets, fixed/INIT/SIPI dispatch, INIT deassert, LAPIC reset and
+  rejection of logical-destination IPIs.  Config regressions cover valid and
+  excessive vCPU counts.  GENERIC.MP, vmd and vmctl all build successfully.
+
+## Known remaining gaps
+
+- Concurrent guest execution, INIT-SIPI timing and repeated AP reset have not
+  yet been guest-validated.  Start with 2-vCPU OpenBSD, then Linux and FreeBSD.
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
-- Delivery modes other than Fixed delivered as fixed.
+- LAPIC ICR logical destination, lowest-priority, NMI, SMI and ExtINT delivery
+  modes are not implemented.
 - MSI supports one 64-bit message per device.  MSI-X supports at most 16
   vectors per device.  x2APIC/remapped MSI, logical destinations, and
   lowest-priority delivery are not implemented.
@@ -269,18 +285,14 @@ Watch for:
 
 ## Next steps after testing
 
-1. Permit 2+ vCPUs in `vmm(4)` and add a vmd AP state machine that creates APs
-   but parks them in `WAIT_SIPI`; prove that a 2-vCPU VM runs only the BSP.
-2. Implement physical-destination ICR fixed IPIs, INIT and SIPI, including
-   destination shorthand, AP reset state, SIPI `CS.base = vector << 12`, and
-   waking/kicking the selected vCPU thread.
-3. Correct CPUID leaf 1/topology and per-vCPU MSR_APICBASE BSP reporting, then
-   boot 2-vCPU OpenBSD, Linux and FreeBSD guests and stress timer/IPI/virtio
-   interrupt delivery.
-4. Audit device and EPT paths under genuinely concurrent vCPU exits; the
+1. Boot 2-vCPU OpenBSD, Linux and FreeBSD guests; confirm every AP attaches,
+   inspect ICR INIT/SIPI traces, and stress timer/IPI/virtio interrupt delivery.
+2. Exercise pause/unpause and guest reboot with APs both parked and running,
+   including repeated INIT-SIPI sequences.
+3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
    `/dev/vmm` ioctl path already drops the kernel big lock before VMM_IOC_RUN,
    so no global execution serialization is currently known.
-5. Add active ACPI PM1 event sources and SCI delivery as they become needed.
-6. Add IOAPIC logical destination mode.
-7. Extend MSI routing only when a guest needs logical/x2APIC delivery or
+4. Add active ACPI PM1 event sources and SCI delivery as they become needed.
+5. Add LAPIC/IOAPIC logical destination and lowest-priority delivery.
+6. Extend MSI routing only when a guest needs logical/x2APIC delivery or
    interrupt remapping.

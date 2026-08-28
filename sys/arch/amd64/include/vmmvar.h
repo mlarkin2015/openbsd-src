@@ -526,7 +526,7 @@ struct vm_rwregs_params {
  *  apic deadline (CPUIDECX_DEADLINE)
  *  psn (CPUID_PSN)
  *  self snoop (CPUID_SS)
- *  hyperthreading (CPUID_HTT)
+ *  hyperthreading (CPUID_HTT; re-added for SMP guests)
  *  pending break enabled (CPUID_PBE)
  *  MTRR (CPUID_MTRR)
  *  Speculative execution control features (AMD)
