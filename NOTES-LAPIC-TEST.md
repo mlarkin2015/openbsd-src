@@ -154,9 +154,34 @@ No active PM1 event source drives SCI yet.
 FreeBSD's subsequent XSDT failure came from placing the table at 0x9e000,
 inside SeaBIOS's POST-time scratch/stack region.  Commit `e6ee385` moves the
 XSDT, MADT, FADT, and DSDT down to 0x90000-0x93000 while leaving the RSDP at
-0x9d000.  FreeBSD now accepts the XSDT and proceeds farther, but vmd later
-terminates the VM while FreeBSD is attaching its first CPU.  That failure is
-deferred until after MSI/MSI-X.
+0x9d000.  FreeBSD then accepted the XSDT and reached CPU and device attach.
+
+The remaining FreeBSD 15.1 bring-up exposed three independent compatibility
+problems, all included in commit `71e5221`:
+
+- FreeBSD used opcode 0x23 (`AND r/m -> reg`) while probing MMIO.  The MMIO
+  emulator now implements 16/32/64-bit AND, including architectural result
+  width and status flags.
+- The address decoder ignored REX.B/REX.X while selecting ModR/M and SIB
+  registers.  In the captured failure, `41 c7 06 01 00 00 00` should have
+  written the IOAPIC selector through `%r14`, but was decoded through `%rsi`
+  and produced a bogus non-MMIO GPA.  Exact-byte regressions now cover that
+  instruction and a REX.B/REX.X SIB operand.
+- FreeBSD 15 enumerates the legacy UART from ACPI.  Adding a `PNP0501` COM1
+  object at I/O 0x3f8, IRQ 4 allowed `uart0` to attach and let the console
+  switch from early polled output to the tty driver.  With
+  `console=comconsole`, FreeBSD reached and operated the installer over the
+  serial console.  This also exercises the previously implemented REP OUTS
+  and IOAPIC IRQ4/UART-deassert paths after the tty handoff.
+
+FreeBSD also probes virtio block identifiers.  vmd now implements
+`VIRTIO_BLK_T_GET_ID` with stable per-slot IDs and reports the correct number
+of device-written bytes in the used ring.  A separate apparent qcow2 capacity
+failure was an installation mismatch, not an image-format bug: the old
+`/usr/sbin/vmctl` encoded QCOW2 as disk type 2, while the newer vmd interpreted
+2 as RAW and therefore exposed the qcow2 file's 256 KiB physical length.  vmd
+and vmctl must be built and installed together; the matching vmctl encodes
+QCOW2 as type 3 and vmd reads the image's 50 GiB virtual size.
 
 ## PCI MSI and MSI-X validation
 
@@ -222,8 +247,17 @@ Watch for:
 
 ## Known remaining gaps (not yet done)
 
-- ICR/IPIs (INIT-SIPI) not implemented - SMP bringup still missing.
-  ICRLO writes are logged and dropped.
+- The kernel still rejects `vcp_ncpus != 1` in `vm_create()`.  Its VM/vCPU
+  allocation, per-vCPU locks, run ioctl and interrupt-kick interfaces already
+  carry vCPU IDs, but none have yet been validated with concurrent guest CPUs.
+- AP lifecycle is missing.  vmd currently resets every vCPU to the BSP boot
+  state and starts every vCPU thread immediately; APs instead need to remain
+  in a distinct wait-for-SIPI state until selected by the BSP.
+- ICR/IPIs (especially INIT-SIPI) are not implemented.  ICRLO/ICRHI writes are
+  logged and dropped.
+- CPUID leaf 1 does not advertise a logical-processor count or HTT, topology
+  leaf 0x0b is zeroed, and MSR_APICBASE incorrectly reports the BSP bit on
+  every vCPU.  These must reflect the configured vCPU topology.
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
 - Delivery modes other than Fixed delivered as fixed.
@@ -235,11 +269,18 @@ Watch for:
 
 ## Next steps after testing
 
-1. Diagnose why vmd terminates the FreeBSD VM while its first CPU attaches.
-2. Add active ACPI PM1 event sources and SCI delivery as they become needed.
-3. ICR/INIT-SIPI + per-vCPU state machine (RUNNING/INIT/WAIT_SIPI/HALTED)
-   for SMP guests; needs kernel-side SMP audit too (see PLAN-000-MASTER
-   working notes re: kernel big lock).
-4. IOAPIC logical destination mode.
-5. Extend MSI routing only when a guest needs logical/x2APIC delivery or
+1. Permit 2+ vCPUs in `vmm(4)` and add a vmd AP state machine that creates APs
+   but parks them in `WAIT_SIPI`; prove that a 2-vCPU VM runs only the BSP.
+2. Implement physical-destination ICR fixed IPIs, INIT and SIPI, including
+   destination shorthand, AP reset state, SIPI `CS.base = vector << 12`, and
+   waking/kicking the selected vCPU thread.
+3. Correct CPUID leaf 1/topology and per-vCPU MSR_APICBASE BSP reporting, then
+   boot 2-vCPU OpenBSD, Linux and FreeBSD guests and stress timer/IPI/virtio
+   interrupt delivery.
+4. Audit device and EPT paths under genuinely concurrent vCPU exits; the
+   `/dev/vmm` ioctl path already drops the kernel big lock before VMM_IOC_RUN,
+   so no global execution serialization is currently known.
+5. Add active ACPI PM1 event sources and SCI delivery as they become needed.
+6. Add IOAPIC logical destination mode.
+7. Extend MSI routing only when a guest needs logical/x2APIC delivery or
    interrupt remapping.
