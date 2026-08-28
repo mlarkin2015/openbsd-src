@@ -245,10 +245,10 @@ Watch for:
 4. Logging: interrupt delivery is now log_debug; run vmd verbose to see
    traces.
 
-## Initial SMP implementation (guest validation pending)
+## Initial SMP implementation (2-vCPU OpenBSD boot validated)
 
-The first SMP bring-up milestone is implemented and host-build/regression
-tested, but has not yet been installed and exercised by a multiprocessor guest:
+The first SMP bring-up milestone is implemented, host-build/regression tested,
+and exercised through a complete boot by a 2-vCPU OpenBSD guest:
 
 - `vmm(4)` now admits 1-64 vCPUs and clears stale exit/injection state when a
   stopped vCPU is reset.
@@ -275,13 +275,27 @@ wait loop.  The compiler emits the LAPIC ICR delivery-status test as group-3
 opcode `f7 /0` (`testl $0x1000, ...`), which the MMIO decoder rejected.  vmd
 now decodes and emulates the 16/32/64-bit `TEST r/m, immediate` form, including
 logical-instruction flags and 64-bit immediate sign extension without operand
-writeback.  An exact RIP-relative LAPIC ICR regression passes; guest retesting
-is pending.
+writeback.  An exact RIP-relative LAPIC ICR regression passes.
+
+The next run completed autoconfiguration but the AP took a divide-fault trap at
+`cpu_hatch` immediately after `sti`.  This exposed stale AMD SVM virtual-
+interrupt-window state across vCPU reset: `vcpu_reset_regs_svm()` reset the
+VINTR intercept but could leave the dummy `V_IRQ` vector zero armed.  The reset
+path now clears V_TPR, V_IRQ, virtual-interrupt metadata/shadow and EVENTINJ,
+then marks every rewritten VMCB group dirty.  The vmd run loop also refuses to
+truncate the `0xffff` no-vector result from a raced interrupt acknowledge into
+vector `0xff`; a real PIC vector zero remains faithfully delivered and logged.
+
+With both fixes installed, an OpenBSD GENERIC.MP guest attached cpu0 and cpu1,
+mounted root and completed boot with two vCPUs.  A concurrent in-guest kernel
+build/stress run was started successfully; its long-run result is still in
+progress at the time of this note.
 
 ## Known remaining gaps
 
-- Concurrent guest execution, INIT-SIPI timing and repeated AP reset have not
-  yet been guest-validated.  Start with 2-vCPU OpenBSD, then Linux and FreeBSD.
+- Basic concurrent execution and initial INIT-SIPI are validated by a 2-vCPU
+  OpenBSD boot.  Long stress, repeated AP reset, pause/unpause, guest reboot,
+  and SMP Linux/FreeBSD remain to be validated.
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
 - LAPIC ICR logical destination, lowest-priority, NMI, SMI and ExtINT delivery
@@ -294,8 +308,9 @@ is pending.
 
 ## Next steps after testing
 
-1. Boot 2-vCPU OpenBSD, Linux and FreeBSD guests; confirm every AP attaches,
-   inspect ICR INIT/SIPI traces, and stress timer/IPI/virtio interrupt delivery.
+1. Complete the 2-vCPU OpenBSD kernel-build stress run, then boot SMP Linux and
+   FreeBSD guests; confirm every AP attaches and stress timer/IPI/virtio
+   interrupt delivery.
 2. Exercise pause/unpause and guest reboot with APs both parked and running,
    including repeated INIT-SIPI sequences.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the

@@ -1602,6 +1602,19 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	    SVM_INTERCEPT_MWAIT_UNCOND | SVM_INTERCEPT_MONITOR |
 	    SVM_INTERCEPT_MWAIT_COND | SVM_INTERCEPT_RDTSCP;
 
+	/*
+	 * A reset can follow a run which armed the virtual-interrupt window.
+	 * Do not leave its dummy vector pending after resetting the intercepts:
+	 * without the VINTR intercept, hardware would deliver vector zero to
+	 * the guest when it next enables interrupts.
+	 */
+	vmcb->v_tpr = 0;
+	vmcb->v_irq = 0;
+	vmcb->v_intr_misc = 0;
+	vmcb->v_intr_vector = 0;
+	vmcb->v_intr_shadow = 0;
+	vmcb->v_eventinj = 0;
+
 	/* With SEV-ES we cannot force access XCR0, thus no intercept */
 	if (xsave_mask && !vcpu->vc_seves)
 		vmcb->v_intercept2 |= SVM_INTERCEPT_XSETBV;
@@ -1694,6 +1707,9 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 
 	/* Enable SVME in EFER (must always be set) */
 	vmcb->v_efer |= EFER_SVME;
+
+	/* Every VMCB state group above was rewritten by this reset. */
+	svm_set_dirty(vcpu, SVM_CLEANBITS_ALL);
 
 	if ((ret = vcpu_writeregs_svm(vcpu, VM_RWREGS_ALL, vrs)) != 0)
 		return ret;

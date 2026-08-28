@@ -27,8 +27,12 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
 ## Current State
 
 - `regress/` directory exists with regression tests for lib/, sbin/, usr.bin/, usr.sbin/
-- Existing vmd tests: `regress/sbin/vmd/` (limited)
-- Existing vmm tests: `regress/sys/` (limited)
+- Existing focused vmd tests under `regress/usr.sbin/vmd/` cover configuration,
+  disk formats, LAPIC ICR/reset behavior and x86 MMIO decoding.
+- Existing vmm tests under `regress/sys/` remain limited.
+- Manual SMP validation boots an OpenBSD GENERIC.MP guest completely with two
+  vCPUs; a guest kernel-build stress run is in progress.  SMP Linux/FreeBSD,
+  repeated INIT-SIPI, pause/unpause and reboot remain manual test items.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure

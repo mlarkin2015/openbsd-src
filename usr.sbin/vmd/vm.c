@@ -917,7 +917,7 @@ vcpu_run_loop(void *arg)
 	struct vm_run_params *vrp = (struct vm_run_params *)arg;
 	intptr_t ret = 0;
 	uint32_t n = vrp->vrp_vcpu_id;
-	int paused = 0;
+	int paused = 0, vector;
 
 	for (;;) {
 		ret = vcpu_apply_pending_startup(n);
@@ -1014,8 +1014,21 @@ vcpu_run_loop(void *arg)
 		}
 
 		if (vrp->vrp_irqready && intr_pending(n)) {
-			vrp->vrp_inject.vie_vector = intr_ack(n);
-			vrp->vrp_inject.vie_type = VCPU_INJECT_INTR;
+			vector = intr_ack(n);
+			if (vector == 0xffff) {
+				/*
+				 * Interrupt state can change between the pending
+				 * test and acknowledge, particularly for the PIC
+				 * shared by multiple vCPUs.  Do not truncate the
+				 * no-vector sentinel into an injected vector 0xff.
+				 */
+				log_warnx("%s: vcpu %u interrupt disappeared "
+				    "before ack", __func__, n);
+				vrp->vrp_inject.vie_type = VCPU_INJECT_NONE;
+			} else {
+				vrp->vrp_inject.vie_vector = vector;
+				vrp->vrp_inject.vie_type = VCPU_INJECT_INTR;
+			}
 		} else
 			vrp->vrp_inject.vie_type = VCPU_INJECT_NONE;
 

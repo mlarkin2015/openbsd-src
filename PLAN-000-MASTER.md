@@ -25,13 +25,15 @@ descriptions in the original 2026-08-21 audit below:
   reaches and operates its serial installer; OpenBSD and Alpine Linux reach
   login with APIC and MSI/MSI-X active.
 
-The initial SMP gate is now implemented and awaiting multiprocessor guest
-validation.  `vmm(4)` admits up to 64 vCPUs; vmd parks AP threads until
-INIT-SIPI; the LAPIC ICR handles physical fixed, INIT and STARTUP IPIs; and
-CPUID/APICBASE identify the configured topology and BSP correctly.  `vm.conf`
-and `vmctl` now expose validated vCPU-count controls.  Host builds and focused
-LAPIC/config regressions pass.  The next gate is boot and concurrency testing
-with 2-vCPU OpenBSD, Linux and FreeBSD guests.
+The initial SMP gate is now implemented and validated through a complete
+2-vCPU OpenBSD GENERIC.MP boot.  `vmm(4)` admits up to 64 vCPUs; vmd parks AP
+threads until INIT-SIPI; the LAPIC ICR handles physical fixed, INIT and STARTUP
+IPIs; and CPUID/APICBASE identify the configured topology and BSP correctly.
+`vm.conf` and `vmctl` expose validated vCPU-count controls.  Host builds and
+focused LAPIC/config regressions pass.  AMD SVM reset now clears stale virtual-
+interrupt-window state, which had delivered dummy vector zero when the AP first
+enabled interrupts.  An in-guest kernel-build stress run is in progress; SMP
+Linux/FreeBSD, repeated reset, pause and reboot validation remain next.
 
 ## Verified current state (original source audit, 2026-08-21)
 
@@ -55,7 +57,7 @@ What does **not** exist (gaps that gate Windows):
 
 | Gap | Impact on Windows |
 |---|---|
-| Kernel multi-vCPU admission, AP lifecycle, ICR INIT-SIPI incomplete | SMP bringup broken |
+| SMP cross-guest stress/reboot coverage incomplete | OpenBSD SMP boots; Linux/FreeBSD and repeated reset still need validation |
 | No display device (VGA/virtio-gpu) | Windows Setup is graphical — cannot install blind |
 | No input (i8042 PS/2, USB tablet) | Cannot interact with Setup |
 | No IDE/AHCI storage (i82093aa is an IOAPIC, not IDE) | Storage = virtio only, needs driver ISO during setup |
@@ -89,8 +91,9 @@ Everything else depends on these. Order within the phase:
 1. **LAPIC/SMP completion** (kernel, `vmm.c`/`vmm_machdep.c` + userspace
    `vm.c`/`i82489dx.c`): multi-vCPU admission, AP wait-for-SIPI, physical ICR
    fixed/INIT/SIPI delivery and CPUID/APICBASE topology are implemented.
-   Validate concurrent execution with SMP OpenBSD, Linux and FreeBSD, then
-   stress IPI/timer/device delivery and pause/reboot behavior.
+   A 2-vCPU OpenBSD guest now boots completely.  Complete its stress run, then
+   validate SMP Linux/FreeBSD, repeated INIT-SIPI, IPI/timer/device delivery
+   and pause/reboot behavior.
 2. **OVMF as ROM** (userspace): load `ovmf.fd` through the existing bios path;
    map flash read-only in EPT; add NVRAM varstore pflash region (below firmware
    flash) with EPT write-trap persistence to `/var/vm/<vm>/nvram`;
@@ -233,6 +236,10 @@ enlightened Windows.
      halt/pause state) must become strictly per-vcpu; check `vcpu_intr()`,
      `vcpu_halt()`, msr bitmap sharing, and EPT invalidation scope (single-EPT
      per VM means IPI-based shootdowns must target all vCPUs).
+   - The first AMD SMP hatch exposed VMCB reset state that UP-only testing did
+     not exercise: stale V_IRQ/vector-zero state could survive while the VINTR
+     intercept was reset.  SVM reset now clears virtual-interrupt state and
+     dirties all VMCB groups.  A 2-vCPU OpenBSD guest subsequently booted.
 3. **IOAPIC sufficiency assessment** (`i82093aa.c`): redirection indexing,
      edge detection, remote IRR and EOI re-evaluation have been repaired and
      validated with OpenBSD, Linux and FreeBSD.  Remaining topology work:
@@ -247,7 +254,7 @@ enlightened Windows.
 
 | Risk | Mitigation |
 |---|---|
-| LAPIC/IPI rework destabilizes existing Linux/OpenBSD guests | Counts above the default of one vCPU are per-VM opt-in until SMP Linux + OpenBSD guests pass |
+| LAPIC/IPI rework destabilizes existing guests | OpenBSD SMP boot passes; counts remain per-VM opt-in pending Linux/FreeBSD and long stress validation |
 | OVMF build/toolchain on OpenBSD painful | Ship prebuilt ovmf.fd initially (Option B in PLAN-001); integrate build later |
 | Windows strictness on ACPI/SMBIOS bugs | Validate offline against golden dumps; use Linux guest acpidump once |
 | Scope creep (TPM crypto, USB, IDE) | Strict phase gating; M0 needs none of them beyond viogpu+i8042 |
