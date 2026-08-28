@@ -58,6 +58,7 @@ struct imsgbuf *ibuf;
  *  start_id: optional ID of the VM
  *  name: optional name of the VM
  *  memsize: memory size (in bytes) of the VM to create
+ *  ncpus: number of virtual CPUs to create (0 selects the default)
  *  nnics: number of vionet network interfaces to create
  *  nics: switch names of the network interfaces to create
  *  ndisks: number of disk images
@@ -71,7 +72,8 @@ struct imsgbuf *ibuf;
  *  ENOMEM if a memory allocation failure occurred.
  */
 int
-vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
+vm_start(uint32_t start_id, const char *name, size_t memsize, size_t ncpus,
+    int nnics,
     char **nics, int ndisks, char **disks, enum vm_disk_fmt *disktypes,
     char *kernel, char *iso, char *instance, unsigned int bootdevice)
 {
@@ -92,6 +94,8 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 
 	if (memsize)
 		flags |= VMOP_CREATE_MEMORY;
+	if (ncpus)
+		flags |= VMOP_CREATE_CPU;
 	if (nnics)
 		flags |= VMOP_CREATE_NETWORK;
 	if (ndisks)
@@ -126,7 +130,7 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 	vmc.vmc_nmemranges = 1;
 	vmc.vmc_memranges[0].vmr_size = memsize;
 
-	vmc.vmc_ncpus = 1;
+	vmc.vmc_ncpus = ncpus;
 	vmc.vmc_id = start_id;
 
 	vmc.vmc_ndisks = ndisks;

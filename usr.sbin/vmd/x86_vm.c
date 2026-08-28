@@ -158,6 +158,29 @@ static const struct vcpu_reg_state vcpu_init_flat16 = {
 };
 
 /*
+ * Construct an inert real-mode register state for an application processor.
+ * The AP remains parked in userspace after creation or INIT, so this state is
+ * not executed; SIPI replaces its CS selector/base and RIP before it runs.
+ */
+void
+vcpu_init_ap(struct vcpu_reg_state *vrs)
+{
+	memcpy(vrs, &vcpu_init_flat16, sizeof(*vrs));
+	vrs->vrs_gprs[VCPU_REGS_RIP] = 0;
+	vrs->vrs_sregs[VCPU_REGS_CS].vsi_sel = 0;
+	vrs->vrs_sregs[VCPU_REGS_CS].vsi_base = 0;
+}
+
+/* Construct the real-mode state selected by an xAPIC startup IPI. */
+void
+vcpu_init_sipi(struct vcpu_reg_state *vrs, uint8_t vector)
+{
+	vcpu_init_ap(vrs);
+	vrs->vrs_sregs[VCPU_REGS_CS].vsi_sel = (uint16_t)vector << 8;
+	vrs->vrs_sregs[VCPU_REGS_CS].vsi_base = (uint64_t)vector << 12;
+}
+
+/*
  * create_memory_map
  *
  * Sets up the guest physical memory ranges that the VM can access.

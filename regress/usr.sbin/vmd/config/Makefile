@@ -2,10 +2,10 @@
 
 VMD ?= /usr/sbin/vmd
 
-VMD_PASS=boot-keyword memory-round memory-just-enough cdrom-keyword \
+VMD_PASS=boot-keyword cpus memory-round memory-just-enough cdrom-keyword \
 	 format-keyword
-VMD_FAIL=kernel-keyword too-few-ram too-many-ifs too-many-disks \
-	 switch-no-interface switch-no-add bad-format missing-format
+VMD_FAIL=kernel-keyword too-few-ram zero-cpus too-many-cpus too-many-ifs \
+	 too-many-disks switch-no-interface switch-no-add bad-format missing-format
 
 .for n in ${VMD_PASS}
 REGRESS_TARGETS +=	run-pass-$n

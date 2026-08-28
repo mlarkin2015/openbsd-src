@@ -29,6 +29,8 @@
 #include "mmio.h"
 #include "vmd.h"
 
+extern struct vmd_vm *current_vm;
+
 #ifndef LAPIC_DLMODE_EXTINT
 #define LAPIC_DLMODE_EXTINT	0x00000700
 #endif
@@ -53,6 +55,8 @@ struct i82489dx {
 	uint32_t	ldr;
 	uint32_t	dfr;
 	uint32_t	esr;
+	uint32_t	icrlo;
+	uint32_t	icrhi;
 	uint32_t	lvt[LVT_COUNT];
 
 	uint32_t	isr[8];
@@ -81,6 +85,8 @@ static uint32_t	i82489dx_divisor(uint32_t);
 static uint64_t	i82489dx_timer_ticks(struct i82489dx *);
 static uint32_t	i82489dx_timer_ccr(struct i82489dx *);
 static void	i82489dx_timer_reload(struct i82489dx *);
+static void	i82489dx_reset_locked(struct i82489dx *, uint32_t);
+static void	i82489dx_icr(uint32_t, uint32_t, uint32_t);
 static int	i82489dx_highest_in_map(const uint32_t *);
 static int	i82489dx_highest_pending(struct i82489dx *);
 static uint32_t	i82489dx_ppr(struct i82489dx *);
@@ -156,21 +162,43 @@ i82489dx_timer_reload(struct i82489dx *lapic)
 	lapic->timer_running = (lapic->icr_timer != 0);
 }
 
+static void
+i82489dx_reset_locked(struct i82489dx *lapic, uint32_t vcpu_id)
+{
+	int i;
+
+	lapic->base = LAPIC_BASE;
+	lapic->ver = (1ULL << 31) | (6ULL << LAPIC_VERSION_LVT_SHIFT) | 0x10;
+	lapic->tpr = 0;
+	lapic->svr = 0;
+	lapic->id = vcpu_id << LAPIC_ID_SHIFT;
+	lapic->ldr = 0;
+	lapic->dfr = 0xffffffff;
+	lapic->esr = 0;
+	lapic->icrlo = 0;
+	lapic->icrhi = 0;
+	memset(lapic->isr, 0, sizeof(lapic->isr));
+	memset(lapic->irr, 0, sizeof(lapic->irr));
+	memset(lapic->tmr, 0, sizeof(lapic->tmr));
+	for (i = 0; i < LVT_COUNT; i++)
+		lapic->lvt[i] = LAPIC_LVT_MASKED;
+	lapic->icr_timer = 0;
+	lapic->dcr_timer = 0;
+	memset(&lapic->timer_start, 0, sizeof(lapic->timer_start));
+	lapic->timer_running = 0;
+	lapic->timer_periodic = 0;
+	lapic->curvec = 0;
+}
+
 void
 i82489dx_init(uint32_t curcpu)
 {
 	struct i82489dx *lapic = &lapics[curcpu];
-	int i;
 
 	memset(lapic, 0, sizeof(*lapic));
 	if (pthread_mutex_init(&lapic->mtx, NULL) != 0)
 		fatalx("%s: could not initialize LAPIC mutex", __func__);
-	lapic->ver = (1ULL << 31) | (6ULL << LAPIC_VERSION_LVT_SHIFT) | 0x10;
-	lapic->base = LAPIC_BASE;
-	lapic->id = (curcpu << LAPIC_ID_SHIFT);
-	lapic->dfr = 0xffffffff;
-	for (i = 0; i < LVT_COUNT; i++)
-		lapic->lvt[i] = LAPIC_LVT_MASKED;
+	i82489dx_reset_locked(lapic, curcpu);
 
 	if ((int)curcpu >= lapic_ncpus)
 		lapic_ncpus = curcpu + 1;
@@ -182,6 +210,21 @@ i82489dx_init(uint32_t curcpu)
 	if (curcpu == 0)
 		mmio_dev_add(LAPIC_BASE, LAPIC_BASE + 0xFFF,
 		    (mmio_dev_fn_t)i82489dx_mmio);
+}
+
+void
+i82489dx_reset(uint32_t vcpu_id)
+{
+	struct i82489dx *lapic;
+
+	if (vcpu_id >= LAPIC_MAX_VCPUS ||
+	    vcpu_id >= (uint32_t)lapic_ncpus)
+		return;
+
+	lapic = &lapics[vcpu_id];
+	pthread_mutex_lock(&lapic->mtx);
+	i82489dx_reset_locked(lapic, vcpu_id);
+	pthread_mutex_unlock(&lapic->mtx);
 }
 
 int
@@ -225,8 +268,8 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 {
 	struct i82489dx *lapic;
 	uint16_t reg;
-	uint32_t d;
-	int eoi_vector = 0xffff, mapidx;
+	uint32_t d, icrlo = 0, icrhi = 0;
+	int dispatch_icr = 0, eoi_vector = 0xffff, mapidx;
 
 	if (vcpu_id >= LAPIC_MAX_VCPUS) {
 		log_warnx("%s: invalid vcpu id %u", __func__, vcpu_id);
@@ -311,7 +354,8 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 		if (dir == MMIO_DIR_READ)
 			*data = (*data & 0xFFFFFFFF00000000ULL) | lapic->dfr;
 		else
-			lapic->dfr = (uint32_t)*data & 0xF0000000;
+			lapic->dfr = ((uint32_t)*data & 0xF0000000) |
+			    0x0fffffff;
 		break;
 	case LAPIC_SVR:
 		if (dir == MMIO_DIR_READ)
@@ -331,18 +375,26 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 			lapic->esr &= ~(uint32_t)*data;	/* write-1-to-clear */
 		break;
 	case LAPIC_ICRLO:
-		if (dir == MMIO_DIR_WRITE) {
+		if (dir == MMIO_DIR_READ)
+			*data = (*data & 0xffffffff00000000ULL) |
+			    lapic->icrlo;
+		else {
 			d = (uint32_t)*data;
-			log_debug("%s: vcpu %u ICRLO write 0x%x "
-			    "(IPIs not yet implemented)", __func__, vcpu_id,
-			    d);
-			/* IPI handling lands in a subsequent change */
+			lapic->icrlo = d & (LAPIC_LVTT_VEC_MASK |
+			    LAPIC_DLMODE_MASK | LAPIC_DSTMODE_LOG |
+			    LAPIC_LVL_ASSERT | LAPIC_LVL_TRIG |
+			    LAPIC_DEST_MASK);
+			icrlo = lapic->icrlo;
+			icrhi = lapic->icrhi;
+			dispatch_icr = 1;
 		}
 		break;
 	case LAPIC_ICRHI:
-		if (dir == MMIO_DIR_WRITE)
-			log_debug("%s: vcpu %u ICRHI write", __func__,
-			    vcpu_id);
+		if (dir == MMIO_DIR_READ)
+			*data = (*data & 0xffffffff00000000ULL) |
+			    lapic->icrhi;
+		else
+			lapic->icrhi = (uint32_t)*data & 0xff000000;
 		break;
 	case LAPIC_ICR_TIMER:
 		if (dir == MMIO_DIR_WRITE) {
@@ -427,8 +479,89 @@ out:
 	/* Never acquire the IOAPIC lock while holding a LAPIC lock. */
 	if (eoi_vector != 0xffff)
 		i82093aa_eoi(eoi_vector);
+	if (dispatch_icr)
+		i82489dx_icr(vcpu_id, icrhi, icrlo);
 
 	return 0;
+}
+
+/*
+ * Dispatch an xAPIC ICR after dropping the source LAPIC mutex.  This ordering
+ * is required because INIT resets a target LAPIC and fixed IPIs acquire the
+ * target LAPIC and vCPU run locks.
+ */
+static void
+i82489dx_icr(uint32_t source, uint32_t hi, uint32_t lo)
+{
+	uint64_t targets = 0;
+	uint32_t shorthand, mode, dest;
+	uint8_t vector;
+	int i;
+
+	shorthand = lo & LAPIC_DEST_MASK;
+	mode = lo & LAPIC_DLMODE_MASK;
+	vector = lo & LAPIC_LVTT_VEC_MASK;
+	dest = (hi >> LAPIC_ID_SHIFT) & 0xff;
+
+	if (lo & LAPIC_DSTMODE_LOG) {
+		log_debug("%s: logical destination IPI from vcpu %u ignored",
+		    __func__, source);
+		return;
+	}
+
+	switch (shorthand) {
+	case 0:
+		if (dest == 0xff) {
+			for (i = 0; i < lapic_ncpus; i++)
+				targets |= 1ULL << i;
+		} else if (dest < (uint32_t)lapic_ncpus)
+			targets = 1ULL << dest;
+		break;
+	case LAPIC_DEST_SELF:
+		targets = 1ULL << source;
+		break;
+	case LAPIC_DEST_ALLINCL:
+		for (i = 0; i < lapic_ncpus; i++)
+			targets |= 1ULL << i;
+		break;
+	case LAPIC_DEST_ALLEXCL:
+		for (i = 0; i < lapic_ncpus; i++) {
+			if ((uint32_t)i != source)
+				targets |= 1ULL << i;
+		}
+		break;
+	}
+
+	log_debug("%s: vcpu %u mode=0x%x vector=0x%x targets=0x%llx",
+	    __func__, source, mode, vector, (unsigned long long)targets);
+
+	switch (mode) {
+	case LAPIC_DLMODE_FIXED:
+		for (i = 0; i < lapic_ncpus; i++) {
+			if (targets & (1ULL << i))
+				vcpu_assert_vector(current_vm->vm_vmmid, i, vector);
+		}
+		break;
+	case LAPIC_DLMODE_INIT:
+		/* A level-triggered deassert completes the INIT handshake. */
+		if ((lo & LAPIC_LVL_TRIG) && !(lo & LAPIC_LVL_ASSERT))
+			break;
+		for (i = 0; i < lapic_ncpus; i++) {
+			if (targets & (1ULL << i))
+				vcpu_assert_init(i);
+		}
+		break;
+	case LAPIC_DLMODE_STARTUP:
+		for (i = 0; i < lapic_ncpus; i++) {
+			if (targets & (1ULL << i))
+				vcpu_start_sipi(i, vector);
+		}
+		break;
+	default:
+		log_debug("%s: unsupported delivery mode 0x%x from vcpu %u",
+		    __func__, mode, source);
+		break;
+	}
 }
 
 /*
