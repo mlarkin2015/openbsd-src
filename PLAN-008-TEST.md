@@ -30,9 +30,11 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
 - Existing focused vmd tests under `regress/usr.sbin/vmd/` cover configuration,
   disk formats, LAPIC ICR/reset behavior and x86 MMIO decoding.
 - Existing vmm tests under `regress/sys/` remain limited.
-- Manual SMP validation boots an OpenBSD GENERIC.MP guest completely with two
-  vCPUs; a guest kernel-build stress run is in progress.  SMP Linux/FreeBSD,
-  repeated INIT-SIPI, pause/unpause and reboot remain manual test items.
+- Manual SMP validation boots OpenBSD GENERIC.MP guests with two, four and
+  eight vCPUs.  Four/eight-vCPU fsck/mountroot testing exposed and validated
+  the fix for a lost `VMM_IOC_INTR` assertion at `VMM_IOC_RUN` entry.  Longer
+  stress, an Intel VMX field run, SMP Linux/FreeBSD, repeated INIT-SIPI,
+  pause/unpause and reboot remain manual test items.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure

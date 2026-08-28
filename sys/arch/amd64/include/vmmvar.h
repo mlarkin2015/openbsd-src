@@ -977,6 +977,7 @@ struct vcpu {
 	struct vm_exit vc_exit;			/* [v] */
 
 	uint16_t vc_intr;			/* [v] */
+	u_int vc_intr_latch;			/* [a] */
 	uint8_t vc_irqready;			/* [v] */
 
 	uint8_t vc_fpuinited;			/* [v] */
