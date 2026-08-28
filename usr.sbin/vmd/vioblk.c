@@ -24,6 +24,7 @@
 
 #include <errno.h>
 #include <event.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -253,14 +254,15 @@ vioblk_cmd_name(uint32_t type)
 static int
 vioblk_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 {
-	uint32_t cmd_len;
+	uint32_t used_len;
 	uint16_t idx, cmd_desc_idx;
 	uint8_t ds;
 	off_t offset;
 	ssize_t sz;
 	int is_write, notify = 0;
 	char *vr;
-	size_t i;
+	char id[VIRTIO_BLK_ID_BYTES];
+	size_t i, id_len;
 	struct vring_desc *table, *desc;
 	struct vring_avail *avail;
 	struct vring_used *used;
@@ -292,7 +294,7 @@ vioblk_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 			goto reset;
 		}
 		desc = &table[cmd_desc_idx];
-		cmd_len = desc->len;
+		used_len = 1;	/* The status byte is always device-written. */
 
 		/*
 		 * Validate Command descriptor. It should be chained to another
@@ -326,17 +328,32 @@ vioblk_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 			    &desc);
 			if (sz == -1)
 				ds = VIRTIO_BLK_S_IOERR;
-			else
+			else {
 				ds = VIRTIO_BLK_S_OK;
+				if (!is_write)
+					used_len += sz;
+			}
 			break;
 		case VIRTIO_BLK_T_GET_ID:
-			/*
-			 * We don't support this command yet. While it's not
-			 * officially part of the virtio spec (will be in v1.2)
-			 * there's no feature to negotiate. Linux drivers will
-			 * often send this command regardless.
-			 */
-			ds = VIRTIO_BLK_S_UNSUPP;
+			/* The ID data descriptor must precede the status byte. */
+			if (!DESC_WRITABLE(desc) ||
+			    (desc->flags & VRING_DESC_F_NEXT) == 0) {
+				log_warnx("%s: invalid get id descriptor", __func__);
+				goto reset;
+			}
+
+			memset(id, 0, sizeof(id));
+			(void)snprintf(id, sizeof(id), "vmd-disk%u",
+			    vioblk->idx);
+			id_len = desc->len < sizeof(id) ? desc->len : sizeof(id);
+			if (write_mem(desc->addr, id, id_len)) {
+				log_warnx("%s: can't write device identifier "
+				    "@ 0x%llx", __func__, desc->addr);
+				ds = VIRTIO_BLK_S_IOERR;
+			} else {
+				ds = VIRTIO_BLK_S_OK;
+				used_len += id_len;
+			}
 			break;
 		default:
 			log_warnx("%s: unsupported vioblk command %d", __func__,
@@ -374,7 +391,7 @@ vioblk_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 		notify = 1;
 
 		used->ring[used->idx & vq_info->mask].id = cmd_desc_idx;
-		used->ring[used->idx & vq_info->mask].len = cmd_len;
+		used->ring[used->idx & vq_info->mask].len = used_len;
 
 		__sync_synchronize();
 		used->idx++;
