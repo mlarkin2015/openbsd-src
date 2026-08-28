@@ -546,6 +546,8 @@ uint8_t	 vcpu_exit_pci(struct vm_run_params *);
 
 #ifdef __amd64__
 /* x86 io functions in x86_vm.c */
+void	 vcpu_init_ap(struct vcpu_reg_state *);
+void	 vcpu_init_sipi(struct vcpu_reg_state *, uint8_t);
 void	 set_return_data(struct vm_exit *, uint32_t);
 void	 get_input_data(struct vm_exit *, uint32_t *);
 #endif /* __amd64 __ */
@@ -554,6 +556,8 @@ void	 get_input_data(struct vm_exit *, uint32_t *);
 void	 vcpu_halt(uint32_t);
 void	 vcpu_unhalt(uint32_t);
 void	 vcpu_signal_run(uint32_t);
+void	 vcpu_assert_init(uint32_t);
+void	 vcpu_start_sipi(uint32_t, uint8_t);
 int 	 vcpu_intr(uint32_t, uint32_t, uint8_t);
 void	 vm_main(int, int);
 void	 mutex_lock(pthread_mutex_t *);

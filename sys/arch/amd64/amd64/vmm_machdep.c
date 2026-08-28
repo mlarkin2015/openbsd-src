@@ -2807,6 +2807,14 @@ vcpu_reset_regs(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	else
 		panic("%s: unknown vmm mode: %d", __func__, vmm_softc->mode);
 
+	if (ret == 0) {
+		memset(&vcpu->vc_exit, 0, sizeof(vcpu->vc_exit));
+		vcpu->vc_gueststate.vg_exit_reason = 0;
+		vcpu->vc_inject.vie_type = VCPU_INJECT_NONE;
+		vcpu->vc_intr = 0;
+		vcpu->vc_irqready = 0;
+	}
+
 	return (ret);
 }
 
@@ -5907,7 +5915,9 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 		break;
 	case MSR_APICBASE:
 		/* XXX This needs to go to vmd, hardcode for now. */
-		*rax = LAPIC_BASE | (1ULL << 11) | (1ULL << 8);
+		*rax = LAPIC_BASE | APICBASE_GLOBAL_ENABLE;
+		if (vcpu->vc_id == 0)
+			*rax |= APICBASE_BSP;
 		*rdx = 0;
 		break;
 	default:
@@ -6228,7 +6238,9 @@ svm_handle_msr(struct vcpu *vcpu)
 			break;
 		case MSR_APICBASE:
 			/* XXX This needs to go to vmd, hardcode for now. */
-			*rax = LAPIC_BASE | (1ULL << 11) | (1ULL << 8);
+			*rax = LAPIC_BASE | APICBASE_GLOBAL_ENABLE;
+			if (vcpu->vc_id == 0)
+				*rax |= APICBASE_BSP;
 			*rdx = 0;
 			break;
 		default:
@@ -6338,7 +6350,7 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 	uint64_t insn_length, cr4;
 	uint64_t *rax, *rbx, *rcx, *rdx;
 	struct vmcb *vmcb;
-	uint32_t leaf, subleaf, eax, ebx, ecx, edx;
+	uint32_t leaf, subleaf, eax, ebx, ecx, edx, ncpus, shift, value;
 	struct vmx_msr_store *msr_store;
 	int vmm_cpuid_level;
 
@@ -6427,6 +6439,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rax = cpu_id;
 		/* mask off host's APIC ID, reset to vcpu id */
 		*rbx = cpu_ebxfeature & 0x0000FFFF;
+		ncpus = vcpu->vc_parent->vm_vcpu_ct;
+		*rbx |= (ncpus & 0xff) << 16;
 		*rbx |= (vcpu->vc_id & 0xFF) << 24;
 		*rcx = (cpu_ecxfeature | CPUIDECX_HV) & VMM_CPUIDECX_MASK;
 
@@ -6437,6 +6451,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 			*rcx &= ~CPUIDECX_OSXSAVE;
 
 		*rdx = curcpu()->ci_feature_flags & VMM_CPUIDEDX_MASK;
+		if (ncpus > 1)
+			*rdx |= CPUID_HTT;
 		break;
 	case 0x02:	/* Cache and TLB information */
 		*rax = eax;
@@ -6521,13 +6537,32 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rcx = 0;
 		*rdx = 0;
 		break;
-	case 0x0b:	/* Extended topology enumeration (not supported) */
-		DPRINTF("%s: function 0x0b (topology enumeration) not "
-		    "supported\n", __func__);
-		*rax = 0;
-		*rbx = 0;
-		*rcx = 0;
-		*rdx = 0;
+	case 0x0b:	/* Extended topology enumeration */
+		ncpus = vcpu->vc_parent->vm_vcpu_ct;
+		shift = 0;
+		value = ncpus - 1;
+		while (value != 0) {
+			shift++;
+			value >>= 1;
+		}
+		*rdx = vcpu->vc_id;
+		switch (subleaf) {
+		case 0:	/* one thread per core */
+			*rax = 0;
+			*rbx = 1;
+			*rcx = (1U << 8) | 0;
+			break;
+		case 1:	/* one package containing all configured vCPUs */
+			*rax = shift;
+			*rbx = ncpus;
+			*rcx = (2U << 8) | 1;
+			break;
+		default:
+			*rax = 0;
+			*rbx = 0;
+			*rcx = subleaf;
+			break;
+		}
 		break;
 	case 0x0d:	/* Processor ext. state information */
 		vmm_handle_cpuid_0xd(vcpu, subleaf, rax, eax, ebx, ecx, edx);

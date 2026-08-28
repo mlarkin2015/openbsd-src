@@ -25,13 +25,13 @@ descriptions in the original 2026-08-21 audit below:
   reaches and operates its serial installer; OpenBSD and Alpine Linux reach
   login with APIC and MSI/MSI-X active.
 
-The remaining SMP gate is narrower than the original plan suggested.  The
-kernel explicitly rejects `vcp_ncpus != 1`, vmd lacks an AP wait-for-SIPI
-lifecycle, and LAPIC ICR writes are still dropped.  CPUID topology and the
-per-vCPU MSR_APICBASE BSP bit also need correction.  Conversely, vmd already
-has one run thread and LAPIC per configured vCPU, vmm(4) already allocates and
-addresses per-vCPU objects, and `vmmioctl()` drops the kernel big lock before
-entering `VMM_IOC_RUN`.
+The initial SMP gate is now implemented and awaiting multiprocessor guest
+validation.  `vmm(4)` admits up to 64 vCPUs; vmd parks AP threads until
+INIT-SIPI; the LAPIC ICR handles physical fixed, INIT and STARTUP IPIs; and
+CPUID/APICBASE identify the configured topology and BSP correctly.  `vm.conf`
+and `vmctl` now expose validated vCPU-count controls.  Host builds and focused
+LAPIC/config regressions pass.  The next gate is boot and concurrency testing
+with 2-vCPU OpenBSD, Linux and FreeBSD guests.
 
 ## Verified current state (original source audit, 2026-08-21)
 
@@ -87,10 +87,10 @@ What does **not** exist (gaps that gate Windows):
 Everything else depends on these. Order within the phase:
 
 1. **LAPIC/SMP completion** (kernel, `vmm.c`/`vmm_machdep.c` + userspace
-   `vm.c`/`i82489dx.c`): timer, EOI and basic delivery are complete.  Remaining:
-   admit multiple kernel vCPUs, park APs until SIPI, implement ICR fixed/INIT/
-   SIPI delivery, and correct CPUID/APICBASE topology.  Validate with SMP
-   OpenBSD, Linux and FreeBSD plus `regress/sys/arch/amd64/vmm*`.
+   `vm.c`/`i82489dx.c`): multi-vCPU admission, AP wait-for-SIPI, physical ICR
+   fixed/INIT/SIPI delivery and CPUID/APICBASE topology are implemented.
+   Validate concurrent execution with SMP OpenBSD, Linux and FreeBSD, then
+   stress IPI/timer/device delivery and pause/reboot behavior.
 2. **OVMF as ROM** (userspace): load `ovmf.fd` through the existing bios path;
    map flash read-only in EPT; add NVRAM varstore pflash region (below firmware
    flash) with EPT write-trap persistence to `/var/vm/<vm>/nvram`;
@@ -215,11 +215,10 @@ enlightened Windows.
 
 ## Working notes (LAPIC/SMP track, 2026-08)
 
-1. **Current admission boundary**: vmd has per-vCPU LAPICs, run threads, halt
-   state, timer polling and targeted interrupt kicks.  The immediate blocker is
-   the explicit `vcp_ncpus != 1` rejection in kernel `vm_create()`.  Removing it
-   must be paired with parking AP threads until INIT-SIPI; otherwise every vCPU
-   would execute the BSP firmware reset vector concurrently.
+1. **Current admission boundary**: the former `vcp_ncpus != 1` rejection is
+   removed, and vmd pairs multi-vCPU creation with an AP `WAIT_SIPI` state so
+   only the BSP executes the firmware reset vector.  Counts are selected with
+   `vm.conf`'s `cpus` option or `vmctl start -p` and validated from 1 through 64.
 2. **Kernel-side SMP work required (vmm(4))**: userspace SMP support alone is not
    sufficient. Known kernel concerns to audit:
    - vcpu ID assumptions: code paths may implicitly assume one vcpu per VM
@@ -248,7 +247,7 @@ enlightened Windows.
 
 | Risk | Mitigation |
 |---|---|
-| LAPIC/IPI rework destabilizes existing Linux/OpenBSD guests | Land behind per-VM opt-in flag until SMP Linux + OpenBSD guests both pass regress |
+| LAPIC/IPI rework destabilizes existing Linux/OpenBSD guests | Counts above the default of one vCPU are per-VM opt-in until SMP Linux + OpenBSD guests pass |
 | OVMF build/toolchain on OpenBSD painful | Ship prebuilt ovmf.fd initially (Option B in PLAN-001); integrate build later |
 | Windows strictness on ACPI/SMBIOS bugs | Validate offline against golden dumps; use Linux guest acpidump once |
 | Scope creep (TPM crypto, USB, IDE) | Strict phase gating; M0 needs none of them beyond viogpu+i8042 |

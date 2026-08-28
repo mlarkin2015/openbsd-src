@@ -367,8 +367,8 @@ vm_create(struct vm_create_params *vcp, struct proc *p)
 	if (memsize == 0)
 		return (EINVAL);
 
-	/* XXX - support UP only (for now) */
-	if (vcp->vcp_ncpus != 1)
+	if (vcp->vcp_ncpus == 0 ||
+	    vcp->vcp_ncpus > VMM_MAX_VCPUS_PER_VM)
 		return (EINVAL);
 
 	/*

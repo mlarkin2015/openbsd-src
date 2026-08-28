@@ -50,6 +50,7 @@ static void vm_dispatch_vmm(int, short, void *);
 static void *event_thread(void *);
 static void *lapic_timer_thread(void *);
 static void *vcpu_run_loop(void *);
+static int vcpu_apply_pending_startup(uint32_t);
 static int vmm_create_vm(struct vmd_vm *);
 static void pause_vm(struct vmd_vm *);
 static void unpause_vm(struct vmd_vm *);
@@ -72,6 +73,16 @@ pthread_mutex_t vcpu_unpause_mtx[VMM_MAX_VCPUS_PER_VM];
 pthread_mutex_t vm_mtx;
 uint8_t vcpu_hlt[VMM_MAX_VCPUS_PER_VM];
 uint8_t vcpu_done[VMM_MAX_VCPUS_PER_VM];
+
+enum vcpu_runstate {
+	VCPU_RUNSTATE_RUNNING,
+	VCPU_RUNSTATE_WAIT_SIPI,
+	VCPU_RUNSTATE_INIT,
+	VCPU_RUNSTATE_SIPI
+};
+
+static uint8_t vcpu_runstate[VMM_MAX_VCPUS_PER_VM];
+static uint8_t vcpu_sipi_vector[VMM_MAX_VCPUS_PER_VM];
 
 static volatile int lapic_timer_stop = 0;
 
@@ -443,7 +454,9 @@ pause_vm(struct vmd_vm *vm)
 	mutex_unlock(&vm_mtx);
 
 	for (n = 0; n < vm->vm_params.vmc_ncpus; n++) {
+		mutex_lock(&vcpu_run_mtx[n]);
 		ret = pthread_cond_broadcast(&vcpu_run_cond[n]);
+		mutex_unlock(&vcpu_run_mtx[n]);
 		if (ret) {
 			log_warnx("%s: can't broadcast vcpu run cond (%d)",
 			    __func__, (int)ret);
@@ -475,7 +488,9 @@ unpause_vm(struct vmd_vm *vm)
 	mutex_unlock(&vm_mtx);
 
 	for (n = 0; n < vm->vm_params.vmc_ncpus; n++) {
+		mutex_lock(&vcpu_unpause_mtx[n]);
 		ret = pthread_cond_broadcast(&vcpu_unpause_cond[n]);
+		mutex_unlock(&vcpu_unpause_mtx[n]);
 		if (ret) {
 			log_warnx("%s: can't broadcast vcpu unpause cond (%d)",
 			    __func__, (int)ret);
@@ -542,7 +557,8 @@ vmm_create_vm(struct vmd_vm *vm)
 	size_t				 i;
 
 	/* Sanity check arguments */
-	if (vmc->vmc_ncpus > VMM_MAX_VCPUS_PER_VM)
+	if (vmc->vmc_ncpus == 0 ||
+	    vmc->vmc_ncpus > VMM_MAX_VCPUS_PER_VM)
 		return (EINVAL);
 
 	if (vmc->vmc_nmemranges == 0 ||
@@ -630,19 +646,19 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	    vmc->vmc_ncpus, vmc->vmc_name);
 
 	/*
-	 * Create and launch one thread for each VCPU. These threads may
+	 * Initialize one run context for each VCPU.  These threads may
 	 * migrate between PCPUs over time; the need to reload CPU state
 	 * in such situations is detected and performed by vmm(4) in the
 	 * kernel.
 	 */
 	for (i = 0 ; i < vmc->vmc_ncpus; i++) {
-		vrp[i] = malloc(sizeof(struct vm_run_params));
+		vrp[i] = calloc(1, sizeof(struct vm_run_params));
 		if (vrp[i] == NULL) {
 			log_warn("failed to allocate vm run parameters");
 			/* caller will exit, so skip freeing */
 			return (ENOMEM);
 		}
-		vrp[i]->vrp_exit = malloc(sizeof(struct vm_exit));
+		vrp[i]->vrp_exit = calloc(1, sizeof(struct vm_exit));
 		if (vrp[i]->vrp_exit == NULL) {
 			log_warn("failed to allocate vm exit area");
 			/* caller will exit, so skip freeing */
@@ -651,7 +667,22 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 		vrp[i]->vrp_vm_id = vm->vm_vmmid;
 		vrp[i]->vrp_vcpu_id = i;
 
-		if (vcpu_reset(vm->vm_vmmid, i, vrs)) {
+#ifdef __amd64__
+		if (i == 0) {
+			ret = vcpu_reset(vm->vm_vmmid, i, vrs);
+			vcpu_runstate[i] = VCPU_RUNSTATE_RUNNING;
+		} else {
+			struct vcpu_reg_state ap_vrs;
+
+			vcpu_init_ap(&ap_vrs);
+			ret = vcpu_reset(vm->vm_vmmid, i, &ap_vrs);
+			vcpu_runstate[i] = VCPU_RUNSTATE_WAIT_SIPI;
+		}
+#else
+		ret = vcpu_reset(vm->vm_vmmid, i, vrs);
+		vcpu_runstate[i] = VCPU_RUNSTATE_RUNNING;
+#endif
+		if (ret) {
 			log_warnx("cannot reset vcpu %zu", i);
 			return (EIO);
 		}
@@ -701,7 +732,14 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 		}
 
 		vcpu_hlt[i] = 0;
+		vcpu_done[i] = 0;
+	}
 
+	/*
+	 * Do not launch the BSP until every AP's mutex, condition variable and
+	 * reset state are ready.  Firmware can send INIT/SIPI immediately.
+	 */
+	for (i = 0; i < vmc->vmc_ncpus; i++) {
 		/* Start each VCPU run thread at vcpu_run_loop */
 		ret = pthread_create(&tid[i], NULL, vcpu_run_loop, vrp[i]);
 		if (ret) {
@@ -879,9 +917,13 @@ vcpu_run_loop(void *arg)
 	struct vm_run_params *vrp = (struct vm_run_params *)arg;
 	intptr_t ret = 0;
 	uint32_t n = vrp->vrp_vcpu_id;
-	int paused = 0, halted = 0;
+	int paused = 0;
 
 	for (;;) {
+		ret = vcpu_apply_pending_startup(n);
+		if (ret != 0)
+			break;
+
 		ret = pthread_mutex_lock(&vcpu_run_mtx[n]);
 
 		if (ret) {
@@ -892,11 +934,11 @@ vcpu_run_loop(void *arg)
 
 		mutex_lock(&vm_mtx);
 		paused = (current_vm->vm_state & VM_STATE_PAUSED) != 0;
-		halted = vcpu_hlt[n];
 		mutex_unlock(&vm_mtx);
 
 		/* If we need to pause, wait on the barrier. */
 		if (paused) {
+			mutex_unlock(&vcpu_run_mtx[n]);
 			ret = pthread_barrier_wait(&vm_pause_barrier);
 			if (ret != 0 && ret != PTHREAD_BARRIER_SERIAL_THREAD) {
 				log_warnx("%s: could not wait on pause barrier (%d)",
@@ -911,28 +953,43 @@ vcpu_run_loop(void *arg)
 				return ((void *)ret);
 			}
 
-			/* Interrupt may be firing, release run mtx. */
-			mutex_unlock(&vcpu_run_mtx[n]);
-			ret = pthread_cond_wait(&vcpu_unpause_cond[n],
-			    &vcpu_unpause_mtx[n]);
-			if (ret) {
-				log_warnx(
-				    "%s: can't wait on unpause cond (%d)",
+			for (;;) {
+				mutex_lock(&vm_mtx);
+				paused = (current_vm->vm_state &
+				    VM_STATE_PAUSED) != 0;
+				mutex_unlock(&vm_mtx);
+				if (!paused)
+					break;
+
+				ret = pthread_cond_wait(&vcpu_unpause_cond[n],
+				    &vcpu_unpause_mtx[n]);
+				if (ret != 0)
+					break;
+			}
+			if (ret != 0) {
+				(void)pthread_mutex_unlock(&vcpu_unpause_mtx[n]);
+				log_warnx("%s: can't wait on unpause cond (%d)",
 				    __func__, (int)ret);
 				break;
 			}
-			mutex_lock(&vcpu_run_mtx[n]);
-
 			ret = pthread_mutex_unlock(&vcpu_unpause_mtx[n]);
-			if (ret) {
+			if (ret != 0) {
 				log_warnx("%s: can't unlock unpause mtx (%d)",
 				    __func__, (int)ret);
 				break;
 			}
+			continue;
 		}
 
-		/* If we are halted and not paused, wait */
-		if (halted) {
+		/* Apply a transition queued after the check at the top of the loop. */
+		if (vcpu_runstate[n] == VCPU_RUNSTATE_INIT ||
+		    vcpu_runstate[n] == VCPU_RUNSTATE_SIPI) {
+			(void)pthread_mutex_unlock(&vcpu_run_mtx[n]);
+			continue;
+		}
+
+		/* APs wait here until a SIPI transition makes them runnable. */
+		if (vcpu_runstate[n] != VCPU_RUNSTATE_RUNNING || vcpu_hlt[n]) {
 			ret = pthread_cond_wait(&vcpu_run_cond[n],
 			    &vcpu_run_mtx[n]);
 
@@ -944,6 +1001,8 @@ vcpu_run_loop(void *arg)
 				    &vcpu_run_mtx[n]);
 				break;
 			}
+			(void)pthread_mutex_unlock(&vcpu_run_mtx[n]);
+			continue;
 		}
 
 		ret = pthread_mutex_unlock(&vcpu_run_mtx[n]);
@@ -971,6 +1030,13 @@ vcpu_run_loop(void *arg)
 			break;
 		}
 
+		/* INIT supersedes any ordinary exit which raced with its kick. */
+		mutex_lock(&vcpu_run_mtx[n]);
+		paused = vcpu_runstate[n] != VCPU_RUNSTATE_RUNNING;
+		mutex_unlock(&vcpu_run_mtx[n]);
+		if (paused)
+			continue;
+
 		/* If the VM is terminating, exit normally */
 		if (vrp->vrp_exit_reason == VM_EXIT_TERMINATED) {
 			ret = (intptr_t)NULL;
@@ -997,6 +1063,55 @@ vcpu_run_loop(void *arg)
 	mutex_unlock(&threadmutex);
 
 	return ((void *)ret);
+}
+
+/*
+ * Apply an INIT or SIPI transition while the kernel vCPU is stopped between
+ * VMM_IOC_RUN calls.  State is rechecked after the reset so a closely-spaced
+ * INIT/SIPI pair cannot lose the SIPI while the AP thread is being scheduled.
+ */
+static int
+vcpu_apply_pending_startup(uint32_t vcpu_id)
+{
+#ifdef __amd64__
+	struct vcpu_reg_state vrs;
+	uint8_t state, vector;
+	int ret;
+
+	for (;;) {
+		mutex_lock(&vcpu_run_mtx[vcpu_id]);
+		state = vcpu_runstate[vcpu_id];
+		vector = vcpu_sipi_vector[vcpu_id];
+		mutex_unlock(&vcpu_run_mtx[vcpu_id]);
+
+		if (state != VCPU_RUNSTATE_INIT && state != VCPU_RUNSTATE_SIPI)
+			return (0);
+
+		if (state == VCPU_RUNSTATE_INIT)
+			vcpu_init_ap(&vrs);
+		else
+			vcpu_init_sipi(&vrs, vector);
+
+		ret = vcpu_reset(current_vm->vm_vmmid, vcpu_id, &vrs);
+		if (ret != 0) {
+			log_warnx("%s: cannot reset vcpu %u: %s", __func__,
+			    vcpu_id, strerror(ret));
+			return (ret);
+		}
+
+		mutex_lock(&vcpu_run_mtx[vcpu_id]);
+		if (vcpu_runstate[vcpu_id] == state &&
+		    (state != VCPU_RUNSTATE_SIPI ||
+		    vcpu_sipi_vector[vcpu_id] == vector)) {
+			vcpu_runstate[vcpu_id] =
+			    state == VCPU_RUNSTATE_INIT ?
+			    VCPU_RUNSTATE_WAIT_SIPI : VCPU_RUNSTATE_RUNNING;
+		}
+		mutex_unlock(&vcpu_run_mtx[vcpu_id]);
+	}
+#else
+	return (0);
+#endif
 }
 
 int
@@ -1194,17 +1309,17 @@ remap_guest_mem(struct vmd_vm *vm, int vmm_fd)
 void
 vcpu_halt(uint32_t vcpu_id)
 {
-	mutex_lock(&vm_mtx);
+	mutex_lock(&vcpu_run_mtx[vcpu_id]);
 	vcpu_hlt[vcpu_id] = 1;
-	mutex_unlock(&vm_mtx);
+	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
 }
 
 void
 vcpu_unhalt(uint32_t vcpu_id)
-	{
-	mutex_lock(&vm_mtx);
+{
+	mutex_lock(&vcpu_run_mtx[vcpu_id]);
 	vcpu_hlt[vcpu_id] = 0;
-	mutex_unlock(&vm_mtx);
+	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
 }
 
 void
@@ -1217,4 +1332,54 @@ vcpu_signal_run(uint32_t vcpu_id)
 	if (ret)
 		fatalx("%s: can't signal (%d)", __func__, ret);
 	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
+}
+
+/* Queue the architectural INIT transition and force a running AP to exit. */
+void
+vcpu_assert_init(uint32_t vcpu_id)
+{
+	int ret;
+
+	if (vcpu_id >= current_vm->vm_params.vmc_ncpus)
+		return;
+
+	mutex_lock(&vcpu_run_mtx[vcpu_id]);
+	/* Serialize the LAPIC reset against a closely following SIPI. */
+	i82489dx_reset(vcpu_id);
+	vcpu_runstate[vcpu_id] = VCPU_RUNSTATE_INIT;
+	vcpu_hlt[vcpu_id] = 0;
+	ret = pthread_cond_signal(&vcpu_run_cond[vcpu_id]);
+	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
+	if (ret != 0)
+		fatalx("%s: can't signal vcpu %u (%d)", __func__, vcpu_id,
+		    ret);
+
+	ret = vcpu_intr(current_vm->vm_vmmid, vcpu_id, 1);
+	if (ret != 0)
+		log_warnx("%s: cannot kick vcpu %u: %s", __func__, vcpu_id,
+		    strerror(ret));
+}
+
+/* Queue the first SIPI received by an AP in WAIT_SIPI or pending INIT. */
+void
+vcpu_start_sipi(uint32_t vcpu_id, uint8_t vector)
+{
+	int ret = 0;
+
+	if (vcpu_id >= current_vm->vm_params.vmc_ncpus)
+		return;
+
+	mutex_lock(&vcpu_run_mtx[vcpu_id]);
+	if (vcpu_runstate[vcpu_id] == VCPU_RUNSTATE_WAIT_SIPI ||
+	    vcpu_runstate[vcpu_id] == VCPU_RUNSTATE_INIT) {
+		vcpu_sipi_vector[vcpu_id] = vector;
+		vcpu_runstate[vcpu_id] = VCPU_RUNSTATE_SIPI;
+		vcpu_hlt[vcpu_id] = 0;
+		ret = pthread_cond_signal(&vcpu_run_cond[vcpu_id]);
+	}
+	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
+
+	if (ret != 0)
+		fatalx("%s: can't signal vcpu %u (%d)", __func__, vcpu_id,
+		    ret);
 }
