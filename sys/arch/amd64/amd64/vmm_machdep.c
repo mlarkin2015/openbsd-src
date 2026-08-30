@@ -157,6 +157,14 @@ int vmm_update_pvclock(struct vcpu *);
 void vmm_pv_wall_clock(struct vcpu *, paddr_t);
 int vmm_pat_is_valid(uint64_t);
 
+static void svm_avic_reset_vlapic(struct vcpu *);
+static int svm_avic_handle_exit(struct vcpu *);
+static void svm_avic_vcpu_load(struct vcpu *, struct cpu_info *);
+static void svm_avic_vcpu_put(struct vcpu *);
+static int svm_avic_inject(struct vcpu *, uint8_t, int);
+static int vmm_write_apicbase(struct vcpu *, uint64_t);
+static int vmm_x2apic_msr(struct vcpu *, uint32_t, int, uint64_t);
+
 #ifdef MULTIPROCESSOR
 static int vmx_remote_vmclear(struct cpu_info*, struct vcpu *);
 #endif
@@ -288,11 +296,18 @@ vmm_attach_machdep(struct device *parent, struct device *self, void *aux)
 
 	sc->sc_md.nr_rvi_cpus = 0;
 	sc->sc_md.nr_ept_cpus = 0;
+	sc->sc_md.nr_avic_cpus = 0;
+	sc->sc_md.avic_enabled = 0;
 
 	/* Calculate CPU features */
 	CPU_INFO_FOREACH(cii, ci) {
 		if (ci->ci_vmm_flags & CI_VMM_RVI)
 			sc->sc_md.nr_rvi_cpus++;
+		/* Family 17h erratum 1235 can silently lose AVIC IPIs. */
+		if ((ci->ci_vmm_flags & CI_VMM_RVI) &&
+		    ci->ci_vmm_cap.vcc_svm.svm_avic &&
+		    ci->ci_family != 0x17 && ci->ci_apicid < 0xff)
+			sc->sc_md.nr_avic_cpus++;
 		if (ci->ci_vmm_flags & CI_VMM_EPT)
 			sc->sc_md.nr_ept_cpus++;
 	}
@@ -329,6 +344,10 @@ vmm_attach_machdep(struct device *parent, struct device *self, void *aux)
 
 	if (sc->mode == VMM_MODE_RVI) {
 		sc->max_vpid = curcpu()->ci_vmm_cap.vcc_svm.svm_max_asid;
+		if (sc->sc_md.nr_avic_cpus == sc->sc_md.nr_rvi_cpus) {
+			sc->sc_md.avic_enabled = 1;
+			printf("/AVIC");
+		}
 	} else {
 		sc->max_vpid = 0xFFF;
 	}
@@ -442,7 +461,7 @@ vmm_activate_machdep(struct device *self, int act)
 int
 vmmioctl_machdep(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
 {
-	int ret;
+	int ret = 0;
 
 	switch (cmd) {
 	case VMM_IOC_INTR:
@@ -501,6 +520,16 @@ vm_intr_pending(struct vm_intr_params *vip)
 
 	if (vcpu == NULL) {
 		ret = ENOENT;
+		goto out;
+	}
+
+	if (vip->vip_type == VMM_INTR_VECTOR) {
+		ret = svm_avic_inject(vcpu, vip->vip_vector,
+		    vip->vip_level != 0);
+		goto out;
+	}
+	if (vip->vip_type != VMM_INTR_PENDING) {
+		ret = EINVAL;
 		goto out;
 	}
 
@@ -926,6 +955,8 @@ vmx_remote_vmclear(struct cpu_info *ci, struct vcpu *vcpu)
 int
 vm_impl_init(struct vm *vm, struct proc *p)
 {
+	int ret;
+
 	/* If not EPT or RVI, nothing to do here */
 	switch (vmm_softc->mode) {
 	case VMM_MODE_EPT:
@@ -933,6 +964,29 @@ vm_impl_init(struct vm *vm, struct proc *p)
 		break;
 	case VMM_MODE_RVI:
 		pmap_convert(vm->vm_pmap, PMAP_TYPE_RVI);
+		if (!vmm_softc->sc_md.avic_enabled)
+			break;
+
+		rw_init(&vm->vm_avic_lock, "vmavic");
+		vm->vm_avic_logical_va = (vaddr_t)km_alloc(PAGE_SIZE,
+		    &kv_page, &kp_zero, &kd_waitok);
+		if (vm->vm_avic_logical_va == 0)
+			return (ENOMEM);
+		ret = pmap_extract(pmap_kernel(), vm->vm_avic_logical_va,
+		    &vm->vm_avic_logical_pa);
+		if (!ret)
+			return (ENOMEM);
+
+		vm->vm_avic_physical_va = (vaddr_t)km_alloc(PAGE_SIZE,
+		    &kv_page, &kp_zero, &kd_waitok);
+		if (vm->vm_avic_physical_va == 0)
+			return (ENOMEM);
+		ret = pmap_extract(pmap_kernel(), vm->vm_avic_physical_va,
+		    &vm->vm_avic_physical_pa);
+		if (!ret)
+			return (ENOMEM);
+
+		vm->vm_avic = 1;
 		break;
 	default:
 		printf("%s: invalid vmm mode %d\n", __func__, vmm_softc->mode);
@@ -945,7 +999,17 @@ vm_impl_init(struct vm *vm, struct proc *p)
 void
 vm_impl_deinit(struct vm *vm)
 {
-	/* unused */
+	if (vm->vm_avic_physical_va != 0) {
+		km_free((void *)vm->vm_avic_physical_va, PAGE_SIZE,
+		    &kv_page, &kp_zero);
+		vm->vm_avic_physical_va = 0;
+	}
+	if (vm->vm_avic_logical_va != 0) {
+		km_free((void *)vm->vm_avic_logical_va, PAGE_SIZE,
+		    &kv_page, &kp_zero);
+		vm->vm_avic_logical_va = 0;
+	}
+	vm->vm_avic = 0;
 }
 
 /*
@@ -1691,6 +1755,18 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 
 	/* INTR masking */
 	vmcb->v_intr_masking = 1;
+	if (vcpu->vc_svm_avic) {
+		svm_avic_reset_vlapic(vcpu);
+		vmcb->v_intr_masking |= SVM_INTR_MASKING_AVIC_ENABLE;
+		vmcb->v_avic_apic_bar = LAPIC_BASE;
+		vmcb->v_avic_apic_back_page =
+		    vcpu->vc_vlapic_pa & SVM_AVIC_HPA_MASK;
+		vmcb->v_avic_logical_table =
+		    vcpu->vc_parent->vm_avic_logical_pa & SVM_AVIC_HPA_MASK;
+		vmcb->v_avic_phys =
+		    (vcpu->vc_parent->vm_avic_physical_pa &
+		    SVM_AVIC_HPA_MASK) | SVM_AVIC_PHYS_ID_COUNT;
+	}
 
 	/* PAT */
 	vmcb->v_g_pat = PATENTRY(0, PAT_WB) | PATENTRY(1, PAT_WC) |
@@ -2836,6 +2912,9 @@ vcpu_reset_regs(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	if (ret == 0) {
 		memset(&vcpu->vc_exit, 0, sizeof(vcpu->vc_exit));
 		vcpu->vc_gueststate.vg_exit_reason = 0;
+		vcpu->vc_apicbase = LAPIC_BASE | APICBASE_GLOBAL_ENABLE;
+		if (vcpu->vc_id == 0)
+			vcpu->vc_apicbase |= APICBASE_BSP;
 		vcpu->vc_inject.vie_type = VCPU_INJECT_NONE;
 		vcpu->vc_intr = 0;
 		atomic_swap_uint(&vcpu->vc_intr_latch, 0);
@@ -2843,6 +2922,189 @@ vcpu_reset_regs(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	}
 
 	return (ret);
+}
+
+static inline volatile uint32_t *
+svm_avic_reg(struct vcpu *vcpu, uint16_t offset)
+{
+	return ((volatile uint32_t *)(vcpu->vc_vlapic_va + offset));
+}
+
+static int
+svm_avic_logical_index(uint32_t ldr, uint32_t dfr)
+{
+	uint32_t dlid = ldr >> LAPIC_ID_SHIFT;
+	int apic, cluster;
+
+	if (dlid == 0)
+		return (-1);
+	if (dfr == 0xffffffff) {
+		apic = ffs(dlid) - 1;
+		return (apic < 8 ? apic : -1);
+	}
+
+	cluster = (dlid & 0xf0) >> 4;
+	apic = ffs(dlid & 0x0f) - 1;
+	if (cluster >= 0xf || apic < 0 || apic > 3)
+		return (-1);
+	return ((cluster << 2) + apic);
+}
+
+static void
+svm_avic_update_logical(struct vcpu *vcpu, uint32_t ldr, uint32_t dfr)
+{
+	struct vm *vm = vcpu->vc_parent;
+	uint32_t *logical = (uint32_t *)vm->vm_avic_logical_va;
+	int oldidx, newidx;
+
+	oldidx = svm_avic_logical_index(vcpu->vc_svm_avic_ldr,
+	    vcpu->vc_svm_avic_dfr);
+	newidx = svm_avic_logical_index(ldr, dfr);
+
+	rw_enter_write(&vm->vm_avic_lock);
+	if (oldidx >= 0 &&
+	    (logical[oldidx] & SVM_AVIC_LOGICAL_PHYS_ID_MASK) == vcpu->vc_id)
+		logical[oldidx] = 0;
+	if (newidx >= 0)
+		logical[newidx] = SVM_AVIC_LOGICAL_VALID |
+		    (vcpu->vc_id & SVM_AVIC_LOGICAL_PHYS_ID_MASK);
+	rw_exit_write(&vm->vm_avic_lock);
+
+	vcpu->vc_svm_avic_ldr = ldr;
+	vcpu->vc_svm_avic_dfr = dfr;
+}
+
+static void
+svm_avic_reset_vlapic(struct vcpu *vcpu)
+{
+	uint16_t offset;
+
+	if (vcpu->vc_svm_avic)
+		svm_avic_update_logical(vcpu, 0, 0xffffffff);
+	memset((void *)vcpu->vc_vlapic_va, 0, PAGE_SIZE);
+	*svm_avic_reg(vcpu, LAPIC_ID) = vcpu->vc_id << LAPIC_ID_SHIFT;
+	*svm_avic_reg(vcpu, LAPIC_VERS) = (1U << 31) |
+	    (6U << LAPIC_VERSION_LVT_SHIFT) | 0x10;
+	*svm_avic_reg(vcpu, LAPIC_DFR) = 0xffffffff;
+	for (offset = LAPIC_LVTT; offset <= LAPIC_LVERR; offset += 0x10)
+		*svm_avic_reg(vcpu, offset) = LAPIC_LVT_MASKED;
+	vcpu->vc_svm_avic_ldr = 0;
+	vcpu->vc_svm_avic_dfr = 0xffffffff;
+}
+
+static void
+svm_avic_phys_update(struct vcpu *vcpu, uint64_t set, uint64_t clear)
+{
+	volatile unsigned long *entry;
+	unsigned long old, new;
+
+	entry = &((volatile unsigned long *)
+	    vcpu->vc_parent->vm_avic_physical_va)[vcpu->vc_id];
+	do {
+		old = atomic_load_long(entry);
+		new = (old & ~clear) | set;
+	} while (atomic_cas_ulong(entry, old, new) != old);
+}
+
+static void
+svm_avic_vcpu_load(struct vcpu *vcpu, struct cpu_info *ci)
+{
+	if (!vcpu->vc_svm_avic)
+		return;
+
+	svm_avic_phys_update(vcpu,
+	    SVM_AVIC_PHYS_RUNNING |
+	    (ci->ci_apicid & SVM_AVIC_PHYS_HOST_ID_MASK),
+	    SVM_AVIC_PHYS_RUNNING | SVM_AVIC_PHYS_HOST_ID_MASK);
+}
+
+static void
+svm_avic_vcpu_put(struct vcpu *vcpu)
+{
+	if (vcpu->vc_svm_avic)
+		svm_avic_phys_update(vcpu, 0, SVM_AVIC_PHYS_RUNNING);
+}
+
+static int
+svm_avic_inject(struct vcpu *vcpu, uint8_t vector, int level)
+{
+	volatile uint32_t *irr, *tmr;
+	volatile unsigned long *pentry;
+	unsigned long entry;
+	uint32_t bit;
+	uint16_t offset;
+
+	if (!vcpu->vc_svm_avic || vector < 32)
+		return (EINVAL);
+
+	offset = (vector / 32) << 4;
+	bit = 1U << (vector % 32);
+	irr = svm_avic_reg(vcpu, LAPIC_IRR + offset);
+	tmr = svm_avic_reg(vcpu, LAPIC_TMR + offset);
+	if (level)
+		atomic_setbits_int(tmr, bit);
+	else
+		atomic_clearbits_int(tmr, bit);
+	atomic_setbits_int(irr, bit);
+
+	/* Make the backing-page update visible before ringing the doorbell. */
+	membar_sync();
+	pentry = &((volatile unsigned long *)
+	    vcpu->vc_parent->vm_avic_physical_va)[vcpu->vc_id];
+	entry = atomic_load_long(pentry);
+	if ((entry & SVM_AVIC_PHYS_RUNNING) &&
+	    (entry & SVM_AVIC_PHYS_HOST_ID_MASK) != curcpu()->ci_apicid)
+		wrmsr(MSR_AMD_SVM_AVIC_DOORBELL,
+		    entry & SVM_AVIC_PHYS_HOST_ID_MASK);
+
+	return (0);
+}
+
+static int
+svm_avic_init_vcpu(struct vcpu *vcpu, struct vm_create_params *vcp)
+{
+	struct vm *vm = vcpu->vc_parent;
+	uint64_t *physical;
+	int ret;
+
+	/* AVIC and encrypted guests require a different state-sharing model. */
+	if (!vm->vm_avic || vcp->vcp_sev || vcp->vcp_seves) {
+		vm->vm_avic = 0;
+		return (0);
+	}
+
+	vcpu->vc_vlapic_va = (vaddr_t)km_alloc(PAGE_SIZE, &kv_page,
+	    &kp_zero, &kd_waitok);
+	if (vcpu->vc_vlapic_va == 0)
+		return (ENOMEM);
+	if (!pmap_extract(pmap_kernel(), vcpu->vc_vlapic_va,
+	    (paddr_t *)&vcpu->vc_vlapic_pa))
+		return (ENOMEM);
+	if ((vcpu->vc_vlapic_pa & ~SVM_AVIC_HPA_MASK) != 0)
+		return (EINVAL);
+
+	svm_avic_reset_vlapic(vcpu);
+	physical = (uint64_t *)vm->vm_avic_physical_va;
+	vcpu->vc_svm_avic = 1;
+	physical[vcpu->vc_id] =
+	    (vcpu->vc_vlapic_pa & SVM_AVIC_PHYS_BACKING_MASK) |
+	    SVM_AVIC_PHYS_VALID;
+
+	/*
+	 * AVIC still performs the nested-page permission walk for the APIC
+	 * access GPA, but replaces the leaf HPA with the VMCB backing-page HPA.
+	 * Consequently one shared RW leaf is sufficient for every vCPU.
+	 */
+	if (!vm->vm_avic_access_mapped) {
+		ret = pmap_enter(vm->vm_pmap, LAPIC_BASE, vcpu->vc_vlapic_pa,
+		    PROT_READ | PROT_WRITE, 0);
+		if (ret)
+			return (ret);
+		vm->vm_avic_access_mapped = 1;
+	}
+
+	vcp->vcp_avic = 1;
+	return (0);
 }
 
 /*
@@ -2956,6 +3218,10 @@ vcpu_init_svm(struct vcpu *vcpu, struct vm_create_params *vcp)
 	    (uint64_t)vcpu->vc_svm_ioio_va,
 	    (uint64_t)vcpu->vc_svm_ioio_pa);
 
+	ret = svm_avic_init_vcpu(vcpu, vcp);
+	if (ret)
+		goto exit;
+
 	if (vcpu->vc_seves) {
 		/* Allocate VM save area VA */
 		vcpu->vc_svm_vmsa_va = (vaddr_t)km_alloc(PAGE_SIZE, &kv_page,
@@ -3068,6 +3334,18 @@ vcpu_deinit_vmx(struct vcpu *vcpu)
 void
 vcpu_deinit_svm(struct vcpu *vcpu)
 {
+	uint64_t *physical;
+
+	if (vcpu->vc_svm_avic && vcpu->vc_parent->vm_avic_physical_va) {
+		svm_avic_update_logical(vcpu, 0, 0xffffffff);
+		physical = (uint64_t *)vcpu->vc_parent->vm_avic_physical_va;
+		physical[vcpu->vc_id] = 0;
+	}
+	if (vcpu->vc_vlapic_va) {
+		km_free((void *)vcpu->vc_vlapic_va, PAGE_SIZE, &kv_page,
+		    &kp_zero);
+		vcpu->vc_vlapic_va = 0;
+	}
 	if (vcpu->vc_control_va) {
 		km_free((void *)vcpu->vc_control_va, PAGE_SIZE, &kv_page,
 		    &kp_zero);
@@ -3726,6 +4004,14 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 	    atomic_swap_uint(&vcpu->vc_intr_latch, 0);
 
 	switch (vcpu->vc_gueststate.vg_exit_reason) {
+	case VM_EXIT_X2APIC:
+		if (!vcpu->vc_exit.vex.vex_write) {
+			vcpu->vc_gueststate.vg_rax =
+			    (uint32_t)vcpu->vc_exit.vex.vex_data;
+			vcpu->vc_gueststate.vg_rdx =
+			    vcpu->vc_exit.vex.vex_data >> 32;
+		}
+		break;
 	case VMX_EXIT_IO:
 		if (vcpu->vc_exit.vei.vei_dir == VEI_DIR_IN)
 			vcpu->vc_gueststate.vg_rax = vcpu->vc_exit.vei.vei_data;
@@ -4262,6 +4548,97 @@ vmx_get_exit_info(uint64_t *rip, uint64_t *exit_reason)
 	return (rv);
 }
 
+static int
+svm_avic_trap_write(uint16_t offset)
+{
+	switch (offset) {
+	case LAPIC_ID:
+	case LAPIC_EOI:
+	case LAPIC_RRR:
+	case LAPIC_LDR:
+	case LAPIC_DFR:
+	case LAPIC_SVR:
+	case LAPIC_ESR:
+	case LAPIC_ICRLO:
+	case LAPIC_LVTT:
+	case 0x330:		/* Thermal-sensor LVT. */
+	case LAPIC_PCINT:
+	case LAPIC_LVINT0:
+	case LAPIC_LVINT1:
+	case LAPIC_LVERR:
+	case LAPIC_ICR_TIMER:
+	case LAPIC_DCR_TIMER:
+		return (1);
+	default:
+		return (0);
+	}
+}
+
+/*
+ * Turn the AVIC exits which require software help into a stable kernel/vmd
+ * interface.  Register-write traps have already completed; access faults
+ * must instead be decoded and emulated by the normal vmd MMIO path.
+ */
+static int
+svm_avic_handle_exit(struct vcpu *vcpu)
+{
+	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
+	struct vm_exit_avic *vea = &vcpu->vc_exit.vea;
+	struct cpu_info *ci = curcpu();
+	uint64_t info1, info2;
+	uint32_t value;
+
+	memset(vea, 0, sizeof(*vea));
+	info1 = vmcb->v_exitinfo1;
+	info2 = vmcb->v_exitinfo2;
+
+	if (vmcb->v_exitcode == SVM_AVIC_INCOMPLETE_IPI) {
+		vea->vea_icrlo = (uint32_t)info1;
+		vea->vea_icrhi = (uint32_t)(info1 >> 32);
+		vea->vea_index = (uint8_t)info2;
+		vea->vea_ipi_failure = (uint8_t)(info2 >> 32);
+		return (EAGAIN);
+	}
+
+	vea->vea_offset = info1 & SVM_AVIC_NOACCEL_OFFSET_MASK;
+	vea->vea_write = (info1 & SVM_AVIC_NOACCEL_WRITE) != 0;
+	vea->vea_vector = (uint8_t)info2;
+
+	if (vea->vea_write && svm_avic_trap_write(vea->vea_offset)) {
+		value = *svm_avic_reg(vcpu, vea->vea_offset);
+		vea->vea_value = value;
+		if (vea->vea_offset == LAPIC_ICRLO)
+			vea->vea_icrhi = *svm_avic_reg(vcpu, LAPIC_ICRHI);
+
+		switch (vea->vea_offset) {
+		case LAPIC_ID:
+			/* The virtual APIC ID is fixed at vCPU creation. */
+			*svm_avic_reg(vcpu, LAPIC_ID) =
+			    vcpu->vc_id << LAPIC_ID_SHIFT;
+			break;
+		case LAPIC_LDR:
+			svm_avic_update_logical(vcpu, value,
+			    *svm_avic_reg(vcpu, LAPIC_DFR));
+			break;
+		case LAPIC_DFR:
+			svm_avic_update_logical(vcpu,
+			    *svm_avic_reg(vcpu, LAPIC_LDR), value);
+			break;
+		}
+		vea->vea_fault_type = VEE_FAULT_INVALID;
+		return (EAGAIN);
+	}
+
+	vea->vea_fault_type = VEE_FAULT_MMIO_ASSIST;
+	if (ci->ci_vmm_cap.vcc_svm.svm_decode_assist) {
+		vea->vea_insn_len = vmcb->v_n_bytes_fetched;
+		memcpy(vea->vea_insn_bytes, vmcb->v_guest_ins_bytes,
+		    sizeof(vea->vea_insn_bytes));
+		vea->vea_insn_info |= VEE_BYTES_VALID;
+	}
+	return (EAGAIN);
+}
+
 /*
  * svm_handle_exit
  *
@@ -4308,6 +4685,10 @@ svm_handle_exit(struct vcpu *vcpu)
 		break;
 	case SVM_VMEXIT_NPF:
 		ret = svm_handle_np_fault(vcpu);
+		break;
+	case SVM_AVIC_INCOMPLETE_IPI:
+	case SVM_AVIC_NOACCEL:
+		ret = svm_avic_handle_exit(vcpu);
 		break;
 	case SVM_VMEXIT_CPUID:
 		ret = vmm_handle_cpuid(vcpu);
@@ -5897,6 +6278,110 @@ vmx_handle_cr(struct vcpu *vcpu)
 }
 
 /*
+ * vmm_write_apicbase
+ *
+ * Maintain the guest-visible APIC mode independently of the host APIC.  The
+ * emulated LAPIC currently has a fixed base and the BSP bit is read-only.
+ * Architecturally, x2APIC can be disabled but cannot transition directly
+ * back to xAPIC mode.
+ */
+static int
+vmm_write_apicbase(struct vcpu *vcpu, uint64_t val)
+{
+	uint64_t allowed, oldmode, newmode;
+
+	allowed = APICBASE_ADDRESS_MASK | APICBASE_BSP |
+	    APICBASE_ENABLE_X2APIC | APICBASE_GLOBAL_ENABLE;
+	oldmode = vcpu->vc_apicbase &
+	    (APICBASE_ENABLE_X2APIC | APICBASE_GLOBAL_ENABLE);
+	newmode = val & (APICBASE_ENABLE_X2APIC | APICBASE_GLOBAL_ENABLE);
+
+	if ((val & ~allowed) != 0 ||
+	    (val & APICBASE_ADDRESS_MASK) != LAPIC_BASE ||
+	    (val & APICBASE_BSP) != (vcpu->vc_apicbase & APICBASE_BSP) ||
+	    newmode == APICBASE_ENABLE_X2APIC ||
+	    (oldmode == (APICBASE_ENABLE_X2APIC | APICBASE_GLOBAL_ENABLE) &&
+	    newmode == APICBASE_GLOBAL_ENABLE)) {
+		vmm_inject_gp(vcpu);
+		return (1);
+	}
+
+	vcpu->vc_apicbase = val;
+	return (0);
+}
+
+/*
+ * Validate an x2APIC MSR access and pass it to vmd's existing LAPIC model.
+ * VM_EXIT_X2APIC is deliberately a software baseline: no VMX APICv or SVM
+ * AVIC controls are enabled by this path.
+ */
+static int
+vmm_x2apic_msr(struct vcpu *vcpu, uint32_t msr, int write, uint64_t data)
+{
+	struct vm_exit_x2apic *vex = &vcpu->vc_exit.vex;
+	uint32_t reg;
+	int readable = 0, writable = 0, wide = 0;
+
+	if ((vcpu->vc_apicbase & (APICBASE_ENABLE_X2APIC |
+	    APICBASE_GLOBAL_ENABLE)) != (APICBASE_ENABLE_X2APIC |
+	    APICBASE_GLOBAL_ENABLE))
+		goto fault;
+	if (msr < MSR_X2APIC_BASE || msr > MSR_X2APIC_END)
+		goto fault;
+
+	reg = msr - MSR_X2APIC_BASE;
+	switch (reg) {
+	case 0x02:	/* ID */
+	case 0x03:	/* version */
+	case 0x0a:	/* processor priority */
+	case 0x0d:	/* logical destination */
+	case 0x10 ... 0x17:	/* ISR */
+	case 0x18 ... 0x1f:	/* TMR */
+	case 0x20 ... 0x27:	/* IRR */
+	case 0x39:	/* timer current count */
+		readable = 1;
+		break;
+	case 0x08:	/* task priority */
+	case 0x0f:	/* spurious interrupt vector */
+	case 0x28:	/* error status */
+	case 0x2f:	/* CMCI LVT */
+	case 0x32 ... 0x38:	/* timer/thermal/perf/LINT/error/count */
+	case 0x3e:	/* timer divide configuration */
+		readable = writable = 1;
+		break;
+	case 0x0b:	/* EOI */
+		writable = 1;
+		if (data != 0)
+			goto fault;
+		break;
+	case 0x30:	/* interrupt command */
+		readable = writable = wide = 1;
+		break;
+	case 0x3f:	/* self IPI */
+		writable = 1;
+		if ((data & ~0xffULL) != 0)
+			goto fault;
+		break;
+	default:
+		goto fault;
+	}
+
+	if ((write && !writable) || (!write && !readable) ||
+	    (write && !wide && (data >> 32) != 0))
+		goto fault;
+
+	memset(vex, 0, sizeof(*vex));
+	vex->vex_msr = msr;
+	vex->vex_write = write != 0;
+	vex->vex_data = data;
+	vcpu->vc_gueststate.vg_exit_reason = VM_EXIT_X2APIC;
+	return (EAGAIN);
+
+fault:
+	return (vmm_inject_gp(vcpu));
+}
+
+/*
  * vmx_handle_rdmsr
  *
  * Handler for rdmsr instructions. Bitmap MSRs are allowed implicit access
@@ -5918,7 +6403,7 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 	uint64_t insn_length;
 	uint64_t *rax, *rdx;
 	uint64_t *rcx;
-	int ret;
+	int ret = 0;
 
 	if (vmread(VMCS_INSTRUCTION_LENGTH, &insn_length)) {
 		printf("%s: can't obtain instruction length\n", __func__);
@@ -5947,13 +6432,16 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 		*rdx = (vcpu->vc_shadow_pat >> 32);
 		break;
 	case MSR_APICBASE:
-		/* XXX This needs to go to vmd, hardcode for now. */
-		*rax = LAPIC_BASE | APICBASE_GLOBAL_ENABLE;
-		if (vcpu->vc_id == 0)
-			*rax |= APICBASE_BSP;
+		*rax = vcpu->vc_apicbase;
 		*rdx = 0;
 		break;
 	default:
+		if (*rcx >= MSR_X2APIC_BASE && *rcx <= MSR_X2APIC_END) {
+			ret = vmm_x2apic_msr(vcpu, *rcx, 0, 0);
+			if (ret != EAGAIN)
+				return (ret);
+			break;
+		}
 		/* Unsupported MSRs causes #GP exception, don't advance %rip */
 		printf("%s: unsupported rdmsr (msr=0x%llx), injecting #GP\n",
 		    __func__, *rcx);
@@ -5963,7 +6451,7 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 
 	vcpu->vc_gueststate.vg_rip += insn_length;
 
-	return (0);
+	return (ret);
 }
 
 /*
@@ -6132,7 +6620,7 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 {
 	uint64_t insn_length, val;
 	uint64_t *rax, *rdx, *rcx;
-	int ret;
+	int ret = 0;
 
 	if (vmread(VMCS_INSTRUCTION_LENGTH, &insn_length)) {
 		printf("%s: can't obtain instruction length\n", __func__);
@@ -6151,6 +6639,10 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 	val = (*rdx << 32) | (*rax & 0xFFFFFFFFULL);
 
 	switch (*rcx) {
+	case MSR_APICBASE:
+		if (vmm_write_apicbase(vcpu, val))
+			return (0);
+		break;
 	case MSR_CR_PAT:
 		if (!vmm_pat_is_valid(val)) {
 			ret = vmm_inject_gp(vcpu);
@@ -6178,8 +6670,14 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 		vmm_pv_wall_clock(vcpu,
 		    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
 		break;
-#ifdef VMM_DEBUG
 	default:
+		if (*rcx >= MSR_X2APIC_BASE && *rcx <= MSR_X2APIC_END) {
+			ret = vmm_x2apic_msr(vcpu, *rcx, 1, val);
+			if (ret != EAGAIN)
+				return (ret);
+			break;
+		}
+#ifdef VMM_DEBUG
 		/*
 		 * Log the access, to be able to identify unknown MSRs
 		 */
@@ -6187,11 +6685,12 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 		    "written from guest=0x%llx:0x%llx\n", __func__,
 		    *rcx, *rdx, *rax);
 #endif /* VMM_DEBUG */
+		break;
 	}
 
 	vcpu->vc_gueststate.vg_rip += insn_length;
 
-	return (0);
+	return (ret);
 }
 
 /*
@@ -6211,7 +6710,7 @@ svm_handle_msr(struct vcpu *vcpu)
 	uint64_t insn_length, val;
 	uint64_t *rax, *rcx, *rdx;
 	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
-	int ret;
+	int ret = 0;
 
 	/* XXX: Validate RDMSR / WRMSR insn_length */
 	insn_length = 2;
@@ -6225,6 +6724,10 @@ svm_handle_msr(struct vcpu *vcpu)
 		val = (*rdx << 32) | (*rax & 0xFFFFFFFFULL);
 
 		switch (*rcx) {
+		case MSR_APICBASE:
+			if (vmm_write_apicbase(vcpu, val))
+				return (0);
+			break;
 		case MSR_CR_PAT:
 			if (!vmm_pat_is_valid(val)) {
 				ret = vmm_inject_gp(vcpu);
@@ -6244,6 +6747,13 @@ svm_handle_msr(struct vcpu *vcpu)
 			    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
 			break;
 		default:
+			if (*rcx >= MSR_X2APIC_BASE &&
+			    *rcx <= MSR_X2APIC_END) {
+				ret = vmm_x2apic_msr(vcpu, *rcx, 1, val);
+				if (ret != EAGAIN)
+					return (ret);
+				break;
+			}
 			/* Log the access, to be able to identify unknown MSRs */
 			DPRINTF("%s: wrmsr exit, msr=0x%llx, discarding data "
 			    "written from guest=0x%llx:0x%llx\n", __func__,
@@ -6270,13 +6780,17 @@ svm_handle_msr(struct vcpu *vcpu)
 			*rdx = 0;
 			break;
 		case MSR_APICBASE:
-			/* XXX This needs to go to vmd, hardcode for now. */
-			*rax = LAPIC_BASE | APICBASE_GLOBAL_ENABLE;
-			if (vcpu->vc_id == 0)
-				*rax |= APICBASE_BSP;
+			*rax = vcpu->vc_apicbase;
 			*rdx = 0;
 			break;
 		default:
+			if (*rcx >= MSR_X2APIC_BASE &&
+			    *rcx <= MSR_X2APIC_END) {
+				ret = vmm_x2apic_msr(vcpu, *rcx, 0, 0);
+				if (ret != EAGAIN)
+					return (ret);
+				break;
+			}
 			/*
 			 * Unsupported MSRs causes #GP exception, don't advance
 			 * %rip
@@ -6290,7 +6804,7 @@ svm_handle_msr(struct vcpu *vcpu)
 
 	vcpu->vc_gueststate.vg_rip += insn_length;
 
-	return (0);
+	return (ret);
 }
 
 /* Handle cpuid(0xd) and its subleafs */
@@ -6476,6 +6990,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rbx |= (ncpus & 0xff) << 16;
 		*rbx |= (vcpu->vc_id & 0xFF) << 24;
 		*rcx = (cpu_ecxfeature | CPUIDECX_HV) & VMM_CPUIDECX_MASK;
+		if (!vcpu->vc_parent->vm_avic && !vcpu->vc_seves)
+			*rcx |= CPUIDECX_X2APIC;
 
 		/* Guest CR4.OSXSAVE determines presence of CPUIDECX_OSXSAVE */
 		if (cr4 & CR4_OSXSAVE)
@@ -6790,6 +7306,14 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 	 * exit data structure.
 	 */
 	switch (vcpu->vc_gueststate.vg_exit_reason) {
+	case VM_EXIT_X2APIC:
+		if (!vcpu->vc_exit.vex.vex_write) {
+			vcpu->vc_gueststate.vg_rax = vmcb->v_rax =
+			    (uint32_t)vcpu->vc_exit.vex.vex_data;
+			vcpu->vc_gueststate.vg_rdx =
+			    vcpu->vc_exit.vex.vex_data >> 32;
+		}
+		break;
 	case SVM_VMEXIT_IOIO:
 		if (vcpu->vc_exit.vei.vei_dir == VEI_DIR_IN) {
 			vcpu->vc_gueststate.vg_rax =
@@ -6816,6 +7340,19 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 		if (ret) {
 			printf("%s: vm %d vcpu %d failed to update "
 			    "registers\n", __func__,
+			    vcpu->vc_parent->vm_id, vcpu->vc_id);
+			return (EINVAL);
+		}
+		break;
+	case SVM_AVIC_NOACCEL:
+		if (vcpu->vc_exit.vea.vea_fault_type !=
+		    VEE_FAULT_MMIO_ASSIST)
+			break;
+		ret = vcpu_writeregs_svm(vcpu, VM_RWREGS_GPRS,
+		    &vcpu->vc_exit.vrs);
+		if (ret) {
+			printf("%s: vm %d vcpu %d failed to update "
+			    "AVIC MMIO registers\n", __func__,
 			    vcpu->vc_parent->vm_id, vcpu->vc_id);
 			return (EINVAL);
 		}
@@ -6943,6 +7480,7 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 
 		KASSERT(vmcb->v_intercept1 & SVM_INTERCEPT_INTR);
 		wrmsr(MSR_AMD_VM_HSAVE_PA, vcpu->vc_svm_hsa_pa);
+		svm_avic_vcpu_load(vcpu, ci);
 
 		if (vcpu->vc_seves) {
 			ret = svm_seves_enter_guest(vcpu->vc_control_pa,
@@ -6951,6 +7489,7 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			ret = svm_enter_guest(vcpu->vc_control_pa,
 			    &vcpu->vc_gueststate, &gdt);
 		}
+		svm_avic_vcpu_put(vcpu);
 
 		/* Restore host PKRU state. */
 		if (vmm_softc->sc_md.pkru_enabled) {
@@ -7488,6 +8027,8 @@ svm_exit_reason_decode(uint32_t code)
 	case SVM_VMEXIT_MWAIT: return "MWAIT instruction";	/* 0x8B */
 	case SVM_VMEXIT_MWAIT_CONDITIONAL: return "Cond MWAIT";	/* 0x8C */
 	case SVM_VMEXIT_NPF: return "NPT violation";		/* 0x400 */
+	case SVM_AVIC_INCOMPLETE_IPI: return "AVIC incomplete IPI"; /* 0x401 */
+	case SVM_AVIC_NOACCEL: return "AVIC unaccelerated access"; /* 0x402 */
 	default: return "unknown";
 	}
 }

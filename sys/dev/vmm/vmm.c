@@ -370,6 +370,7 @@ vm_create(struct vm_create_params *vcp, struct proc *p)
 	if (vcp->vcp_ncpus == 0 ||
 	    vcp->vcp_ncpus > VMM_MAX_VCPUS_PER_VM)
 		return (EINVAL);
+	vcp->vcp_avic = 0;
 
 	/*
 	 * Increment global counts early to see if the capacity limits
@@ -607,6 +608,7 @@ vm_teardown(struct vm **target)
 	}
 
 	/* At this point, no UVM-managed pages should reference our pmap. */
+	vm_impl_deinit(vm);
 	pmap_destroy(vm->vm_pmap);
 	vm->vm_pmap = NULL;
 

@@ -95,6 +95,8 @@ enum vm_stat_counter {
 	VMSTAT_EXIT_IO,
 	VMSTAT_EXIT_MMIO,
 	VMSTAT_EXIT_INTRWIN,
+	VMSTAT_EXIT_AVIC,
+	VMSTAT_EXIT_X2APIC,
 	VMSTAT_EXIT_HLT,
 	VMSTAT_EXIT_OTHER,
 	VMSTAT_INJECT,
@@ -129,6 +131,11 @@ vm_stats_count_exit(uint32_t vcpu_id, uint16_t reason)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_MMIO);
 	else if (reason == VMX_EXIT_INT_WINDOW || reason == SVM_VMEXIT_VINTR)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_INTRWIN);
+	else if (reason == SVM_AVIC_INCOMPLETE_IPI ||
+	    reason == SVM_AVIC_NOACCEL)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC);
+	else if (reason == VM_EXIT_X2APIC)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_X2APIC);
 	else if (reason == VMX_EXIT_HLT || reason == SVM_VMEXIT_HLT)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_HLT);
 	else if (reason != VM_EXIT_TERMINATED)
@@ -166,7 +173,8 @@ vm_stats_report(int fd, short event, void *arg)
 		}
 		if (enabled) {
 			log_info("stats %ds vcpu%zu: run=%llu none=%llu io=%llu "
-			    "mmio=%llu intrwin=%llu hlt=%llu other=%llu "
+			    "mmio=%llu intrwin=%llu avic=%llu x2apic=%llu "
+			    "hlt=%llu other=%llu "
 			    "inject=%llu intr-assert=%llu intr-deassert=%llu",
 			    VM_STATS_INTERVAL, i,
 			    (unsigned long long)delta[VMSTAT_RUN],
@@ -174,6 +182,8 @@ vm_stats_report(int fd, short event, void *arg)
 			    (unsigned long long)delta[VMSTAT_EXIT_IO],
 			    (unsigned long long)delta[VMSTAT_EXIT_MMIO],
 			    (unsigned long long)delta[VMSTAT_EXIT_INTRWIN],
+			    (unsigned long long)delta[VMSTAT_EXIT_AVIC],
+			    (unsigned long long)delta[VMSTAT_EXIT_X2APIC],
 			    (unsigned long long)delta[VMSTAT_EXIT_HLT],
 			    (unsigned long long)delta[VMSTAT_EXIT_OTHER],
 			    (unsigned long long)delta[VMSTAT_INJECT],
@@ -744,6 +754,9 @@ vmm_create_vm(struct vmd_vm *vm)
 		return (errno);
 
 	vm->vm_vmmid = vcp.vcp_id;
+	vm->vm_avic = vcp.vcp_avic;
+	if (vm->vm_avic)
+		log_debug("%s: AMD AVIC enabled", __func__);
 	for (i = 0; i < vcp.vcp_ncpus; i++)
 		vm->vm_sev_asid[i] = vcp.vcp_asid[i];
 	for (i = 0; i < vmc->vmc_nmemranges; i++)
@@ -1021,7 +1034,7 @@ lapic_timer_thread(void *arg)
 {
 	size_t ncpus = (size_t)(intptr_t)arg;
 	size_t i;
-	int error;
+	int error, vector;
 
 	while (!lapic_timer_stop) {
 		usleep(200);
@@ -1029,9 +1042,16 @@ lapic_timer_thread(void *arg)
 		for (i = 0; i < ncpus; i++) {
 			if (vcpu_done[i])
 				continue;
-			if (i82489dx_timer_check(i)) {
-				/* Kick a running VCPU out of VMM_IOC_RUN too. */
-				error = vcpu_intr(current_vm->vm_vmmid, i, 1);
+			vector = i82489dx_timer_check(i);
+			if (vector != 0xffff) {
+				if (current_vm->vm_avic)
+					error = vcpu_intr_vector(
+					    current_vm->vm_vmmid, i, vector, 0);
+				else if (intr_pending(i))
+					error = vcpu_intr(current_vm->vm_vmmid,
+					    i, 1);
+				else
+					continue;
 				if (error != 0) {
 					log_debug("%s: could not interrupt vcpu %zu: %s",
 					    __func__, i, strerror(error));
@@ -1305,6 +1325,9 @@ vcpu_intr(uint32_t vmm_id, uint32_t vcpu_id, uint8_t intr)
 	vip.vip_vm_id = vmm_id;
 	vip.vip_vcpu_id = vcpu_id; /* XXX always 0? */
 	vip.vip_intr = intr;
+#ifdef __amd64__
+	vip.vip_type = VMM_INTR_PENDING;
+#endif
 	vm_stats_inc(vcpu_id,
 	    intr ? VMSTAT_INTR_ASSERT : VMSTAT_INTR_DEASSERT);
 
@@ -1313,6 +1336,28 @@ vcpu_intr(uint32_t vmm_id, uint32_t vcpu_id, uint8_t intr)
 
 	return (0);
 }
+
+#ifdef __amd64__
+int
+vcpu_intr_vector(uint32_t vmm_id, uint32_t vcpu_id, uint8_t vector,
+    int level)
+{
+	struct vm_intr_params vip;
+
+	memset(&vip, 0, sizeof(vip));
+	vip.vip_vm_id = vmm_id;
+	vip.vip_vcpu_id = vcpu_id;
+	vip.vip_type = VMM_INTR_VECTOR;
+	vip.vip_vector = vector;
+	vip.vip_level = level != 0;
+	vm_stats_inc(vcpu_id, VMSTAT_INTR_ASSERT);
+
+	if (ioctl(env->vmd_vmm_fd, VMM_IOC_INTR, &vip) == -1)
+		return (errno);
+
+	return (0);
+}
+#endif
 
 /*
  * fd_hasdata
@@ -1493,7 +1538,15 @@ void
 vcpu_halt(uint32_t vcpu_id)
 {
 	mutex_lock(&vcpu_run_mtx[vcpu_id]);
-	vcpu_hlt[vcpu_id] = 1;
+	/*
+	 * An interrupt can race the HLT exit after it has signalled this
+	 * condition variable but before the vCPU thread records the halt.
+	 * Keep the vCPU runnable when that interrupt is still pending; otherwise
+	 * the earlier signal is lost and an SMP guest can wait forever for an
+	 * IPI which is already in its LAPIC IRR.
+	 */
+	if (!intr_pending(vcpu_id))
+		vcpu_hlt[vcpu_id] = 1;
 	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
 }
 
