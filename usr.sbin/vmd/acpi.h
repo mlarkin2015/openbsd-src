@@ -47,6 +47,7 @@ struct vm_run_params;
 #define VMD_PM1A_EVT_LEN	4
 #define VMD_PM1A_CNT_BASE	0xB008
 #define VMD_PM1A_CNT_LEN	2
+#define VMD_PM1_SLP_TYP_S5	5
 
 #define VMD_FADT_OEM_TABLEID	"VMD FADT"
 #define VMD_DSDT_OEM_TABLEID	"VMD DSDT"

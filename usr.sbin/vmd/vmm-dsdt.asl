@@ -129,6 +129,15 @@ DefinitionBlock ("", "DSDT", 2, "VMD   ", "VMD DSDT", 1)
 		}
 	}
 
+	/* PM1A SLP_TYP 5 selects the power-off state in vmd. */
+	Name (_S5, Package (4)
+	{
+		5,
+		5,
+		Zero,
+		Zero
+	})
+
 	Name (VMSI, Package (2)
 	{
 		"OpenBSD vmd Virtual Machine",
