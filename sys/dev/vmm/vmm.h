@@ -58,6 +58,7 @@ struct vm_create_params {
         /* Output parameter from VMM_IOC_CREATE */
         uint32_t		vcp_id;
         uint32_t		vcp_poscbit;
+	uint8_t			vcp_avic;
         uint32_t		vcp_asid[VMM_MAX_VCPUS];
 };
 
@@ -192,6 +193,15 @@ struct vm {
 	struct vcpu_head	 vm_vcpu_list;		/* [v] */
 	uint32_t		 vm_vcpu_ct;		/* [v] */
 	struct rwlock		 vm_vcpu_lock;
+
+	/* AMD AVIC tables, shared by all vCPUs in this VM. */
+	vaddr_t		 vm_avic_logical_va;
+	paddr_t		 vm_avic_logical_pa;
+	vaddr_t		 vm_avic_physical_va;
+	paddr_t		 vm_avic_physical_pa;
+	struct rwlock		 vm_avic_lock;
+	uint8_t		 vm_avic;
+	uint8_t		 vm_avic_access_mapped;
 
 	SLIST_ENTRY(vm)		 vm_link;		/* [V] */
 };

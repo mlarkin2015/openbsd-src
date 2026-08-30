@@ -34,10 +34,22 @@ struct i82489dx_stats {
 	uint64_t acks;
 };
 
+/* AMD AVIC incomplete-IPI failure causes passed through by vmm(4). */
+enum i82489dx_avic_ipi_failure {
+	I82489DX_AVIC_IPI_INVALID_TYPE = 0,
+	I82489DX_AVIC_IPI_TARGET_NOT_RUNNING,
+	I82489DX_AVIC_IPI_INVALID_TARGET,
+	I82489DX_AVIC_IPI_INVALID_BACKING,
+	I82489DX_AVIC_IPI_INVALID_VECTOR
+};
+
 void i82489dx_init(uint32_t);
 void i82489dx_reset(uint32_t);
 int i82489dx_mmio(uint32_t, int, paddr_t, uint64_t *);
+int i82489dx_x2apic(uint32_t, int, uint32_t, uint64_t *);
 void i82489dx_vector_irq(uint32_t, int, uint8_t, int);
+int i82489dx_avic_write(uint32_t, uint16_t, uint32_t, uint32_t);
+void i82489dx_avic_ipi(uint32_t, uint32_t, uint32_t, uint8_t, uint8_t);
 int i82489dx_is_pending(int);
 int i82489dx_ack(int);
 int i82489dx_enabled(int);

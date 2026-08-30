@@ -17,6 +17,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -33,6 +34,9 @@ extern struct vmd_vm *current_vm;
 
 #ifndef LAPIC_DLMODE_EXTINT
 #define LAPIC_DLMODE_EXTINT	0x00000700
+#endif
+#ifndef MSR_X2APIC_END
+#define MSR_X2APIC_END		0x83f
 #endif
 
 #define LAPIC_MAX_VCPUS		VMM_MAX_VCPUS_PER_VM
@@ -57,6 +61,7 @@ struct i82489dx {
 	uint32_t	esr;
 	uint32_t	icrlo;
 	uint32_t	icrhi;
+	uint32_t	x2_icr_dest;
 	uint32_t	lvt[LVT_COUNT];
 
 	uint32_t	isr[8];
@@ -87,6 +92,9 @@ static uint64_t	i82489dx_timer_ticks(struct i82489dx *);
 static uint32_t	i82489dx_timer_ccr(struct i82489dx *);
 static void	i82489dx_timer_reload(struct i82489dx *);
 static void	i82489dx_reset_locked(struct i82489dx *, uint32_t);
+static uint64_t	i82489dx_icr_targets(uint32_t, uint32_t, uint32_t);
+static uint64_t	i82489dx_x2apic_targets(uint32_t, uint64_t);
+static void	i82489dx_icr_dispatch(uint32_t, uint32_t, uint64_t);
 static void	i82489dx_icr(uint32_t, uint32_t, uint32_t);
 static int	i82489dx_highest_in_map(const uint32_t *);
 static int	i82489dx_highest_pending(struct i82489dx *);
@@ -185,6 +193,7 @@ i82489dx_reset_locked(struct i82489dx *lapic, uint32_t vcpu_id)
 	lapic->esr = 0;
 	lapic->icrlo = 0;
 	lapic->icrhi = 0;
+	lapic->x2_icr_dest = 0;
 	memset(lapic->isr, 0, sizeof(lapic->isr));
 	memset(lapic->irr, 0, sizeof(lapic->irr));
 	memset(lapic->tmr, 0, sizeof(lapic->tmr));
@@ -402,6 +411,7 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 			    LAPIC_DEST_MASK);
 			icrlo = lapic->icrlo;
 			icrhi = lapic->icrhi;
+			lapic->x2_icr_dest = icrhi >> LAPIC_ID_SHIFT;
 			dispatch_icr = 1;
 		}
 		break;
@@ -502,31 +512,37 @@ out:
 }
 
 /*
- * Dispatch an xAPIC ICR after dropping the source LAPIC mutex.  This ordering
+ * Dispatch an ICR after dropping the source LAPIC mutex.  This ordering
  * is required because INIT resets a target LAPIC and fixed IPIs acquire the
  * target LAPIC and vCPU run locks.
  */
-static void
-i82489dx_icr(uint32_t source, uint32_t hi, uint32_t lo)
+static uint64_t
+i82489dx_icr_targets(uint32_t source, uint32_t hi, uint32_t lo)
 {
 	uint64_t targets = 0;
-	uint32_t shorthand, mode, dest;
-	uint8_t vector;
+	uint32_t shorthand, dest, dfr, dlid;
 	int i;
 
 	shorthand = lo & LAPIC_DEST_MASK;
-	mode = lo & LAPIC_DLMODE_MASK;
-	vector = lo & LAPIC_LVTT_VEC_MASK;
 	dest = (hi >> LAPIC_ID_SHIFT) & 0xff;
-
-	if (lo & LAPIC_DSTMODE_LOG) {
-		log_debug("%s: logical destination IPI from vcpu %u ignored",
-		    __func__, source);
-		return;
-	}
 
 	switch (shorthand) {
 	case 0:
+		if (lo & LAPIC_DSTMODE_LOG) {
+			for (i = 0; i < lapic_ncpus; i++) {
+				pthread_mutex_lock(&lapics[i].mtx);
+				dfr = lapics[i].dfr;
+				dlid = lapics[i].ldr >> LAPIC_ID_SHIFT;
+				pthread_mutex_unlock(&lapics[i].mtx);
+				if (dfr == 0xffffffff) {
+					if (dlid & dest)
+						targets |= 1ULL << i;
+				} else if ((dlid & 0xf0) == (dest & 0xf0) &&
+				    (dlid & dest & 0x0f))
+					targets |= 1ULL << i;
+			}
+			break;
+		}
 		if (dest == 0xff) {
 			for (i = 0; i < lapic_ncpus; i++)
 				targets |= 1ULL << i;
@@ -547,6 +563,19 @@ i82489dx_icr(uint32_t source, uint32_t hi, uint32_t lo)
 		}
 		break;
 	}
+
+	return (targets);
+}
+
+static void
+i82489dx_icr_dispatch(uint32_t source, uint32_t lo, uint64_t targets)
+{
+	uint32_t mode;
+	uint8_t vector;
+	int i;
+
+	mode = lo & LAPIC_DLMODE_MASK;
+	vector = lo & LAPIC_LVTT_VEC_MASK;
 
 	log_debug("%s: vcpu %u mode=0x%x vector=0x%x targets=0x%llx",
 	    __func__, source, mode, vector, (unsigned long long)targets);
@@ -584,6 +613,103 @@ i82489dx_icr(uint32_t source, uint32_t hi, uint32_t lo)
 		log_debug("%s: unsupported delivery mode 0x%x from vcpu %u",
 		    __func__, mode, source);
 		break;
+	}
+}
+
+static void
+i82489dx_icr(uint32_t source, uint32_t hi, uint32_t lo)
+{
+	i82489dx_icr_dispatch(source, lo,
+	    i82489dx_icr_targets(source, hi, lo));
+}
+
+static uint64_t
+i82489dx_x2apic_targets(uint32_t source, uint64_t icr)
+{
+	uint64_t targets = 0;
+	uint32_t dest, lo, cluster, logical;
+	int i;
+
+	lo = (uint32_t)icr;
+	if ((lo & LAPIC_DEST_MASK) != 0)
+		return (i82489dx_icr_targets(source, 0, lo));
+
+	dest = icr >> 32;
+	if (lo & LAPIC_DSTMODE_LOG) {
+		cluster = dest >> 16;
+		logical = dest & 0xffff;
+		for (i = 0; i < lapic_ncpus; i++) {
+			if (((uint32_t)i >> 4) == cluster &&
+			    (logical & (1U << (i & 0xf))))
+				targets |= 1ULL << i;
+		}
+	} else if (dest == 0xffffffff) {
+		for (i = 0; i < lapic_ncpus; i++)
+			targets |= 1ULL << i;
+	} else if (dest < (uint32_t)lapic_ncpus) {
+		targets = 1ULL << dest;
+	}
+
+	return (targets);
+}
+
+int
+i82489dx_x2apic(uint32_t vcpu_id, int dir, uint32_t msr, uint64_t *data)
+{
+	struct i82489dx *lapic;
+	uint32_t reg, lo;
+	uint64_t icr, targets;
+
+	if (vcpu_id >= LAPIC_MAX_VCPUS ||
+	    vcpu_id >= (uint32_t)lapic_ncpus ||
+	    msr < MSR_X2APIC_BASE || msr > MSR_X2APIC_END)
+		return (EINVAL);
+
+	lapic = &lapics[vcpu_id];
+	reg = msr - MSR_X2APIC_BASE;
+	switch (reg) {
+	case 0x02:	/* x2APIC ID is not shifted. */
+		if (dir != MMIO_DIR_READ)
+			return (EINVAL);
+		*data = vcpu_id;
+		return (0);
+	case 0x0d:	/* Cluster ID and per-cluster logical ID. */
+		if (dir != MMIO_DIR_READ)
+			return (EINVAL);
+		*data = ((uint64_t)(vcpu_id >> 4) << 16) |
+		    (1U << (vcpu_id & 0xf));
+		return (0);
+	case 0x30:	/* The x2APIC ICR combines destination and command. */
+		if (dir == MMIO_DIR_READ) {
+			pthread_mutex_lock(&lapic->mtx);
+			*data = ((uint64_t)lapic->x2_icr_dest << 32) |
+			    lapic->icrlo;
+			pthread_mutex_unlock(&lapic->mtx);
+			return (0);
+		}
+		icr = *data;
+		lo = (uint32_t)icr & (LAPIC_LVTT_VEC_MASK |
+		    LAPIC_DLMODE_MASK | LAPIC_DSTMODE_LOG | LAPIC_LVL_ASSERT |
+		    LAPIC_LVL_TRIG | LAPIC_DEST_MASK);
+		pthread_mutex_lock(&lapic->mtx);
+		i82489dx_stats_add(&lapic->stats.icr_writes, 1);
+		lapic->icrlo = lo;
+		lapic->x2_icr_dest = icr >> 32;
+		lapic->icrhi = (lapic->x2_icr_dest & 0xff) <<
+		    LAPIC_ID_SHIFT;
+		pthread_mutex_unlock(&lapic->mtx);
+		targets = i82489dx_x2apic_targets(vcpu_id, icr);
+		i82489dx_icr_dispatch(vcpu_id, lo, targets);
+		return (0);
+	case 0x3f:	/* Self IPI is fixed, edge-triggered delivery. */
+		if (dir != MMIO_DIR_WRITE)
+			return (EINVAL);
+		lo = (uint8_t)*data | LAPIC_DEST_SELF;
+		i82489dx_icr(vcpu_id, 0, lo);
+		return (0);
+	default:
+		return (i82489dx_mmio(vcpu_id, dir,
+		    LAPIC_BASE + (reg << 4), data));
 	}
 }
 
@@ -656,7 +782,7 @@ i82489dx_highest_pending(struct i82489dx *lapic)
  * LVT vector (if unmasked) into the IRR and advance periodic timers without
  * accumulating host scheduling drift.
  *
- * Returns 1 if a newly queued interrupt is immediately deliverable.
+ * Returns the expired timer vector, or 0xFFFF if nothing was queued.
  */
 int
 i82489dx_timer_check(uint32_t vcpu_id)
@@ -664,10 +790,10 @@ i82489dx_timer_check(uint32_t vcpu_id)
 	struct i82489dx *lapic;
 	uint64_t elapsed_ticks, elapsed_periods, interval_ns;
 	uint8_t vector;
-	int pending = 0;
+	int pending = 0xffff;
 
 	if (vcpu_id >= LAPIC_MAX_VCPUS || vcpu_id >= (uint32_t)lapic_ncpus)
-		return 0;
+		return 0xffff;
 
 	lapic = &lapics[vcpu_id];
 	pthread_mutex_lock(&lapic->mtx);
@@ -706,7 +832,7 @@ i82489dx_timer_check(uint32_t vcpu_id)
 	i82489dx_set_map(lapic->irr, vector);
 	i82489dx_clear_map(lapic->tmr, vector);
 	i82489dx_stats_add(&lapic->stats.timer_irqs, 1);
-	pending = i82489dx_highest_pending(lapic) != 0xffff;
+	pending = vector;
 
 out:
 	pthread_mutex_unlock(&lapic->mtx);
@@ -718,6 +844,7 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
     int level)
 {
 	struct i82489dx *lapic;
+	int error;
 
 	if (dest_vcpu >= LAPIC_MAX_VCPUS ||
 	    dest_vcpu >= (uint32_t)lapic_ncpus) {
@@ -749,6 +876,79 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 	else
 		i82489dx_clear_map(lapic->tmr, vector);
 	pthread_mutex_unlock(&lapic->mtx);
+
+	if (current_vm->vm_avic) {
+		error = vcpu_intr_vector(current_vm->vm_vmmid, dest_vcpu,
+		    vector, level);
+		if (error != 0)
+			fatalx("%s: can't inject AVIC vector %u on vcpu %u: %s",
+			    __func__, vector, dest_vcpu, strerror(error));
+		vcpu_unhalt(dest_vcpu);
+		vcpu_signal_run(dest_vcpu);
+	}
+}
+
+/* Mirror a completed AVIC register-write trap into the userspace model. */
+int
+i82489dx_avic_write(uint32_t vcpu_id, uint16_t offset, uint32_t value,
+    uint32_t icrhi)
+{
+	uint64_t data;
+	int error;
+
+	if (offset == LAPIC_ICRLO) {
+		data = icrhi;
+		error = i82489dx_mmio(vcpu_id, MMIO_DIR_WRITE,
+		    LAPIC_BASE + LAPIC_ICRHI, &data);
+		if (error != 0)
+			return (error);
+	}
+
+	data = value;
+	return (i82489dx_mmio(vcpu_id, MMIO_DIR_WRITE,
+	    LAPIC_BASE + offset, &data));
+}
+
+void
+i82489dx_avic_ipi(uint32_t source, uint32_t hi, uint32_t lo,
+    uint8_t failure, uint8_t index)
+{
+	uint64_t targets;
+	int error, i;
+
+	switch (failure) {
+	case I82489DX_AVIC_IPI_INVALID_TYPE:
+		/* INIT/SIPI and other unaccelerated delivery modes. */
+		error = i82489dx_avic_write(source, LAPIC_ICRLO, lo, hi);
+		if (error != 0)
+			log_warnx("%s: failed to emulate ICR write: %s",
+			    __func__, strerror(error));
+		break;
+	case I82489DX_AVIC_IPI_TARGET_NOT_RUNNING:
+		/* Hardware queued the vector; wake every matching target. */
+		targets = i82489dx_icr_targets(source, hi, lo);
+		for (i = 0; i < lapic_ncpus; i++) {
+			if (targets & (1ULL << i)) {
+				vcpu_unhalt(i);
+				vcpu_signal_run(i);
+			}
+		}
+		break;
+	case I82489DX_AVIC_IPI_INVALID_TARGET:
+		log_debug("%s: invalid AVIC target index %u", __func__, index);
+		break;
+	case I82489DX_AVIC_IPI_INVALID_BACKING:
+		log_warnx("%s: invalid AVIC backing page for target %u",
+		    __func__, index);
+		break;
+	case I82489DX_AVIC_IPI_INVALID_VECTOR:
+		log_debug("%s: invalid AVIC IPI vector 0x%x", __func__,
+		    lo & LAPIC_LVTT_VEC_MASK);
+		break;
+	default:
+		log_warnx("%s: unknown AVIC IPI failure %u", __func__, failure);
+		break;
+	}
 }
 
 int

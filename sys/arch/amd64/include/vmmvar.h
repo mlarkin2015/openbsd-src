@@ -89,6 +89,7 @@
 
 #define VM_EXIT_TERMINATED			0xFFFE
 #define VM_EXIT_NONE				0xFFFF
+#define VM_EXIT_X2APIC				0xFFFD
 
 /*
  * VMX: Misc defines
@@ -324,7 +325,9 @@ struct vmm_softc_md {
 	/* Capabilities */
 	uint32_t		nr_rvi_cpus;	/* [I] */
 	uint32_t		nr_ept_cpus;	/* [I] */
+	uint32_t		nr_avic_cpus;	/* [I] */
 	uint8_t			pkru_enabled;	/* [I] */
+	uint8_t			avic_enabled;	/* [I] */
 };
 
 /*
@@ -354,6 +357,36 @@ struct vm_exit_eptviolation {
 #define VEE_BYTES_VALID		0x2		/* vee_insn_bytes is valid */
 	uint8_t		vee_insn_len;		/* [VMX] instruction length */
 	uint8_t		vee_insn_bytes[15];	/* [SVM] bytes at {R,E,}IP */
+};
+
+/*
+ * AVIC exits either describe a completed register-write trap, or an access
+ * fault which must use the normal userspace MMIO instruction emulator.  Keep
+ * the instruction fields first and layout-compatible with
+ * vm_exit_eptviolation so the latter path can share the existing decoder.
+ */
+struct vm_exit_avic {
+	uint8_t		vea_fault_type;
+	uint8_t		vea_insn_info;
+	uint8_t		vea_insn_len;
+	uint8_t		vea_insn_bytes[15];
+	uint8_t		vea_write;
+	uint8_t		vea_ipi_failure;
+	uint16_t	vea_offset;
+	uint8_t		vea_vector;
+	uint8_t		vea_index;
+	uint16_t	vea_pad;
+	uint32_t	vea_value;
+	uint32_t	vea_icrlo;
+	uint32_t	vea_icrhi;
+};
+
+/* Userspace-assisted x2APIC MSR access. */
+struct vm_exit_x2apic {
+	uint32_t	vex_msr;
+	uint8_t		vex_write;
+	uint8_t		vex_pad[3];
+	uint64_t	vex_data;
 };
 
 /*
@@ -471,6 +504,8 @@ struct vm_exit {
 	union {
 		struct vm_exit_inout		vei;	/* IN/OUT exit */
 		struct vm_exit_eptviolation	vee;	/* EPT VIOLATION exit*/
+		struct vm_exit_avic		vea;	/* AMD AVIC exit */
+		struct vm_exit_x2apic		vex;	/* x2APIC MSR exit */
 	};
 
 	struct vcpu_reg_state		vrs;
@@ -482,6 +517,11 @@ struct vm_intr_params {
 	uint32_t		vip_vm_id;
 	uint32_t		vip_vcpu_id;
 	uint16_t		vip_intr;
+	uint8_t			vip_type;
+#define VMM_INTR_PENDING	0
+#define VMM_INTR_VECTOR		1
+	uint8_t			vip_vector;
+	uint8_t			vip_level;
 };
 
 #define VM_RWREGS_GPRS	0x1	/* read/write GPRs */
@@ -522,7 +562,7 @@ struct vm_rwregs_params {
  *  perf/debug (CPUIDECX_PDCM)
  *  pcid (CPUIDECX_PCID)
  *  direct cache access (CPUIDECX_DCA)
- *  x2APIC (CPUIDECX_X2APIC)
+ *  x2APIC (CPUIDECX_X2APIC; re-added when legacy AVIC is inactive)
  *  apic deadline (CPUIDECX_DEADLINE)
  *  psn (CPUID_PSN)
  *  self snoop (CPUID_SS)
@@ -993,6 +1033,7 @@ struct vcpu {
 
 	/* Shadowed MSRs */
 	uint64_t vc_shadow_pat;			/* [v] */
+	uint64_t vc_apicbase;			/* [v] */
 
 	/* Userland Protection Keys */
 	uint32_t vc_pkru;			/* [v] */
@@ -1032,6 +1073,9 @@ struct vcpu {
 	paddr_t vc_svm_ghcb_pa;
 	vaddr_t vc_svm_ioio_va;
 	paddr_t vc_svm_ioio_pa;
+	uint32_t vc_svm_avic_ldr;
+	uint32_t vc_svm_avic_dfr;
+	uint8_t vc_svm_avic;
 	int vc_sev;				/* [I] */
 	int vc_seves;				/* [I] */
 };
