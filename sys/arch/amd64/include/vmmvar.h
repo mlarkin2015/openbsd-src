@@ -91,6 +91,10 @@
 #define VM_EXIT_NONE				0xFFFF
 #define VM_EXIT_X2APIC				0xFFFD
 
+/* AMD hardware LAPIC acceleration modes. */
+#define VMM_AVIC_XAPIC				0x01
+#define VMM_AVIC_X2APIC				0x02
+
 /*
  * VMX: Misc defines
  */
@@ -326,8 +330,9 @@ struct vmm_softc_md {
 	uint32_t		nr_rvi_cpus;	/* [I] */
 	uint32_t		nr_ept_cpus;	/* [I] */
 	uint32_t		nr_avic_cpus;	/* [I] */
+	uint32_t		nr_x2avic_cpus;	/* [I] */
 	uint8_t			pkru_enabled;	/* [I] */
-	uint8_t			avic_enabled;	/* [I] */
+	uint8_t			avic_modes;	/* [I] */
 };
 
 /*
@@ -375,18 +380,26 @@ struct vm_exit_avic {
 	uint16_t	vea_offset;
 	uint8_t		vea_vector;
 	uint8_t		vea_index;
-	uint16_t	vea_pad;
+	uint8_t		vea_x2apic;
+	uint8_t		vea_pad;
 	uint32_t	vea_value;
 	uint32_t	vea_icrlo;
 	uint32_t	vea_icrhi;
 };
 
-/* Userspace-assisted x2APIC MSR access. */
+/* Userspace-assisted x2APIC access or software/hardware state transfer. */
 struct vm_exit_x2apic {
 	uint32_t	vex_msr;
 	uint8_t		vex_write;
-	uint8_t		vex_pad[3];
+	uint8_t		vex_op;
+#define VMM_X2APIC_ACCESS	0
+#define VMM_X2APIC_ACTIVATE	1
+#define VMM_X2APIC_DEACTIVATE	2
+	uint8_t		vex_mode;
+	uint8_t		vex_old_mode;
 	uint64_t	vex_data;
+#define VMM_LAPIC_NREGS		64
+	uint32_t	vex_lapic[VMM_LAPIC_NREGS];
 };
 
 /*
@@ -1075,7 +1088,8 @@ struct vcpu {
 	paddr_t vc_svm_ioio_pa;
 	uint32_t vc_svm_avic_ldr;
 	uint32_t vc_svm_avic_dfr;
-	uint8_t vc_svm_avic;
+	uint8_t vc_svm_avic_cap;
+	uint8_t vc_svm_avic_mode;
 	int vc_sev;				/* [I] */
 	int vc_seves;				/* [I] */
 };
