@@ -1054,6 +1054,8 @@ cpu_check_vmm_cap(struct cpu_info *ci)
 
 		if (edx & AMD_SVM_AVIC_CAP)
 			ci->ci_vmm_cap.vcc_svm.svm_avic = 1;
+		if (edx & AMD_SVM_X2AVIC_CAP)
+			ci->ci_vmm_cap.vcc_svm.svm_x2avic = 1;
 	}
 
 	/*

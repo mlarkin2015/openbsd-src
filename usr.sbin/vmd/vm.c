@@ -74,6 +74,8 @@ pthread_mutex_t vcpu_unpause_mtx[VMM_MAX_VCPUS_PER_VM];
 pthread_mutex_t vm_mtx;
 uint8_t vcpu_hlt[VMM_MAX_VCPUS_PER_VM];
 uint8_t vcpu_done[VMM_MAX_VCPUS_PER_VM];
+uint64_t vcpu_wake_gen[VMM_MAX_VCPUS_PER_VM];
+uint64_t vcpu_enter_gen[VMM_MAX_VCPUS_PER_VM];
 
 enum vcpu_runstate {
 	VCPU_RUNSTATE_RUNNING,
@@ -755,8 +757,10 @@ vmm_create_vm(struct vmd_vm *vm)
 
 	vm->vm_vmmid = vcp.vcp_id;
 	vm->vm_avic = vcp.vcp_avic;
-	if (vm->vm_avic)
-		log_debug("%s: AMD AVIC enabled", __func__);
+	if (vm->vm_avic & VMM_AVIC_XAPIC)
+		log_debug("%s: AMD xAPIC AVIC available", __func__);
+	if (vm->vm_avic & VMM_AVIC_X2APIC)
+		log_debug("%s: AMD x2AVIC available", __func__);
 	for (i = 0; i < vcp.vcp_ncpus; i++)
 		vm->vm_sev_asid[i] = vcp.vcp_asid[i];
 	for (i = 0; i < vmc->vmc_nmemranges; i++)
@@ -906,6 +910,8 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 
 		vcpu_hlt[i] = 0;
 		vcpu_done[i] = 0;
+		vcpu_wake_gen[i] = 0;
+		vcpu_enter_gen[i] = 0;
 	}
 
 	/*
@@ -1034,7 +1040,7 @@ lapic_timer_thread(void *arg)
 {
 	size_t ncpus = (size_t)(intptr_t)arg;
 	size_t i;
-	int error, vector;
+	int vector;
 
 	while (!lapic_timer_stop) {
 		usleep(200);
@@ -1043,23 +1049,9 @@ lapic_timer_thread(void *arg)
 			if (vcpu_done[i])
 				continue;
 			vector = i82489dx_timer_check(i);
-			if (vector != 0xffff) {
-				if (current_vm->vm_avic)
-					error = vcpu_intr_vector(
-					    current_vm->vm_vmmid, i, vector, 0);
-				else if (intr_pending(i))
-					error = vcpu_intr(current_vm->vm_vmmid,
-					    i, 1);
-				else
-					continue;
-				if (error != 0) {
-					log_debug("%s: could not interrupt vcpu %zu: %s",
-					    __func__, i, strerror(error));
-					continue;
-				}
-				vcpu_unhalt(i);
-				vcpu_signal_run(i);
-			}
+			if (vector != 0xffff)
+				vcpu_assert_vector(current_vm->vm_vmmid, i,
+				    vector);
 		}
 	}
 
@@ -1221,6 +1213,11 @@ vcpu_run_loop(void *arg)
 
 		/* Still more interrupts pending? */
 		vrp->vrp_intr_pending = intr_pending(n);
+
+		/* Pair a later HLT exit with wakeups racing this guest entry. */
+		mutex_lock(&vcpu_run_mtx[n]);
+		vcpu_enter_gen[n] = vcpu_wake_gen[n];
+		mutex_unlock(&vcpu_run_mtx[n]);
 
 		if (ioctl(env->vmd_vmm_fd, VMM_IOC_RUN, vrp) == -1) {
 			/* If run ioctl failed, exit */
@@ -1545,7 +1542,8 @@ vcpu_halt(uint32_t vcpu_id)
 	 * the earlier signal is lost and an SMP guest can wait forever for an
 	 * IPI which is already in its LAPIC IRR.
 	 */
-	if (!intr_pending(vcpu_id))
+	if (vcpu_wake_gen[vcpu_id] == vcpu_enter_gen[vcpu_id] &&
+	    !intr_pending(vcpu_id))
 		vcpu_hlt[vcpu_id] = 1;
 	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
 }
@@ -1554,6 +1552,7 @@ void
 vcpu_unhalt(uint32_t vcpu_id)
 {
 	mutex_lock(&vcpu_run_mtx[vcpu_id]);
+	vcpu_wake_gen[vcpu_id]++;
 	vcpu_hlt[vcpu_id] = 0;
 	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
 }

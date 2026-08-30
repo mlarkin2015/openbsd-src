@@ -162,6 +162,11 @@ static int svm_avic_handle_exit(struct vcpu *);
 static void svm_avic_vcpu_load(struct vcpu *, struct cpu_info *);
 static void svm_avic_vcpu_put(struct vcpu *);
 static int svm_avic_inject(struct vcpu *, uint8_t, int);
+static void svm_avic_set_mode(struct vcpu *, uint8_t);
+static void svm_avic_export_state(struct vcpu *, uint32_t *);
+static void svm_avic_import_state(struct vcpu *, const uint32_t *, uint8_t,
+    uint8_t);
+static void svm_x2avic_msr_intercepts(struct vcpu *, int);
 static int vmm_write_apicbase(struct vcpu *, uint64_t);
 static int vmm_x2apic_msr(struct vcpu *, uint32_t, int, uint64_t);
 
@@ -297,7 +302,8 @@ vmm_attach_machdep(struct device *parent, struct device *self, void *aux)
 	sc->sc_md.nr_rvi_cpus = 0;
 	sc->sc_md.nr_ept_cpus = 0;
 	sc->sc_md.nr_avic_cpus = 0;
-	sc->sc_md.avic_enabled = 0;
+	sc->sc_md.nr_x2avic_cpus = 0;
+	sc->sc_md.avic_modes = 0;
 
 	/* Calculate CPU features */
 	CPU_INFO_FOREACH(cii, ci) {
@@ -308,6 +314,10 @@ vmm_attach_machdep(struct device *parent, struct device *self, void *aux)
 		    ci->ci_vmm_cap.vcc_svm.svm_avic &&
 		    ci->ci_family != 0x17 && ci->ci_apicid < 0xff)
 			sc->sc_md.nr_avic_cpus++;
+		if ((ci->ci_vmm_flags & CI_VMM_RVI) &&
+		    ci->ci_vmm_cap.vcc_svm.svm_x2avic &&
+		    ci->ci_family != 0x17 && ci->ci_apicid <= 0xfff)
+			sc->sc_md.nr_x2avic_cpus++;
 		if (ci->ci_vmm_flags & CI_VMM_EPT)
 			sc->sc_md.nr_ept_cpus++;
 	}
@@ -345,8 +355,12 @@ vmm_attach_machdep(struct device *parent, struct device *self, void *aux)
 	if (sc->mode == VMM_MODE_RVI) {
 		sc->max_vpid = curcpu()->ci_vmm_cap.vcc_svm.svm_max_asid;
 		if (sc->sc_md.nr_avic_cpus == sc->sc_md.nr_rvi_cpus) {
-			sc->sc_md.avic_enabled = 1;
+			sc->sc_md.avic_modes |= VMM_AVIC_XAPIC;
 			printf("/AVIC");
+		}
+		if (sc->sc_md.nr_x2avic_cpus == sc->sc_md.nr_rvi_cpus) {
+			sc->sc_md.avic_modes |= VMM_AVIC_X2APIC;
+			printf("/x2AVIC");
 		}
 	} else {
 		sc->max_vpid = 0xFFF;
@@ -964,7 +978,7 @@ vm_impl_init(struct vm *vm, struct proc *p)
 		break;
 	case VMM_MODE_RVI:
 		pmap_convert(vm->vm_pmap, PMAP_TYPE_RVI);
-		if (!vmm_softc->sc_md.avic_enabled)
+		if (vmm_softc->sc_md.avic_modes == 0)
 			break;
 
 		rw_init(&vm->vm_avic_lock, "vmavic");
@@ -986,7 +1000,7 @@ vm_impl_init(struct vm *vm, struct proc *p)
 		if (!ret)
 			return (ENOMEM);
 
-		vm->vm_avic = 1;
+		vm->vm_avic = vmm_softc->sc_md.avic_modes;
 		break;
 	default:
 		printf("%s: invalid vmm mode %d\n", __func__, vmm_softc->mode);
@@ -1755,9 +1769,8 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 
 	/* INTR masking */
 	vmcb->v_intr_masking = 1;
-	if (vcpu->vc_svm_avic) {
+	if (vcpu->vc_svm_avic_cap) {
 		svm_avic_reset_vlapic(vcpu);
-		vmcb->v_intr_masking |= SVM_INTR_MASKING_AVIC_ENABLE;
 		vmcb->v_avic_apic_bar = LAPIC_BASE;
 		vmcb->v_avic_apic_back_page =
 		    vcpu->vc_vlapic_pa & SVM_AVIC_HPA_MASK;
@@ -1766,6 +1779,9 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 		vmcb->v_avic_phys =
 		    (vcpu->vc_parent->vm_avic_physical_pa &
 		    SVM_AVIC_HPA_MASK) | SVM_AVIC_PHYS_ID_COUNT;
+		svm_avic_set_mode(vcpu,
+		    (vcpu->vc_svm_avic_cap & VMM_AVIC_XAPIC) ?
+		    VMM_AVIC_XAPIC : 0);
 	}
 
 	/* PAT */
@@ -2930,6 +2946,60 @@ svm_avic_reg(struct vcpu *vcpu, uint16_t offset)
 	return ((volatile uint32_t *)(vcpu->vc_vlapic_va + offset));
 }
 
+/*
+ * x2AVIC only accelerates MSRs which are allowed through the SVM MSRPM.
+ * Keep APICBASE, the timer/LVT configuration, and the SVR intercepted so
+ * vmd can maintain the portions of the LAPIC model which still need software
+ * assistance.  The completed values of those writes are mirrored into the
+ * backing page before the guest is resumed.
+ */
+static void
+svm_x2avic_msr_access(struct vcpu *vcpu, uint32_t msr, int read, int write,
+    int intercept)
+{
+	uint8_t *msrs = (uint8_t *)vcpu->vc_msr_bitmap_va;
+	uint8_t mask = 0;
+	uint16_t idx;
+
+	KASSERT(msr <= 0x1fff);
+	idx = SVM_MSRIDX(msr);
+	if (read)
+		mask |= SVM_MSRBIT_R(msr);
+	if (write)
+		mask |= SVM_MSRBIT_W(msr);
+	if (intercept)
+		msrs[idx] |= mask;
+	else
+		msrs[idx] &= ~mask;
+}
+
+static void
+svm_x2avic_msr_intercepts(struct vcpu *vcpu, int intercept)
+{
+	uint32_t msr;
+
+	/* Read-only accelerated state. */
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_BASE + 0x02, 1, 0,
+	    intercept); /* ID */
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_BASE + 0x03, 1, 0,
+	    intercept); /* version */
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_BASE + 0x0a, 1, 0,
+	    intercept); /* PPR */
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_BASE + 0x0d, 1, 0,
+	    intercept); /* LDR */
+	for (msr = MSR_X2APIC_BASE + 0x10;
+	    msr <= MSR_X2APIC_BASE + 0x27; msr++)
+		svm_x2avic_msr_access(vcpu, msr, 1, 0, intercept);
+
+	/* High-frequency read/write operations handled entirely by x2AVIC. */
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_BASE + 0x08, 1, 1,
+	    intercept); /* TPR */
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_EOI, 0, 1, intercept);
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_ICR, 1, 1, intercept);
+	svm_x2avic_msr_access(vcpu, MSR_X2APIC_SELF_IPI, 0, 1, intercept);
+	svm_set_dirty(vcpu, SVM_CLEANBITS_IOPM);
+}
+
 static int
 svm_avic_logical_index(uint32_t ldr, uint32_t dfr)
 {
@@ -2979,7 +3049,7 @@ svm_avic_reset_vlapic(struct vcpu *vcpu)
 {
 	uint16_t offset;
 
-	if (vcpu->vc_svm_avic)
+	if (vcpu->vc_svm_avic_mode == VMM_AVIC_XAPIC)
 		svm_avic_update_logical(vcpu, 0, 0xffffffff);
 	memset((void *)vcpu->vc_vlapic_va, 0, PAGE_SIZE);
 	*svm_avic_reg(vcpu, LAPIC_ID) = vcpu->vc_id << LAPIC_ID_SHIFT;
@@ -2990,6 +3060,76 @@ svm_avic_reset_vlapic(struct vcpu *vcpu)
 		*svm_avic_reg(vcpu, offset) = LAPIC_LVT_MASKED;
 	vcpu->vc_svm_avic_ldr = 0;
 	vcpu->vc_svm_avic_dfr = 0xffffffff;
+}
+
+static void
+svm_avic_set_mode(struct vcpu *vcpu, uint8_t mode)
+{
+	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
+	uint8_t oldmode = vcpu->vc_svm_avic_mode;
+
+	KASSERT(mode == 0 || mode == VMM_AVIC_XAPIC ||
+	    mode == VMM_AVIC_X2APIC);
+	KASSERT((mode & ~vcpu->vc_svm_avic_cap) == 0);
+
+	if (oldmode == VMM_AVIC_XAPIC && mode != VMM_AVIC_XAPIC)
+		svm_avic_update_logical(vcpu, 0, 0xffffffff);
+
+	vmcb->v_intr_masking &= ~(SVM_INTR_MASKING_AVIC_ENABLE |
+	    SVM_INTR_MASKING_X2AVIC_ENABLE);
+	if (mode != 0)
+		vmcb->v_intr_masking |= SVM_INTR_MASKING_AVIC_ENABLE;
+	if (mode == VMM_AVIC_X2APIC)
+		vmcb->v_intr_masking |= SVM_INTR_MASKING_X2AVIC_ENABLE;
+	WRITE_ONCE(vcpu->vc_svm_avic_mode, mode);
+	svm_set_dirty(vcpu, SVM_CLEANBITS_AVIC | SVM_CLEANBITS_TPR);
+}
+
+static void
+svm_avic_export_state(struct vcpu *vcpu, uint32_t *regs)
+{
+	uint16_t offset;
+
+	for (offset = 0; offset < VMM_LAPIC_NREGS << 4; offset += 0x10)
+		regs[offset >> 4] = *svm_avic_reg(vcpu, offset);
+}
+
+static void
+svm_avic_import_state(struct vcpu *vcpu, const uint32_t *regs, uint8_t mode,
+    uint8_t oldmode)
+{
+	volatile uint32_t *reg;
+	uint32_t value;
+	uint16_t offset;
+
+	for (offset = 0; offset < VMM_LAPIC_NREGS << 4; offset += 0x10) {
+		reg = svm_avic_reg(vcpu, offset);
+		value = regs[offset >> 4];
+		/* Preserve vectors which raced the userspace state transfer. */
+		if ((offset >= LAPIC_TMR && offset < LAPIC_TMR + 0x80) ||
+		    (offset >= LAPIC_IRR && offset < LAPIC_IRR + 0x80))
+			atomic_setbits_int(reg, value);
+		else
+			*reg = value;
+	}
+
+	*svm_avic_reg(vcpu, LAPIC_VERS) = (1U << 31) |
+	    (6U << LAPIC_VERSION_LVT_SHIFT) | 0x10;
+	if (mode == VMM_AVIC_X2APIC) {
+		*svm_avic_reg(vcpu, LAPIC_ID) = vcpu->vc_id;
+		*svm_avic_reg(vcpu, LAPIC_LDR) =
+		    ((vcpu->vc_id >> 4) << 16) |
+		    (1U << (vcpu->vc_id & 0xf));
+		if (oldmode == VMM_AVIC_XAPIC)
+			*svm_avic_reg(vcpu, LAPIC_ICRHI) =
+			    regs[LAPIC_ICRHI >> 4] >> LAPIC_ID_SHIFT;
+	} else {
+		*svm_avic_reg(vcpu, LAPIC_ID) =
+		    vcpu->vc_id << LAPIC_ID_SHIFT;
+		svm_avic_update_logical(vcpu,
+		    *svm_avic_reg(vcpu, LAPIC_LDR),
+		    *svm_avic_reg(vcpu, LAPIC_DFR));
+	}
 }
 
 static void
@@ -3009,7 +3149,7 @@ svm_avic_phys_update(struct vcpu *vcpu, uint64_t set, uint64_t clear)
 static void
 svm_avic_vcpu_load(struct vcpu *vcpu, struct cpu_info *ci)
 {
-	if (!vcpu->vc_svm_avic)
+	if (vcpu->vc_svm_avic_mode == 0)
 		return;
 
 	svm_avic_phys_update(vcpu,
@@ -3021,7 +3161,7 @@ svm_avic_vcpu_load(struct vcpu *vcpu, struct cpu_info *ci)
 static void
 svm_avic_vcpu_put(struct vcpu *vcpu)
 {
-	if (vcpu->vc_svm_avic)
+	if (vcpu->vc_svm_avic_mode != 0)
 		svm_avic_phys_update(vcpu, 0, SVM_AVIC_PHYS_RUNNING);
 }
 
@@ -3034,7 +3174,7 @@ svm_avic_inject(struct vcpu *vcpu, uint8_t vector, int level)
 	uint32_t bit;
 	uint16_t offset;
 
-	if (!vcpu->vc_svm_avic || vector < 32)
+	if (READ_ONCE(vcpu->vc_svm_avic_mode) == 0 || vector < 32)
 		return (EINVAL);
 
 	offset = (vector / 32) << 4;
@@ -3049,6 +3189,8 @@ svm_avic_inject(struct vcpu *vcpu, uint8_t vector, int level)
 
 	/* Make the backing-page update visible before ringing the doorbell. */
 	membar_sync();
+	if (READ_ONCE(vcpu->vc_svm_avic_mode) == 0)
+		return (EINVAL);
 	pentry = &((volatile unsigned long *)
 	    vcpu->vc_parent->vm_avic_physical_va)[vcpu->vc_id];
 	entry = atomic_load_long(pentry);
@@ -3068,10 +3210,10 @@ svm_avic_init_vcpu(struct vcpu *vcpu, struct vm_create_params *vcp)
 	int ret;
 
 	/* AVIC and encrypted guests require a different state-sharing model. */
-	if (!vm->vm_avic || vcp->vcp_sev || vcp->vcp_seves) {
-		vm->vm_avic = 0;
+	if (!vm->vm_avic || vcp->vcp_sev || vcp->vcp_seves)
 		return (0);
-	}
+
+	vcpu->vc_svm_avic_cap = vm->vm_avic;
 
 	vcpu->vc_vlapic_va = (vaddr_t)km_alloc(PAGE_SIZE, &kv_page,
 	    &kp_zero, &kd_waitok);
@@ -3083,9 +3225,11 @@ svm_avic_init_vcpu(struct vcpu *vcpu, struct vm_create_params *vcp)
 	if ((vcpu->vc_vlapic_pa & ~SVM_AVIC_HPA_MASK) != 0)
 		return (EINVAL);
 
-	svm_avic_reset_vlapic(vcpu);
 	physical = (uint64_t *)vm->vm_avic_physical_va;
-	vcpu->vc_svm_avic = 1;
+	vcpu->vc_svm_avic_mode =
+	    (vcpu->vc_svm_avic_cap & VMM_AVIC_XAPIC) ?
+	    VMM_AVIC_XAPIC : 0;
+	svm_avic_reset_vlapic(vcpu);
 	physical[vcpu->vc_id] =
 	    (vcpu->vc_vlapic_pa & SVM_AVIC_PHYS_BACKING_MASK) |
 	    SVM_AVIC_PHYS_VALID;
@@ -3095,7 +3239,8 @@ svm_avic_init_vcpu(struct vcpu *vcpu, struct vm_create_params *vcp)
 	 * access GPA, but replaces the leaf HPA with the VMCB backing-page HPA.
 	 * Consequently one shared RW leaf is sufficient for every vCPU.
 	 */
-	if (!vm->vm_avic_access_mapped) {
+	if ((vcpu->vc_svm_avic_cap & VMM_AVIC_XAPIC) &&
+	    !vm->vm_avic_access_mapped) {
 		ret = pmap_enter(vm->vm_pmap, LAPIC_BASE, vcpu->vc_vlapic_pa,
 		    PROT_READ | PROT_WRITE, 0);
 		if (ret)
@@ -3103,7 +3248,7 @@ svm_avic_init_vcpu(struct vcpu *vcpu, struct vm_create_params *vcp)
 		vm->vm_avic_access_mapped = 1;
 	}
 
-	vcp->vcp_avic = 1;
+	vcp->vcp_avic = vm->vm_avic;
 	return (0);
 }
 
@@ -3336,8 +3481,10 @@ vcpu_deinit_svm(struct vcpu *vcpu)
 {
 	uint64_t *physical;
 
-	if (vcpu->vc_svm_avic && vcpu->vc_parent->vm_avic_physical_va) {
-		svm_avic_update_logical(vcpu, 0, 0xffffffff);
+	if (vcpu->vc_svm_avic_cap &&
+	    vcpu->vc_parent->vm_avic_physical_va) {
+		if (vcpu->vc_svm_avic_mode == VMM_AVIC_XAPIC)
+			svm_avic_update_logical(vcpu, 0, 0xffffffff);
 		physical = (uint64_t *)vcpu->vc_parent->vm_avic_physical_va;
 		physical[vcpu->vc_id] = 0;
 	}
@@ -4597,12 +4744,16 @@ svm_avic_handle_exit(struct vcpu *vcpu)
 		vea->vea_icrhi = (uint32_t)(info1 >> 32);
 		vea->vea_index = (uint8_t)info2;
 		vea->vea_ipi_failure = (uint8_t)(info2 >> 32);
+		vea->vea_x2apic =
+		    vcpu->vc_svm_avic_mode == VMM_AVIC_X2APIC;
 		return (EAGAIN);
 	}
 
 	vea->vea_offset = info1 & SVM_AVIC_NOACCEL_OFFSET_MASK;
 	vea->vea_write = (info1 & SVM_AVIC_NOACCEL_WRITE) != 0;
 	vea->vea_vector = (uint8_t)info2;
+	vea->vea_x2apic =
+	    vcpu->vc_svm_avic_mode == VMM_AVIC_X2APIC;
 
 	if (vea->vea_write && svm_avic_trap_write(vea->vea_offset)) {
 		value = *svm_avic_reg(vcpu, vea->vea_offset);
@@ -6288,7 +6439,9 @@ vmx_handle_cr(struct vcpu *vcpu)
 static int
 vmm_write_apicbase(struct vcpu *vcpu, uint64_t val)
 {
+	struct vm_exit_x2apic *vex = &vcpu->vc_exit.vex;
 	uint64_t allowed, oldmode, newmode;
+	uint8_t old_avic, new_avic = 0;
 
 	allowed = APICBASE_ADDRESS_MASK | APICBASE_BSP |
 	    APICBASE_ENABLE_X2APIC | APICBASE_GLOBAL_ENABLE;
@@ -6303,17 +6456,64 @@ vmm_write_apicbase(struct vcpu *vcpu, uint64_t val)
 	    (oldmode == (APICBASE_ENABLE_X2APIC | APICBASE_GLOBAL_ENABLE) &&
 	    newmode == APICBASE_GLOBAL_ENABLE)) {
 		vmm_inject_gp(vcpu);
-		return (1);
+		return (-1);
 	}
 
 	vcpu->vc_apicbase = val;
-	return (0);
+	if (vmm_softc->mode != VMM_MODE_RVI ||
+	    vcpu->vc_svm_avic_cap == 0)
+		return (0);
+
+	if (newmode == (APICBASE_ENABLE_X2APIC |
+	    APICBASE_GLOBAL_ENABLE) &&
+	    (vcpu->vc_svm_avic_cap & VMM_AVIC_X2APIC))
+		new_avic = VMM_AVIC_X2APIC;
+	else if (newmode == APICBASE_GLOBAL_ENABLE &&
+	    (vcpu->vc_svm_avic_cap & VMM_AVIC_XAPIC))
+		new_avic = VMM_AVIC_XAPIC;
+
+	old_avic = vcpu->vc_svm_avic_mode;
+	if (new_avic == old_avic)
+		return (0);
+
+	memset(vex, 0, sizeof(*vex));
+	vex->vex_mode = new_avic;
+	vex->vex_old_mode = old_avic;
+	/* Stop direct x2APIC MSR accesses before disabling x2AVIC. */
+	if (old_avic == VMM_AVIC_X2APIC)
+		svm_x2avic_msr_intercepts(vcpu, 1);
+	if (new_avic == 0) {
+		/*
+		 * Publish teardown before the snapshot.  A direct injector which
+		 * raced the old mode will either be captured here or observe zero
+		 * on its final mode check and queue the vector in software.
+		 */
+		svm_avic_set_mode(vcpu, 0);
+		membar_sync();
+		svm_avic_export_state(vcpu, vex->vex_lapic);
+	} else {
+		if (old_avic != 0)
+			svm_avic_export_state(vcpu, vex->vex_lapic);
+		else
+			memset((void *)vcpu->vc_vlapic_va, 0, PAGE_SIZE);
+		svm_avic_set_mode(vcpu, new_avic);
+	}
+	vex->vex_op = new_avic == 0 ?
+	    VMM_X2APIC_DEACTIVATE : VMM_X2APIC_ACTIVATE;
+	vcpu->vc_gueststate.vg_exit_reason = VM_EXIT_X2APIC;
+
+	/*
+	 * The new backing page is live for interrupt injection immediately,
+	 * but x2APIC MSRs remain intercepted until vmd returns the old LAPIC
+	 * state on the next VMM_IOC_RUN.
+	 */
+	return (EAGAIN);
 }
 
 /*
- * Validate an x2APIC MSR access and pass it to vmd's existing LAPIC model.
- * VM_EXIT_X2APIC is deliberately a software baseline: no VMX APICv or SVM
- * AVIC controls are enabled by this path.
+ * Validate an intercepted x2APIC MSR access and pass it to vmd's existing
+ * LAPIC model.  This is the complete software fallback and also handles the
+ * configuration/timer MSRs deliberately left intercepted under x2AVIC.
  */
 static int
 vmm_x2apic_msr(struct vcpu *vcpu, uint32_t msr, int write, uint64_t data)
@@ -6373,6 +6573,7 @@ vmm_x2apic_msr(struct vcpu *vcpu, uint32_t msr, int write, uint64_t data)
 	memset(vex, 0, sizeof(*vex));
 	vex->vex_msr = msr;
 	vex->vex_write = write != 0;
+	vex->vex_op = VMM_X2APIC_ACCESS;
 	vex->vex_data = data;
 	vcpu->vc_gueststate.vg_exit_reason = VM_EXIT_X2APIC;
 	return (EAGAIN);
@@ -6640,7 +6841,8 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 
 	switch (*rcx) {
 	case MSR_APICBASE:
-		if (vmm_write_apicbase(vcpu, val))
+		ret = vmm_write_apicbase(vcpu, val);
+		if (ret < 0)
 			return (0);
 		break;
 	case MSR_CR_PAT:
@@ -6725,7 +6927,8 @@ svm_handle_msr(struct vcpu *vcpu)
 
 		switch (*rcx) {
 		case MSR_APICBASE:
-			if (vmm_write_apicbase(vcpu, val))
+			ret = vmm_write_apicbase(vcpu, val);
+			if (ret < 0)
 				return (0);
 			break;
 		case MSR_CR_PAT:
@@ -6990,7 +7193,9 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rbx |= (ncpus & 0xff) << 16;
 		*rbx |= (vcpu->vc_id & 0xFF) << 24;
 		*rcx = (cpu_ecxfeature | CPUIDECX_HV) & VMM_CPUIDECX_MASK;
-		if (!vcpu->vc_parent->vm_avic && !vcpu->vc_seves)
+		if ((!vcpu->vc_parent->vm_avic ||
+		    (vcpu->vc_parent->vm_avic & VMM_AVIC_X2APIC)) &&
+		    !vcpu->vc_seves)
 			*rcx |= CPUIDECX_X2APIC;
 
 		/* Guest CR4.OSXSAVE determines presence of CPUIDECX_OSXSAVE */
@@ -7307,11 +7512,42 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 	 */
 	switch (vcpu->vc_gueststate.vg_exit_reason) {
 	case VM_EXIT_X2APIC:
-		if (!vcpu->vc_exit.vex.vex_write) {
-			vcpu->vc_gueststate.vg_rax = vmcb->v_rax =
-			    (uint32_t)vcpu->vc_exit.vex.vex_data;
-			vcpu->vc_gueststate.vg_rdx =
-			    vcpu->vc_exit.vex.vex_data >> 32;
+		switch (vcpu->vc_exit.vex.vex_op) {
+		case VMM_X2APIC_ACCESS:
+			if (!vcpu->vc_exit.vex.vex_write) {
+				vcpu->vc_gueststate.vg_rax = vmcb->v_rax =
+				    (uint32_t)vcpu->vc_exit.vex.vex_data;
+				vcpu->vc_gueststate.vg_rdx =
+				    vcpu->vc_exit.vex.vex_data >> 32;
+			} else if (vcpu->vc_svm_avic_mode ==
+			    VMM_AVIC_X2APIC) {
+				uint16_t offset;
+
+				offset = (vcpu->vc_exit.vex.vex_msr -
+				    MSR_X2APIC_BASE) << 4;
+				*svm_avic_reg(vcpu, offset) =
+				    (uint32_t)vcpu->vc_exit.vex.vex_data;
+				if (vcpu->vc_exit.vex.vex_msr ==
+				    MSR_X2APIC_ICR)
+					*svm_avic_reg(vcpu, LAPIC_ICRHI) =
+					    vcpu->vc_exit.vex.vex_data >> 32;
+			}
+			break;
+		case VMM_X2APIC_ACTIVATE:
+			svm_avic_import_state(vcpu,
+			    vcpu->vc_exit.vex.vex_lapic,
+			    vcpu->vc_exit.vex.vex_mode,
+			    vcpu->vc_exit.vex.vex_old_mode);
+			membar_sync();
+			if (vcpu->vc_exit.vex.vex_mode ==
+			    VMM_AVIC_X2APIC)
+				svm_x2avic_msr_intercepts(vcpu, 0);
+			break;
+		case VMM_X2APIC_DEACTIVATE:
+			/* vmd imported the snapshot supplied on the exit. */
+			break;
+		default:
+			return (EINVAL);
 		}
 		break;
 	case SVM_VMEXIT_IOIO:
