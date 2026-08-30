@@ -29,6 +29,7 @@
 #include "acpi.h"
 #include "fw_cfg.h"
 #include "vmd.h"
+#include "virtio.h"
 
 struct acpi_pm1 {
 	pthread_mutex_t	mtx;
@@ -107,6 +108,7 @@ vcpu_exit_acpi_pm1(struct vm_run_params *vrp)
 {
 	struct vm_exit *vei = vrp->vrp_exit;
 	uint32_t data = 0;
+	int powerdown = 0;
 	uint16_t port;
 	uint8_t i;
 
@@ -121,8 +123,17 @@ vcpu_exit_acpi_pm1(struct vm_run_params *vrp)
 		for (i = 0; i < vei->vei.vei_size; i++)
 			acpi_pm1_write_byte(port + i,
 			    (uint8_t)(vei->vei.vei_data >> (i * 8)));
+		powerdown = (acpi_pm1.control & ACPI_PM1_SLP_EN) != 0 &&
+		    (acpi_pm1.control & ACPI_PM1_SLP_TYPX_MASK) ==
+		    ACPI_PM1_SLP_TYPX(VMD_PM1_SLP_TYP_S5);
 	}
 	mutex_unlock(&acpi_pm1.mtx);
+
+	/* SLP_EN with the DSDT's S5 type is the architectural power-off. */
+	if (powerdown) {
+		log_info("%s: guest entered ACPI S5", __func__);
+		vm_shutdown(VMMCI_SHUTDOWN);
+	}
 
 	return 0xff;
 }
