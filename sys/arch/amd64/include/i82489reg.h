@@ -145,6 +145,9 @@
 #define LAPIC_IRQ_MASK(i)	(1 << ((i) + 1))
 
 #define	MSR_X2APIC_BASE		0x800
+#define	MSR_X2APIC_END		0x83f
 #define	MSR_X2APIC_EOI		(MSR_X2APIC_BASE+0x0b)	/* End Int. W */
 #define	MSR_X2APIC_ID		(MSR_X2APIC_BASE+0x02)	/* ID. RW */
+#define	MSR_X2APIC_ICR		(MSR_X2APIC_BASE+0x30)	/* ICR. RW */
+#define	MSR_X2APIC_SELF_IPI	(MSR_X2APIC_BASE+0x3f)	/* Self IPI. W */
 #define	X2APIC_ID_MASK		0xff

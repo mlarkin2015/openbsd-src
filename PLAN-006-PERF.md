@@ -34,6 +34,22 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
 - `vmctl log stats` provides five-second vCPU-exit, LAPIC/IPI and virtio-net
   queue/lock counters for controlled performance work
 - The current virtio-net device exposes one queue pair, even to SMP guests
+- An initial AMD xAPIC AVIC implementation is build-tested.  It accelerates
+  fixed edge IPIs plus LAPIC timer, IOAPIC and MSI/MSI-X vector delivery,
+  while retaining userspace assistance for INIT/SIPI, LAPIC timer
+  programming, level-triggered IOAPIC EOI and access faults.  It intentionally
+  excludes x2AVIC, IOMMU-posted device interrupts, SEV/SEV-ES and Family 17h.
+  Runtime guest validation and the before/after network matrix are next.
+- A software-only x2APIC control path is build- and runtime-tested with a
+  two-vCPU OpenBSD guest.  It exposes
+  x2APIC only when legacy AVIC is inactive, tracks guest APICBASE state and
+  sends x2APIC MSR accesses through a dedicated vmm/vmd exit to the existing
+  LAPIC model.  This intentionally leaves x2AVIC disabled so guest-visible
+  x2APIC is validated independently on bit-18-only Zen 4 hardware.  Exit
+  statistics confirm x2APIC activity and zero AVIC activity on that host.
+- Runtime testing also fixed an IPI-versus-HLT lost-wakeup race in the vCPU
+  run loop and implemented ACPI S5 shutdown through PM1A.  Repeated kernel
+  relinks and guest poweroffs now complete without hangs.
 
 ## SMP network measurements (2026-08-28)
 
@@ -46,10 +62,12 @@ matches the instrumented throughput.
 
 Before implementing the broader items below, prioritize:
 
-1. an in-kernel fixed-IPI/EOI LAPIC fast path, followed by AMD AVIC and Intel
+1. mode-gated x2AVIC on the bit-18-only AMD host, using the recorded software
+   x2APIC run as the control and never enabling legacy AVIC there;
+2. legacy AMD AVIC validation on a bit-13-capable host, followed by Intel
    APICv/virtual-interrupt delivery feasibility work;
-2. virtio-net multiqueue, MSI-X queue affinity and interrupt batching; and
-3. another identical scaling matrix to separate APIC savings from useful
+3. virtio-net multiqueue, MSI-X queue affinity and interrupt batching; and
+4. another identical scaling matrix to separate APIC savings from useful
    queue parallelism.
 
 x2APIC alone changes MMIO register access into intercepted MSR access; without

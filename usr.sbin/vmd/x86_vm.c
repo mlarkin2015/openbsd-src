@@ -23,6 +23,7 @@
 #include <dev/isa/isareg.h>
 
 #include <machine/pte.h>
+#include <machine/i82489reg.h>
 #include <machine/specialreg.h>
 #include "../../sys/arch/amd64/include/vmmvar.h"
 
@@ -61,6 +62,8 @@ int	 translate_gva(struct vm_exit*, uint64_t, uint64_t *, int);
 
 static int	loadfile_bios(gzFile, off_t, struct vcpu_reg_state *);
 static int	vcpu_exit_eptviolation(struct vm_run_params *);
+static int	vcpu_exit_avic(struct vm_run_params *);
+static int	vcpu_exit_x2apic(struct vm_run_params *);
 static void	vcpu_exit_inout(struct vm_run_params *);
 static int	read_vmem(struct vm_run_params *, uint8_t, uint64_t, void *,
     size_t);
@@ -612,6 +615,46 @@ vcpu_exit_inout(struct vm_run_params *vrp)
 	vei->vrs.vrs_gprs[VCPU_REGS_RIP] += vei->vei.vei_insn_len;
 }
 
+static int
+vcpu_exit_avic(struct vm_run_params *vrp)
+{
+	struct vm_exit_avic *vea = &vrp->vrp_exit->vea;
+
+	if (vrp->vrp_exit_reason == SVM_AVIC_INCOMPLETE_IPI) {
+		i82489dx_avic_ipi(vrp->vrp_vcpu_id, vea->vea_icrhi,
+		    vea->vea_icrlo, vea->vea_ipi_failure, vea->vea_index);
+		return (0);
+	}
+
+	if (vea->vea_fault_type == VEE_FAULT_MMIO_ASSIST)
+		return (vcpu_exit_eptviolation(vrp));
+	if (!vea->vea_write) {
+		log_warnx("%s: unexpected AVIC read trap at offset 0x%x",
+		    __func__, vea->vea_offset);
+		return (EINVAL);
+	}
+
+	/* AVIC completed a level-triggered EOI before requesting help. */
+	if (vea->vea_offset == LAPIC_EOI) {
+		i82093aa_eoi(vea->vea_vector);
+		return (0);
+	}
+
+	return (i82489dx_avic_write(vrp->vrp_vcpu_id, vea->vea_offset,
+	    vea->vea_value, vea->vea_icrhi));
+}
+
+static int
+vcpu_exit_x2apic(struct vm_run_params *vrp)
+{
+	struct vm_exit_x2apic *vex = &vrp->vrp_exit->vex;
+	int dir;
+
+	dir = vex->vex_write ? MMIO_DIR_WRITE : MMIO_DIR_READ;
+	return (i82489dx_x2apic(vrp->vrp_vcpu_id, dir, vex->vex_msr,
+	    &vex->vex_data));
+}
+
 /*
  * vcpu_exit
  *
@@ -655,6 +698,17 @@ vcpu_exit(struct vm_run_params *vrp)
 	case SVM_VMEXIT_NPF:
 	case VMX_EXIT_EPT_VIOLATION:
 		ret = vcpu_exit_eptviolation(vrp);
+		if (ret)
+			return (ret);
+		break;
+	case SVM_AVIC_INCOMPLETE_IPI:
+	case SVM_AVIC_NOACCEL:
+		ret = vcpu_exit_avic(vrp);
+		if (ret)
+			return (ret);
+		break;
+	case VM_EXIT_X2APIC:
+		ret = vcpu_exit_x2apic(vrp);
 		if (ret)
 			return (ret);
 		break;
@@ -1074,6 +1128,8 @@ vcpu_assert_vector(uint32_t vmm_id, uint32_t vcpu_id, uint8_t vector)
 	}
 
 	i82489dx_vector_irq(vcpu_id, 0, vector, 0);
+	if (current_vm->vm_avic)
+		return;
 
 	if (intr_pending(vcpu_id)) {
 		if (vcpu_intr(vmm_id, vcpu_id, 1))
@@ -1427,7 +1483,7 @@ write_vmem(struct vm_run_params *vrp, uint8_t segment, uint64_t gva, void *buf,
 int
 intr_pending(int vcpu_id)
 {
-	if (i82489dx_is_pending(vcpu_id))
+	if (!current_vm->vm_avic && i82489dx_is_pending(vcpu_id))
 		return 1;
 	if (!i8259_is_pending())
 		return 0;
@@ -1448,10 +1504,12 @@ intr_ack(int vcpu_id)
 
 	log_debug("%s: acking IRQ vcpu id %d", __func__, vcpu_id);
 
-	vec = i82489dx_ack(vcpu_id);
-	if (vec != 0xFFFF) {
-		log_debug("%s: LAPIC took the IRQ", __func__);
-		return vec;
+	if (!current_vm->vm_avic) {
+		vec = i82489dx_ack(vcpu_id);
+		if (vec != 0xFFFF) {
+			log_debug("%s: LAPIC took the IRQ", __func__);
+			return vec;
+		}
 	}
 
 	if (i82489dx_enabled(vcpu_id) &&

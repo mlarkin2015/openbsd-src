@@ -374,7 +374,86 @@ x2APIC would simplify APIC register decoding, but an intercepted x2APIC MSR
 still exits unless it is handled in the kernel or accelerated by hardware.
 It is therefore not expected to remove the dominant overhead on its own.
 
+### Software x2APIC baseline (host runtime validated)
+
+A deliberately unaccelerated x2APIC path is now build- and runtime-tested.
+Its purpose is to establish that the guest-visible x2APIC interface works
+before enabling AMD x2AVIC:
+
+- CPUID exposes x2APIC when the VM is using the software LAPIC path.  It is
+  temporarily suppressed for legacy-AVIC and SEV-ES VMs, whose state-sharing
+  paths need separate synchronization;
+- every vCPU maintains a guest `MSR_APICBASE` shadow and validates xAPIC,
+  x2APIC and disabled-mode transitions.  x2APIC register accesses outside
+  enabled x2APIC mode, reserved registers and invalid-width accesses inject
+  `#GP`;
+- intercepted x2APIC MSRs use a dedicated `/dev/vmm` exit and the existing
+  per-vCPU vmd LAPIC model.  The model provides unshifted x2APIC IDs, derived
+  cluster-logical IDs, the combined 64-bit ICR, physical and cluster-logical
+  destinations, self-IPIs, EOI and the existing timer/LVT registers; and
+- `vmctl log stats` reports `x2apic` exits separately.  No VMX APICv or SVM
+  AVIC/x2AVIC control is enabled by this path.
+
+A clean `GENERIC.MP` build, staged-header vmd build and LAPIC regression pass.
+The regression covers x2APIC IDs, TPR access, physical and logical 64-bit ICR
+delivery and self-IPI.  A two-vCPU OpenBSD `GENERIC.MP` guest also boots and
+runs with this path.  The expected host `vmm0` line remains `SVM/RVI`, and
+verbose stats show nonzero `x2apic` exits with zero `avic` exits.  This is the
+software control result needed before mode-gated x2AVIC is activated.
+
+The first runtime test exposed a lost-wakeup race between an IPI and guest
+`HLT`: vCPU 0 waited in `pmap_tlb_shootwait` while vCPU 1 remained parked in
+`cpu_idle_cycle_hlt`, even though its LAPIC IRR held the IPI.  The interrupt
+had signalled the vCPU after its hardware HLT exit but before the vmd thread
+recorded the halt, and `vcpu_halt()` then overwrote the runnable state.  It now
+rechecks the LAPIC for a pending interrupt while holding the run mutex before
+marking the vCPU halted.  Repeated guest kernel relinks no longer hang.
+
+The same testing found that `halt -p` reached ACPI shutdown but did not stop
+the VM.  The DSDT now publishes `_S5` with sleep type 5, and PM1A control
+writes carrying that type plus `SLP_EN` terminate the VM cleanly.  Repeated
+shutdown tests no longer hang, and vmd logs the guest's transition to ACPI S5.
+
 ## Known remaining gaps
+
+### AMD AVIC prototype (host runtime validation pending)
+
+A first xAPIC AVIC implementation is now build-tested on the AMD path.  It is
+deliberately narrower than x2AVIC or IOMMU guest-mode interrupt remapping:
+
+- vmm(4) detects CPUID `0x8000000a` AVIC support and enables it only when
+  every RVI CPU is eligible; Family 17h is conservatively excluded because of
+  the lost-IPI AVIC erratum, and encrypted SEV/SEV-ES guests retain the
+  software LAPIC path;
+- every VM has AVIC logical/physical-ID tables and every vCPU has a hardware
+  LAPIC backing page; the physical table's running/host-APIC-ID fields are
+  updated atomically around VMRUN;
+- vmd injects LAPIC timer, IOAPIC and MSI/MSI-X vectors directly into the
+  hardware IRR/TMR backing page.  A running remote vCPU receives an AVIC
+  doorbell, while the existing vCPU condition variable wakes a stopped one;
+- fixed edge IPIs are handled by AVIC.  Incomplete IPI exits wake stopped
+  destinations or send INIT/SIPI and unsupported delivery modes through the
+  existing userspace ICR model;
+- completed AVIC register-write traps keep vmd's configuration/timer shadow
+  synchronized, and level-triggered EOI exits retain IOAPIC remote-IRR
+  handling.  Genuine unaccelerated access faults use the existing MMIO
+  instruction decoder; and
+- AVIC exit counts are included in `vmctl log stats` output.
+
+`GENERIC.MP`, a clean staged-header vmd build, and the LAPIC regression all
+pass.  The regression now covers direct AVIC vector injection, stopped-target
+wakeup and invalid-type IPI fallback.  The matched host kernel and vmd were
+installed for software-x2APIC testing, but this x2AVIC-only host cannot
+runtime-test the legacy AVIC path.  Legacy AVIC validation still requires a
+host advertising CPUID `0x8000000a` bit 13.
+
+After reboot, an eligible AMD host should identify vmm as `SVM/RVI/AVIC`; a
+verbose VM-process log should also say `AMD AVIC enabled`.  The first field
+test should boot the known-good OpenBSD guest at 2, 4 and 8 vCPUs, repeat the
+kernel-build stress test, and then repeat the existing iperf3 matrix while
+collecting `vmctl log stats`.  The expected signal is a sharp reduction in
+LAPIC MMIO/ICR exits; device-process transitions remain because this prototype
+does not implement IOMMU-posted interrupts.
 
 - Concurrent execution, INIT-SIPI and interrupt delivery through boot are
   validated with OpenBSD guests at two, four and eight vCPUs.  Longer stress,
@@ -386,12 +465,13 @@ It is therefore not expected to remove the dominant overhead on its own.
   SMP boot on Intel hardware remains to be exercised.
 - IOAPIC destination-mode handling still ignores logical mode / lowest-prio
   delivery (dest used directly as vcpu id).
-- LAPIC ICR logical destination, lowest-priority, NMI, SMI and ExtINT delivery
-  modes are not implemented.
+- LAPIC ICR fixed delivery supports physical destinations plus flat/cluster
+  logical destinations.  Lowest-priority, NMI, SMI and ExtINT delivery modes
+  are not implemented.
 - MSI supports one 64-bit message per device.  MSI-X supports at most 16
   vectors per device.  x2APIC/remapped MSI, logical destinations, and
   lowest-priority delivery are not implemented.
-- PM1A registers are implemented, but no active PM1 event source asserts SCI.
+- PM1A S5 poweroff is implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
 - Virtio-net exposes one queue pair; SMP guests have no receive/transmit
   multiqueue or queue-affinity scaling yet.
@@ -406,11 +486,14 @@ It is therefore not expected to remove the dominant overhead on its own.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
    `/dev/vmm` ioctl path already drops the kernel big lock before VMM_IOC_RUN,
    so no global execution serialization is currently known.
-4. Prototype an in-kernel LAPIC fixed-IPI/EOI fast path and repeat the
-   instrumented network tests before undertaking full AVIC/APICv support.
-5. Add virtio-net multiqueue and MSI-X queue affinity, then repeat the same
+4. Add mode-gated AMD x2AVIC activation (VMCB bits 31+30 only), repeat the
+   same guest tests, and compare its exit profile against the software
+   baseline.  Never enable the legacy bit-31-only mode on this host.
+5. Runtime-test the legacy AMD AVIC prototype on a bit-13-capable host and
+   repeat the instrumented network matrix.
+6. Add virtio-net multiqueue and MSI-X queue affinity, then repeat the same
    single- and four-stream matrix.
-6. Add active ACPI PM1 event sources and SCI delivery as they become needed.
-7. Add LAPIC/IOAPIC logical destination and lowest-priority delivery.
-8. Extend MSI routing only when a guest needs logical/x2APIC delivery or
+7. Add active ACPI PM1 event sources and SCI delivery as they become needed.
+8. Add LAPIC/IOAPIC lowest-priority delivery.
+9. Extend MSI routing only when a guest needs logical/x2APIC delivery or
    interrupt remapping.

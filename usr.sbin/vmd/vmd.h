@@ -310,6 +310,7 @@ struct vmd_vm {
 	uint32_t		 vm_vmid;	/* vmd(8) identifier */
 	uint32_t		 vm_vmmid;	/* vmm(4) identifier */
 	uint32_t		 vm_peerid;
+	uint8_t			 vm_avic;	/* kernel AVIC acceleration */
 
 	/* AMD SEV features */
 	uint32_t		 vm_sev_handle;
@@ -550,6 +551,7 @@ void	 vcpu_init_ap(struct vcpu_reg_state *);
 void	 vcpu_init_sipi(struct vcpu_reg_state *, uint8_t);
 void	 set_return_data(struct vm_exit *, uint32_t);
 void	 get_input_data(struct vm_exit *, uint32_t *);
+int 	 vcpu_intr_vector(uint32_t, uint32_t, uint8_t, int);
 #endif /* __amd64 __ */
 
 /* vm.c (mi functions) */
