@@ -58,7 +58,7 @@ struct vm_create_params {
         /* Output parameter from VMM_IOC_CREATE */
         uint32_t		vcp_id;
         uint32_t		vcp_poscbit;
-	uint8_t			vcp_avic;
+	uint8_t			vcp_avic;	/* VMM_AVIC_* capability bits */
         uint32_t		vcp_asid[VMM_MAX_VCPUS];
 };
 
@@ -200,7 +200,7 @@ struct vm {
 	vaddr_t		 vm_avic_physical_va;
 	paddr_t		 vm_avic_physical_pa;
 	struct rwlock		 vm_avic_lock;
-	uint8_t		 vm_avic;
+	uint8_t		 vm_avic;		/* VMM_AVIC_* capability bits */
 	uint8_t		 vm_avic_access_mapped;
 
 	SLIST_ENTRY(vm)		 vm_link;		/* [V] */

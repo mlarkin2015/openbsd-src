@@ -69,6 +69,7 @@ int
 main(void)
 {
 	struct i82489dx_stats stats;
+	uint32_t lapic_state[VMM_LAPIC_NREGS];
 	unsigned int i;
 
 	test_vm.vm_vmmid = 7;
@@ -138,17 +139,22 @@ main(void)
 	assert(last_vector == 0x50);
 
 	/* AVIC's direct-vector path enters vmm(4) and wakes the target. */
-	test_vm.vm_avic = 1;
 	write_reg(2, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
+	assert(i82489dx_avic_activate(2, VMM_AVIC_XAPIC, 0,
+	    lapic_state) == 0);
+	assert(lapic_state[LAPIC_ID >> 4] ==
+	    (2U << LAPIC_ID_SHIFT));
 	i82489dx_vector_irq(2, 0, 0x51, 0);
 	assert(avic_vector_count == 1);
 	assert(unhalt_count == 1);
 	assert(signal_count == 1);
-	test_vm.vm_avic = 0;
+	assert(i82489dx_avic_deactivate(2, VMM_AVIC_XAPIC,
+	    lapic_state) == 0);
 
 	/* Invalid-type AVIC IPIs fall back to the normal ICR emulation. */
 	i82489dx_avic_ipi(0, 1U << LAPIC_ID_SHIFT,
-	    LAPIC_DLMODE_FIXED | 0x52, I82489DX_AVIC_IPI_INVALID_TYPE, 1);
+	    LAPIC_DLMODE_FIXED | 0x52, I82489DX_AVIC_IPI_INVALID_TYPE, 1,
+	    0);
 	assert(vector_count == 4);
 	assert(vector_targets[3] == 1);
 	assert(last_vector == 0x52);
@@ -156,7 +162,7 @@ main(void)
 	/* Hardware has queued a stopped-target IPI; userspace only wakes it. */
 	i82489dx_avic_ipi(0, 3U << LAPIC_ID_SHIFT,
 	    LAPIC_DLMODE_FIXED | 0x53,
-	    I82489DX_AVIC_IPI_TARGET_NOT_RUNNING, 3);
+	    I82489DX_AVIC_IPI_TARGET_NOT_RUNNING, 3, 0);
 	assert(unhalt_count == 2);
 	assert(signal_count == 2);
 
@@ -184,6 +190,20 @@ main(void)
 	assert(vector_count == 7);
 	assert(vector_targets[6] == 1);
 	assert(last_vector == 0x56);
+
+	/* x2AVIC state uses unshifted IDs and full-width ICR destinations. */
+	write_reg(3, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
+	assert(i82489dx_avic_activate(3, VMM_AVIC_X2APIC, 0,
+	    lapic_state) == 0);
+	assert(lapic_state[LAPIC_ID >> 4] == 3);
+	assert(lapic_state[LAPIC_LDR >> 4] == (1U << 3));
+	i82489dx_avic_ipi(3, 2, LAPIC_DLMODE_FIXED | 0x57,
+	    I82489DX_AVIC_IPI_INVALID_TYPE, 2, 1);
+	assert(vector_count == 8);
+	assert(vector_targets[7] == 2);
+	assert(last_vector == 0x57);
+	assert(i82489dx_avic_deactivate(3, VMM_AVIC_X2APIC,
+	    lapic_state) == 0);
 
 	return (0);
 }

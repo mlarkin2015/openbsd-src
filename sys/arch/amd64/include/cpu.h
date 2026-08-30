@@ -87,6 +87,7 @@ struct svm {
 	uint8_t		svm_vmcb_clean;
 	uint8_t		svm_decode_assist;
 	uint8_t		svm_avic;
+	uint8_t		svm_x2avic;
 };
 
 union vmm_cpu_cap {
