@@ -34,6 +34,13 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
 - `vmctl log stats` provides five-second vCPU-exit, LAPIC/IPI and virtio-net
   queue/lock counters for controlled performance work
 - The current virtio-net device exposes one queue pair, even to SMP guests
+- Virtual CPUID topology now describes one package containing one single-
+  threaded core per configured vCPU.  The legacy Intel leaf 1/4 view, modern
+  leaves 0x0b/0x1f and AMD leaves 0x80000008/0x8000001e use the same APIC-ID
+  width, including non-power-of-two vCPU counts.  This prevents OpenBSD's
+  interrupt mapper from discarding virtual CPUs as SMT siblings before
+  virtio-net multiqueue negotiation.  The kernel builds; guest runtime
+  validation is pending installation of the matching kernel.
 - An initial AMD xAPIC AVIC implementation is build-tested.  It accelerates
   fixed edge IPIs plus LAPIC timer, IOAPIC and MSI/MSI-X vector delivery,
   while retaining userspace assistance for INIT/SIPI, LAPIC timer
@@ -77,7 +84,8 @@ Before implementing the broader items below, prioritize:
    x2APIC run as the control and never enabling legacy AVIC there;
 2. legacy AMD AVIC validation on a bit-13-capable host, followed by Intel
    APICv/virtual-interrupt delivery feasibility work;
-3. virtio-net multiqueue, MSI-X queue affinity and interrupt batching; and
+3. a two-pair virtio-net multiqueue transmit path with MSI-X queue affinity,
+   retaining RX queue 0 as the sole tap reader; and
 4. another identical scaling matrix to separate APIC savings from useful
    queue parallelism.
 

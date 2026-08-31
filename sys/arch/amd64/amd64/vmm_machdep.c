@@ -7334,6 +7334,48 @@ vmm_handle_cpuid_0xd(struct vcpu *vcpu, uint32_t subleaf, uint64_t *rax,
 }
 
 /*
+ * Return the number of APIC ID bits needed for ncpus.  APIC IDs are kept
+ * dense, but the legacy CPUID 1/4 topology interface describes the size of
+ * the ID space rather than the number of attached processors.
+ */
+static uint32_t
+vmm_topology_shift(uint32_t ncpus)
+{
+	uint32_t shift = 0;
+
+	KASSERT(ncpus > 0 && ncpus <= VMM_MAX_VCPUS_PER_VM);
+	for (ncpus--; ncpus != 0; ncpus >>= 1)
+		shift++;
+
+	return (shift);
+}
+
+static uint32_t
+vmm_topology_capacity(uint32_t ncpus)
+{
+	return (1U << vmm_topology_shift(ncpus));
+}
+
+/*
+ * Do not expose the host cache-sharing topology to a migratable vCPU.  Each
+ * virtual cache is private, while the package contains enough core ID slots
+ * for every configured vCPU.  OpenBSD also uses this field when decoding the
+ * legacy Intel CPU topology.
+ */
+static uint32_t
+vmm_cpuid_cache_eax(uint32_t eax, uint32_t ncpus)
+{
+	uint32_t capacity;
+
+	eax &= VMM_CPUID4_CACHE_TOPOLOGY_MASK;
+	if ((eax & 0x1f) == 0)
+		return (0);
+
+	capacity = vmm_topology_capacity(ncpus);
+	return (eax | ((capacity - 1) << 26));
+}
+
+/*
  * vmm_handle_cpuid
  *
  * Exit handler for CPUID instruction
@@ -7351,7 +7393,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 	uint64_t insn_length, cr4;
 	uint64_t *rax, *rbx, *rcx, *rdx;
 	struct vmcb *vmcb;
-	uint32_t leaf, subleaf, eax, ebx, ecx, edx, ncpus, shift, value;
+	uint32_t leaf, subleaf, eax, ebx, ecx, edx, ncpus, shift;
+	uint32_t topology_capacity;
 	struct vmx_msr_store *msr_store;
 	int vmm_cpuid_level;
 
@@ -7441,7 +7484,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		/* mask off host's APIC ID, reset to vcpu id */
 		*rbx = cpu_ebxfeature & 0x0000FFFF;
 		ncpus = vcpu->vc_parent->vm_vcpu_ct;
-		*rbx |= (ncpus & 0xff) << 16;
+		topology_capacity = vmm_topology_capacity(ncpus);
+		*rbx |= (topology_capacity & 0xff) << 16;
 		*rbx |= (vcpu->vc_id & 0xFF) << 24;
 		*rcx = (cpu_ecxfeature | CPUIDECX_HV) & VMM_CPUIDECX_MASK;
 		if ((!vcpu->vc_parent->vm_avic ||
@@ -7474,7 +7518,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rdx = 0;
 		break;
 	case 0x04:	/* Deterministic cache info */
-		*rax = eax & VMM_CPUID4_CACHE_TOPOLOGY_MASK;
+		ncpus = vcpu->vc_parent->vm_vcpu_ct;
+		*rax = vmm_cpuid_cache_eax(eax, ncpus);
 		*rbx = ebx;
 		*rcx = ecx;
 		*rdx = edx;
@@ -7543,13 +7588,9 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rdx = 0;
 		break;
 	case 0x0b:	/* Extended topology enumeration */
+	case 0x1f:	/* V2 extended topology enumeration */
 		ncpus = vcpu->vc_parent->vm_vcpu_ct;
-		shift = 0;
-		value = ncpus - 1;
-		while (value != 0) {
-			shift++;
-			value >>= 1;
-		}
+		shift = vmm_topology_shift(ncpus);
 		*rdx = vcpu->vc_id;
 		switch (subleaf) {
 		case 0:	/* one thread per core */
@@ -7689,17 +7730,28 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rdx = edx & VMM_APMI_EDX_INCLUDE_MASK;
 		break;
 	case 0x80000008:	/* Phys bits info and topology (AMD) */
+		ncpus = vcpu->vc_parent->vm_vcpu_ct;
+		shift = vmm_topology_shift(ncpus);
 		*rax = eax;
 		*rbx = ebx & VMM_AMDSPEC_EBX_MASK;
-		/* Reset %rcx (topology) */
-		*rcx = 0;
+		/* One thread per core, with all cores in one package. */
+		*rcx = (shift << 12) | (ncpus - 1);
 		*rdx = edx;
 		break;
 	case 0x8000001d:	/* cache topology (AMD) */
-		*rax = eax;
+		ncpus = vcpu->vc_parent->vm_vcpu_ct;
+		*rax = vmm_cpuid_cache_eax(eax, ncpus);
 		*rbx = ebx;
 		*rcx = ecx;
 		*rdx = edx;
+		break;
+	case 0x8000001e:	/* processor topology (AMD) */
+		*rax = vcpu->vc_id;
+		/* Core ID in bits 7:0, one thread per core in bits 15:8. */
+		*rbx = vcpu->vc_id;
+		/* Node 0, one node per package. */
+		*rcx = 0;
+		*rdx = 0;
 		break;
 	case 0x8000001f:	/* encryption features (AMD) */
 		*rax = eax;
