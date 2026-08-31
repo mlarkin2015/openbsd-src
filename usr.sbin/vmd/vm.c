@@ -273,27 +273,51 @@ vm_stats_report(int fd, short event, void *arg)
 	NET_DELTA(tx_kicks);
 	NET_DELTA(rx_irqs);
 	NET_DELTA(tx_irqs);
+	NET_DELTA(ctrl_kicks);
+	NET_DELTA(ctrl_irqs);
 	NET_DELTA(config_irqs);
 	NET_DELTA(sync_wait_ns);
 	NET_DELTA(sync_hold_ns);
 	NET_DELTA(sync_ops);
 #undef NET_DELTA
+	for (i = 0; i < VIONET_QUEUE_PAIRS; i++) {
+		net_delta.rxq_kicks[i] = stats_delta(net.rxq_kicks[i],
+		    &virtio_net_stats_prev.rxq_kicks[i]);
+		net_delta.txq_kicks[i] = stats_delta(net.txq_kicks[i],
+		    &virtio_net_stats_prev.txq_kicks[i]);
+		net_delta.rxq_irqs[i] = stats_delta(net.rxq_irqs[i],
+		    &virtio_net_stats_prev.rxq_irqs[i]);
+		net_delta.txq_irqs[i] = stats_delta(net.txq_irqs[i],
+		    &virtio_net_stats_prev.txq_irqs[i]);
+	}
 	if (net_delta.sync_ops != 0) {
 		avg_wait = net_delta.sync_wait_ns / net_delta.sync_ops;
 		avg_hold = net_delta.sync_hold_ns / net_delta.sync_ops;
 	}
 	if (enabled) {
 		log_info("stats %ds net-vm: kick-rx=%llu kick-tx=%llu "
-		    "irq-rx=%llu irq-tx=%llu irq-config=%llu sync-ops=%llu "
+		    "irq-rx=%llu irq-tx=%llu kick-ctrl=%llu irq-ctrl=%llu "
+		    "irq-config=%llu sync-ops=%llu "
 		    "wait-avg-ns=%llu hold-avg-ns=%llu", VM_STATS_INTERVAL,
 		    (unsigned long long)net_delta.rx_kicks,
 		    (unsigned long long)net_delta.tx_kicks,
 		    (unsigned long long)net_delta.rx_irqs,
 		    (unsigned long long)net_delta.tx_irqs,
+		    (unsigned long long)net_delta.ctrl_kicks,
+		    (unsigned long long)net_delta.ctrl_irqs,
 		    (unsigned long long)net_delta.config_irqs,
 		    (unsigned long long)net_delta.sync_ops,
 		    (unsigned long long)avg_wait,
 		    (unsigned long long)avg_hold);
+		for (i = 0; i < VIONET_QUEUE_PAIRS; i++) {
+			log_info("stats %ds net-vm-q%zu: kick-rx=%llu "
+			    "kick-tx=%llu irq-rx=%llu irq-tx=%llu",
+			    VM_STATS_INTERVAL, i,
+			    (unsigned long long)net_delta.rxq_kicks[i],
+			    (unsigned long long)net_delta.txq_kicks[i],
+			    (unsigned long long)net_delta.rxq_irqs[i],
+			    (unsigned long long)net_delta.txq_irqs[i]);
+		}
 	}
 
 	if (evtimer_add(&vm_stats_event, &tv) == -1)

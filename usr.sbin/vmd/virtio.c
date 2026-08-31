@@ -78,14 +78,9 @@ SLIST_HEAD(virtio_dev_head, virtio_dev) virtio_devs;
 
 #define MAXPHYS	(64 * 1024)	/* max raw I/O transfer size */
 
-#define VIRTIO_NET_F_MAC	(1<<5)
-
 #define VMMCI_F_TIMESYNC	(1<<0)
 #define VMMCI_F_ACK		(1<<1)
 #define VMMCI_F_SYNCRTC		(1<<2)
-
-#define RXQ	0
-#define TXQ	1
 
 static void virtio_dev_init(struct vmd_vm *, struct virtio_dev *, uint8_t,
     uint16_t, uint16_t, uint64_t);
@@ -109,6 +104,8 @@ timespec_delta_ns(const struct timespec *start, const struct timespec *end)
 void
 virtio_net_stats_snapshot(struct virtio_net_stats *stats)
 {
+	unsigned int i;
+
 #define VIRTIO_NET_STATS_LOAD(_field) \
 	stats->_field = __atomic_load_n(&virtio_net_stats._field, \
 	    __ATOMIC_RELAXED)
@@ -116,10 +113,22 @@ virtio_net_stats_snapshot(struct virtio_net_stats *stats)
 	VIRTIO_NET_STATS_LOAD(tx_kicks);
 	VIRTIO_NET_STATS_LOAD(rx_irqs);
 	VIRTIO_NET_STATS_LOAD(tx_irqs);
+	VIRTIO_NET_STATS_LOAD(ctrl_kicks);
+	VIRTIO_NET_STATS_LOAD(ctrl_irqs);
 	VIRTIO_NET_STATS_LOAD(config_irqs);
 	VIRTIO_NET_STATS_LOAD(sync_wait_ns);
 	VIRTIO_NET_STATS_LOAD(sync_hold_ns);
 	VIRTIO_NET_STATS_LOAD(sync_ops);
+	for (i = 0; i < VIONET_QUEUE_PAIRS; i++) {
+		stats->rxq_kicks[i] = __atomic_load_n(
+		    &virtio_net_stats.rxq_kicks[i], __ATOMIC_RELAXED);
+		stats->txq_kicks[i] = __atomic_load_n(
+		    &virtio_net_stats.txq_kicks[i], __ATOMIC_RELAXED);
+		stats->rxq_irqs[i] = __atomic_load_n(
+		    &virtio_net_stats.rxq_irqs[i], __ATOMIC_RELAXED);
+		stats->txq_irqs[i] = __atomic_load_n(
+		    &virtio_net_stats.txq_irqs[i], __ATOMIC_RELAXED);
+	}
 #undef VIRTIO_NET_STATS_LOAD
 }
 static int virtio_dev_closefds(struct virtio_dev *);
@@ -1200,7 +1209,8 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			}
 			virtio_dev_init(vm, dev, id, VIONET_QUEUE_SIZE_DEFAULT,
 			    VIRTIO_NET_QUEUES,
-			    (VIRTIO_NET_F_MAC | VIRTIO_F_VERSION_1));
+			    (VIRTIO_NET_F_MAC | VIRTIO_NET_F_CTRL_VQ |
+			    VIRTIO_NET_F_MQ | VIRTIO_F_VERSION_1));
 
 			bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_pci_io,
 			    dev);
@@ -1214,7 +1224,7 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			virtio_pci_add_cap(id, VIRTIO_PCI_CAP_COMMON_CFG,
 			    bar_id, 0);
 			virtio_pci_add_cap(id, VIRTIO_PCI_CAP_DEVICE_CFG,
-			    bar_id, 8);
+			    bar_id, 10);
 			virtio_pci_add_cap(id, VIRTIO_PCI_CAP_ISR_CFG, bar_id,
 			    0);
 			virtio_pci_add_cap(id, VIRTIO_PCI_CAP_NOTIFY_CFG,
@@ -1224,6 +1234,7 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			dev->dev_type = VMD_DEVTYPE_NET;
 			dev->vmm_id = vm->vm_vmmid;
 			dev->vionet.data_fd = child_taps[i];
+			dev->vionet.active_queue_pairs = 1;
 
 			/* MAC address has been assigned by the parent */
 			memcpy(&dev->vionet.mac, &vmc->vmc_macs[i], 6);
@@ -1948,17 +1959,29 @@ virtio_dispatch_dev(int fd, short event, void *arg)
 static int
 handle_dev_msg(struct viodev_msg *msg, struct virtio_dev *gdev)
 {
+	unsigned int pair;
+
 	switch (msg->type) {
 	case VIODEV_MSG_KICK:
 		if (msg->state == INTR_STATE_ASSERT) {
 			if (gdev->device_id == PCI_PRODUCT_VIRTIO_NETWORK &&
 			    log_getverbose() == 1) {
-				if (msg->vq_idx == RXQ)
+				if (msg->vq_idx < VIONET_CTRLQ_MQ) {
+					pair = msg->vq_idx / 2;
+					if ((msg->vq_idx & 1) == 0) {
+						virtio_net_stats_add(
+						    &virtio_net_stats.rx_irqs, 1);
+						virtio_net_stats_add(
+						    &virtio_net_stats.rxq_irqs[pair], 1);
+					} else {
+						virtio_net_stats_add(
+						    &virtio_net_stats.tx_irqs, 1);
+						virtio_net_stats_add(
+						    &virtio_net_stats.txq_irqs[pair], 1);
+					}
+				} else if (msg->vq_idx == VIONET_CTRLQ_MQ)
 					virtio_net_stats_add(
-					    &virtio_net_stats.rx_irqs, 1);
-				else if (msg->vq_idx == TXQ)
-					virtio_net_stats_add(
-					    &virtio_net_stats.tx_irqs, 1);
+					    &virtio_net_stats.ctrl_irqs, 1);
 				else if (msg->vq_idx == VIODEV_QUEUE_CONFIG)
 					virtio_net_stats_add(
 					    &virtio_net_stats.config_irqs, 1);
@@ -2004,6 +2027,7 @@ virtio_pci_io(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 	struct viodev_msg msg;
 	struct timespec start, acquired, done;
 	int net_notify, ret = 0, stats_enabled;
+	unsigned int pair;
 	uint16_t vq_idx = 0;
 
 	stats_enabled = log_getverbose() == 1;
@@ -2101,10 +2125,19 @@ out:
 	mutex_unlock(&vcpu_sync_mtx);
 	if (net_notify) {
 		clock_gettime(CLOCK_MONOTONIC, &done);
-		if (vq_idx == RXQ)
-			virtio_net_stats_add(&virtio_net_stats.rx_kicks, 1);
-		else if (vq_idx == TXQ)
-			virtio_net_stats_add(&virtio_net_stats.tx_kicks, 1);
+		if (vq_idx < VIONET_CTRLQ_MQ) {
+			pair = vq_idx / 2;
+			if ((vq_idx & 1) == 0) {
+				virtio_net_stats_add(&virtio_net_stats.rx_kicks, 1);
+				virtio_net_stats_add(
+				    &virtio_net_stats.rxq_kicks[pair], 1);
+			} else {
+				virtio_net_stats_add(&virtio_net_stats.tx_kicks, 1);
+				virtio_net_stats_add(
+				    &virtio_net_stats.txq_kicks[pair], 1);
+			}
+		} else if (vq_idx == VIONET_CTRLQ_MQ)
+			virtio_net_stats_add(&virtio_net_stats.ctrl_kicks, 1);
 		virtio_net_stats_add(&virtio_net_stats.sync_wait_ns,
 		    timespec_delta_ns(&start, &acquired));
 		virtio_net_stats_add(&virtio_net_stats.sync_hold_ns,
