@@ -542,6 +542,24 @@ This points at serialized userspace device processing and the single virtio-net
 queue rather than residual IPI/HLT exits.  Pause/unpause is intentionally
 deferred; forced termination remains an optional lifecycle check.
 
+### Virtual CPU topology for interrupt affinity (build validated)
+
+Virtual CPUID now reports one package with one single-threaded core per vCPU.
+OpenBSD/amd64 currently derives Intel topology from legacy leaves 1 and 4 and
+AMD topology from leaves `0x80000008` and `0x8000001e`, rather than relying on
+leaf `0x0b`.  All of those views, plus leaf `0x1f`, now agree.  The legacy
+Intel view advertises the next-power-of-two APIC-ID capacity so configurations
+such as three or six vCPUs still decode as distinct cores in package zero;
+ACPI continues to enumerate only the configured processors.
+
+This is a prerequisite for OpenBSD virtio-net multiqueue: `intrmap` excludes
+CPUs with a nonzero SMT ID, so the former Intel cache-topology result reduced
+an SMP guest to one usable interrupt CPU.  AMD no longer presents every vCPU
+as core zero in a separate package.  A full `GENERIC.MP` kernel build passes.
+After installing the kernel, guest dmesg should report `smt 0`, a unique core
+ID and `package 0` for every vCPU.  Runtime validation at two, four, eight and
+one non-power-of-two vCPU count remains pending.
+
 ## Known remaining gaps
 
 ### AMD AVIC prototype (host runtime validation pending)
