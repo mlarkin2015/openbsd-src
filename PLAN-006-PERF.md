@@ -33,7 +33,12 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
 - Event-driven I/O via `event(3)`
 - `vmctl log stats` provides five-second vCPU-exit, LAPIC/IPI and virtio-net
   queue/lock counters for controlled performance work
-- The current virtio-net device exposes one queue pair, even to SMP guests
+- Virtio-net now exposes two queue pairs when MQ is negotiated.  Each TX
+  queue has its own worker and MSI-X queue vector; RX intentionally remains
+  on queue 0 behind the single tap reader.  The control queue supports the
+  standard queue-pair command and retains the queue-2 layout when MQ is not
+  negotiated.  A fresh vmd build and the vmd regression suite pass; guest
+  runtime and performance validation are pending.
 - Virtual CPUID topology now describes one package containing one single-
   threaded core per configured vCPU.  The legacy Intel leaf 1/4 view, modern
   leaves 0x0b/0x1f and AMD leaves 0x80000008/0x8000001e use the same APIC-ID
@@ -80,14 +85,15 @@ matches the instrumented throughput.
 
 Before implementing the broader items below, prioritize:
 
-1. mode-gated x2AVIC on the bit-18-only AMD host, using the recorded software
-   x2APIC run as the control and never enabling legacy AVIC there;
-2. legacy AMD AVIC validation on a bit-13-capable host, followed by Intel
-   APICv/virtual-interrupt delivery feasibility work;
-3. a two-pair virtio-net multiqueue transmit path with MSI-X queue affinity,
-   retaining RX queue 0 as the sole tap reader; and
-4. another identical scaling matrix to separate APIC savings from useful
-   queue parallelism.
+1. install and runtime-validate the topology kernel at two, four, eight and a
+   non-power-of-two vCPU count;
+2. runtime-validate the two-pair TX path, including the one-vCPU non-MQ queue
+   layout, then repeat the identical iperf3 scaling matrix to separate APIC
+   savings from useful TX queue parallelism;
+3. graft and measure vionet TSO after the external diff is available, without
+   expanding this work into generic tap-layer receive scaling; and
+4. retain legacy AMD AVIC validation and Intel APICv feasibility work as
+   hardware-specific follow-ups.
 
 x2APIC alone changes MMIO register access into intercepted MSR access; without
 kernel or hardware acceleration it does not remove the dominant exit and
