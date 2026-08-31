@@ -55,9 +55,12 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
   target was not running.  The x2AVIC-only kernel HLT fast path is now runtime
   validated: normal HLT waits remain inside `VMM_IOC_RUN`, queued vectors wake
   that wait, and non-x2AVIC guests retain the vmd condition-variable path.
-  Two four-stream guest-to-host runs measured 1.20 and 1.21 Gbit/s while vmd
-  reported zero HLT, AVIC and target-not-running exits.  This removes the
-  targeted round trips but does not demonstrate a network-throughput gain.
+  Two-run four-stream guest-to-host means were 1.21, 1.05 and 1.18 Gbit/s at
+  two, four and eight vCPUs respectively, while vmd reported zero HLT, AVIC and
+  target-not-running exits at every CPU count.  This removes the targeted
+  round trips but does not demonstrate a network-throughput gain.  The
+  remaining device I/O is concentrated on vCPU0, and x2APIC timer exits scale
+  linearly at approximately 250 per vCPU per five seconds.
 
 ## SMP network measurements (2026-08-28)
 
