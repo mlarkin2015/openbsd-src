@@ -23,6 +23,10 @@
 
 #ifndef _LOCORE
 
+#ifdef _KERNEL
+#include <sys/mutex.h>
+#endif
+
 #define VMM_HV_SIGNATURE 	"OpenBSDVMM58"
 
 /* VMX: Basic Exit Reasons */
@@ -533,6 +537,7 @@ struct vm_intr_params {
 	uint8_t			vip_type;
 #define VMM_INTR_PENDING	0
 #define VMM_INTR_VECTOR		1
+#define VMM_INTR_KICK		2
 	uint8_t			vip_vector;
 	uint8_t			vip_level;
 };
@@ -993,6 +998,7 @@ struct vcpu_gueststate {
  *	I	immutable operations
  *	K	kernel lock
  *	r	reference count
+ *	h	AVIC HLT mutex (vc_svm_avic_hlt_mtx)
  *	v	vcpu rwlock
  *	V	vm struct's vcpu list lock (vm_vcpu_lock)
  */
@@ -1090,6 +1096,11 @@ struct vcpu {
 	uint32_t vc_svm_avic_dfr;
 	uint8_t vc_svm_avic_cap;
 	uint8_t vc_svm_avic_mode;
+	struct mutex vc_svm_avic_hlt_mtx;	/* [I] */
+	uint32_t vc_svm_avic_hlt_irr[8];	/* [h] */
+	uint8_t vc_svm_avic_hlt_event;		/* [h] */
+	uint8_t vc_svm_avic_hlt_kick;		/* [h] */
+	uint8_t vc_svm_avic_hlt_blocked;	/* [h] */
 	int vc_sev;				/* [I] */
 	int vc_seves;				/* [I] */
 };
@@ -1126,6 +1137,7 @@ int	vcpu_init(struct vcpu *, struct vm_create_params *);
 void	vcpu_deinit(struct vcpu *);
 int	vm_rwregs(struct vm_rwregs_params *, int);
 int	vcpu_reset_regs(struct vcpu *, struct vcpu_reg_state *);
+void	vmm_vcpu_kick(struct vcpu *);
 int	svm_get_vmsa_pa(uint32_t, uint32_t, uint64_t *);
 
 #endif /* _KERNEL */

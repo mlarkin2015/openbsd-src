@@ -716,6 +716,8 @@ int
 vm_terminate(struct vm_terminate_params *vtp)
 {
 	struct vm *vm;
+	struct vcpu *vcpu;
+	u_int old;
 	int error, nvcpu, vm_id;
 
 	/*
@@ -730,6 +732,21 @@ vm_terminate(struct vm_terminate_params *vtp)
 		refcnt_rele_wake(&vm->vm_refcnt);
 		return (EBUSY);
 	}
+
+	/* Stop and wake VMM_IOC_RUN callers before waiting on their refs. */
+	rw_enter_read(&vm->vm_vcpu_lock);
+	SLIST_FOREACH(vcpu, &vm->vm_vcpu_list, vc_vcpu_link) {
+		for (;;) {
+			old = atomic_load_int(&vcpu->vc_state);
+			if (old == VCPU_STATE_REQTERM ||
+			    old == VCPU_STATE_TERMINATED ||
+			    atomic_cas_uint(&vcpu->vc_state, old,
+			    VCPU_STATE_REQTERM) == old)
+				break;
+		}
+		vmm_vcpu_kick(vcpu);
+	}
+	rw_exit_read(&vm->vm_vcpu_lock);
 
 	/* Pop the vm out of the global vm list. */
 	rw_enter_write(&vmm_softc->vm_lock);
