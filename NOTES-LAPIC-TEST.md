@@ -560,6 +560,32 @@ After installing the kernel, guest dmesg should report `smt 0`, a unique core
 ID and `package 0` for every vCPU.  Runtime validation at two, four, eight and
 one non-power-of-two vCPU count remains pending.
 
+### Two-queue virtio-net TX path (build validated)
+
+Virtio-net now advertises `VIRTIO_NET_F_CTRL_VQ` and `VIRTIO_NET_F_MQ`, two
+queue pairs, and the standard `max_virtqueue_pairs` device-config field.  The
+control virtqueue implements `VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET`, defaults to
+one active pair after reset, and accepts one or two pairs.  Its index follows
+the negotiated layout: queue 2 when MQ was declined and queue 4 when MQ was
+accepted.
+
+Each TX queue has an independent worker thread, event loop, notification pipe,
+descriptor scratch space, used-ring accounting and MSI-X queue interrupt.
+This is intentionally a TX-only scaling experiment: the one tap descriptor is
+still read by one RX thread, all host packets are placed on RX queue 0, and RX
+queue 1 notifications are left idle.  No tap(4) interface changes are part of
+this milestone.  Five-second verbose statistics now split kicks, interrupts,
+packets and bytes by queue pair and include the control queue.
+
+A fresh vmd build and the complete `regress/usr.sbin/vmd` suite pass.  Runtime
+validation requires both the topology kernel above and this vmd.  An SMP
+OpenBSD guest should report `vio0: 2 queues`; under parallel guest-to-host
+traffic both `net-dev-q0` and `net-dev-q1` should report TX packets, while RX
+packets should remain on q0.  Also boot a one-vCPU guest to exercise the
+non-MQ queue-2 control layout, then repeat the established one- and
+four-stream iperf3 matrix at two, four and eight vCPUs.  TSO is deliberately
+deferred until the external vionet TSO diff is available.
+
 ## Known remaining gaps
 
 ### AMD AVIC prototype (host runtime validation pending)
@@ -619,8 +645,9 @@ does not implement IOMMU-posted interrupts.
   lowest-priority delivery are not implemented.
 - PM1A S5 poweroff is implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
-- Virtio-net exposes one queue pair; SMP guests have no receive/transmit
-  multiqueue or queue-affinity scaling yet.
+- Virtio-net exposes two queue pairs with independent TX workers and MSI-X
+  queue affinity, but the implementation is not runtime-validated yet and RX
+  deliberately remains on queue 0 behind one tap reader.
 
 ## Next steps after testing
 
@@ -638,9 +665,12 @@ does not implement IOMMU-posted interrupts.
    HLT userspace exits to zero.  Pause/unpause is deferred for now.
 5. Runtime-test the legacy AMD AVIC prototype on a bit-13-capable host and
    repeat the instrumented network matrix.
-6. Add virtio-net multiqueue and MSI-X queue affinity, then repeat the same
-   single- and four-stream matrix.
-7. Add active ACPI PM1 event sources and SCI delivery as they become needed.
-8. Add LAPIC/IOAPIC lowest-priority delivery.
-9. Extend MSI routing only when a guest needs logical/x2APIC delivery or
+6. Runtime-test the two-pair virtio-net TX path and MSI-X queue affinity, then
+   repeat the same single- and four-stream matrix.  Confirm a one-vCPU guest
+   still uses the non-MQ queue layout correctly.
+7. Graft and validate vionet TSO after the external diff is available; keep
+   host tap RX and generic tap-layer scaling outside this effort.
+8. Add active ACPI PM1 event sources and SCI delivery as they become needed.
+9. Add LAPIC/IOAPIC lowest-priority delivery.
+10. Extend MSI routing only when a guest needs logical/x2APIC delivery or
    interrupt remapping.

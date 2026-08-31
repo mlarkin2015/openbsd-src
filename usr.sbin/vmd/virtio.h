@@ -80,6 +80,18 @@
 #define VIOSCSI_QUEUE_SIZE_DEFAULT	128
 #define VIONET_QUEUE_SIZE_DEFAULT	256
 
+/* Virtio network features implemented by vmd. */
+#define VIRTIO_NET_F_MAC		(1ULL << 5)
+#define VIRTIO_NET_F_CTRL_VQ		(1ULL << 17)
+#define VIRTIO_NET_F_MQ			(1ULL << 22)
+
+/* Two queue pairs plus the control virtqueue. */
+#define VIONET_QUEUE_PAIRS		2
+#define VIONET_RXQ(_pair)		(2 * (_pair))
+#define VIONET_TXQ(_pair)		(2 * (_pair) + 1)
+#define VIONET_CTRLQ_SINGLE		2
+#define VIONET_CTRLQ_MQ			(2 * VIONET_QUEUE_PAIRS)
+
 #define VIOBLK_SEG_MAX_DEFAULT		(VIOBLK_QUEUE_SIZE_DEFAULT - 2)
 
 /* Virtio network device is backed by tap(4), so inherit limits */
@@ -91,16 +103,13 @@
 #define VMMCI_TIMEOUT_SHORT	3
 #define VMMCI_TIMEOUT_LONG	120
 
-/*
- * All the devices we support have either 1, 2 or 3 virtqueues.
- * No devices currently support VIRTIO_*_F_MQ so values are fixed.
- */
+/* Queue counts include every queue exposed in the device configuration. */
 #define VIRTIO_RND_QUEUES	1
 #define VIRTIO_BLK_QUEUES	1
-#define VIRTIO_NET_QUEUES	2
+#define VIRTIO_NET_QUEUES	(VIONET_CTRLQ_MQ + 1)
 #define VIRTIO_SCSI_QUEUES	3
 #define VIRTIO_VMMCI_QUEUES	0
-#define VIRTIO_MAX_QUEUES	3
+#define VIRTIO_MAX_QUEUES	VIRTIO_NET_QUEUES
 
 #define MAXPHYS	(64 * 1024)	/* max raw I/O transfer size */
 
@@ -293,6 +302,7 @@ struct vionet_dev {
 	int pxeboot;
 	struct local_prefix local_prefix;
 	uint32_t reset_generation;
+	uint16_t active_queue_pairs;
 
 	unsigned int idx;
 };
@@ -322,10 +332,16 @@ struct virtio_net_stats {
 	uint64_t tx_kicks;
 	uint64_t rx_irqs;
 	uint64_t tx_irqs;
+	uint64_t ctrl_kicks;
+	uint64_t ctrl_irqs;
 	uint64_t config_irqs;
 	uint64_t sync_wait_ns;
 	uint64_t sync_hold_ns;
 	uint64_t sync_ops;
+	uint64_t rxq_kicks[VIONET_QUEUE_PAIRS];
+	uint64_t txq_kicks[VIONET_QUEUE_PAIRS];
+	uint64_t rxq_irqs[VIONET_QUEUE_PAIRS];
+	uint64_t txq_irqs[VIONET_QUEUE_PAIRS];
 };
 
 enum vmmci_cmd {

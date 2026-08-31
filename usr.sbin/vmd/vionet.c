@@ -49,16 +49,31 @@
 #endif	/* VIONET_DEBUG */
 
 #define VIRTIO_NET_CONFIG_MAC		 0 /*  8 bit x 6 byte */
+#define VIRTIO_NET_CONFIG_MAX_QUEUES	 8 /* 16 bit */
 
-#define VIRTIO_NET_F_MAC	(1 << 5)
-#define RXQ	0
-#define TXQ	1
+#define VIRTIO_NET_CTRL_MQ		 4
+#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET	 0
+#define VIRTIO_NET_OK			 0
+#define VIRTIO_NET_ERR			 1
+
+#define RXQ	VIONET_RXQ(0)
+#define TXQ	VIONET_TXQ(0)
 
 extern struct vmd_vm *current_vm;
 
 struct packet {
 	uint8_t	*buf;
 	size_t	 len;
+};
+
+struct vionet_tx_worker {
+	struct virtio_dev	*dev;
+	struct vm_dev_pipe	 pipe;
+	struct event_base	*event_base;
+	struct iovec		 iov[VIRTIO_QUEUE_SIZE_MAX];
+	pthread_t		 thread;
+	uint16_t		 vq_idx;
+	unsigned int		 pair;
 };
 
 static void *rx_run_loop(void *);
@@ -74,7 +89,10 @@ static void vionet_write(struct virtio_dev *, struct viodev_msg *);
 static uint32_t vionet_cfg_read(struct virtio_dev *, struct viodev_msg *);
 static void vionet_cfg_write(struct virtio_dev *, struct viodev_msg *);
 
-static int vionet_tx(struct virtio_dev *);
+static int vionet_tx(struct vionet_tx_worker *);
+static int vionet_ctrl(struct virtio_dev *);
+static void vionet_handle_ctrl(struct virtio_dev *);
+static uint16_t vionet_ctrlq(struct virtio_dev *);
 static void vionet_notifyq(struct virtio_dev *, uint16_t);
 static uint32_t vionet_dev_read(struct virtio_dev *, struct viodev_msg *);
 static void dev_dispatch_vm(int, short, void *);
@@ -91,17 +109,14 @@ struct event ev_tap;
 struct event ev_inject;
 struct event_base *ev_base_main;
 struct event_base *ev_base_rx;
-struct event_base *ev_base_tx;
 pthread_t rx_thread;
-pthread_t tx_thread;
 struct vm_dev_pipe pipe_main;
 struct vm_dev_pipe pipe_rx;
-struct vm_dev_pipe pipe_tx;
+struct vionet_tx_worker tx_workers[VIONET_QUEUE_PAIRS];
 int pipe_inject[2];
 #define READ	0
 #define WRITE	1
 struct iovec iov_rx[VIRTIO_QUEUE_SIZE_MAX];
-struct iovec iov_tx[VIRTIO_QUEUE_SIZE_MAX];
 pthread_rwlock_t lock = NULL;		/* Guards device config state. */
 int rx_enabled = 0;	/* 1: we expect to read the tap, 0: wait for notify. */
 
@@ -116,7 +131,19 @@ struct vionet_perf_stats {
 	uint64_t tx_kicks;
 	uint64_t rx_irqs;
 	uint64_t tx_irqs;
+	uint64_t ctrl_kicks;
+	uint64_t ctrl_irqs;
 	uint64_t config_irqs;
+	struct {
+		uint64_t rx_packets;
+		uint64_t rx_bytes;
+		uint64_t tx_packets;
+		uint64_t tx_bytes;
+		uint64_t rx_kicks;
+		uint64_t tx_kicks;
+		uint64_t rx_irqs;
+		uint64_t tx_irqs;
+	} queue[VIONET_QUEUE_PAIRS];
 };
 
 static struct vionet_perf_stats vionet_stats;
@@ -145,6 +172,7 @@ vionet_stats_report(int fd, short event, void *arg)
 	struct vionet_perf_stats current, delta;
 	struct timeval tv = { VIONET_STATS_INTERVAL, 0 };
 	uint64_t rx_per_irq = 0, tx_per_irq = 0;
+	unsigned int i;
 
 	(void)fd;
 	(void)event;
@@ -163,8 +191,27 @@ vionet_stats_report(int fd, short event, void *arg)
 	VIONET_STATS_DELTA(tx_kicks);
 	VIONET_STATS_DELTA(rx_irqs);
 	VIONET_STATS_DELTA(tx_irqs);
+	VIONET_STATS_DELTA(ctrl_kicks);
+	VIONET_STATS_DELTA(ctrl_irqs);
 	VIONET_STATS_DELTA(config_irqs);
 #undef VIONET_STATS_DELTA
+	for (i = 0; i < VIONET_QUEUE_PAIRS; i++) {
+#define VIONET_QUEUE_STATS_DELTA(_field) do { \
+	current.queue[i]._field = __atomic_load_n( \
+	    &vionet_stats.queue[i]._field, __ATOMIC_RELAXED); \
+	delta.queue[i]._field = vionet_stats_delta( \
+	    current.queue[i]._field, &vionet_stats_prev.queue[i]._field); \
+} while (0)
+		VIONET_QUEUE_STATS_DELTA(rx_packets);
+		VIONET_QUEUE_STATS_DELTA(rx_bytes);
+		VIONET_QUEUE_STATS_DELTA(tx_packets);
+		VIONET_QUEUE_STATS_DELTA(tx_bytes);
+		VIONET_QUEUE_STATS_DELTA(rx_kicks);
+		VIONET_QUEUE_STATS_DELTA(tx_kicks);
+		VIONET_QUEUE_STATS_DELTA(rx_irqs);
+		VIONET_QUEUE_STATS_DELTA(tx_irqs);
+#undef VIONET_QUEUE_STATS_DELTA
+	}
 	if (delta.rx_irqs != 0)
 		rx_per_irq = delta.rx_packets / delta.rx_irqs;
 	if (delta.tx_irqs != 0)
@@ -173,7 +220,8 @@ vionet_stats_report(int fd, short event, void *arg)
 		log_info("stats %ds net-dev: rx-packets=%llu rx-bytes=%llu "
 		    "rx-kicks=%llu rx-irqs=%llu rx-packets/irq=%llu "
 		    "tx-packets=%llu tx-bytes=%llu tx-kicks=%llu "
-		    "tx-irqs=%llu tx-packets/irq=%llu config-irqs=%llu",
+		    "tx-irqs=%llu tx-packets/irq=%llu kick-ctrl=%llu "
+		    "irq-ctrl=%llu config-irqs=%llu",
 		    VIONET_STATS_INTERVAL,
 		    (unsigned long long)delta.rx_packets,
 		    (unsigned long long)delta.rx_bytes,
@@ -185,7 +233,23 @@ vionet_stats_report(int fd, short event, void *arg)
 		    (unsigned long long)delta.tx_kicks,
 		    (unsigned long long)delta.tx_irqs,
 		    (unsigned long long)tx_per_irq,
+		    (unsigned long long)delta.ctrl_kicks,
+		    (unsigned long long)delta.ctrl_irqs,
 		    (unsigned long long)delta.config_irqs);
+		for (i = 0; i < VIONET_QUEUE_PAIRS; i++) {
+			log_info("stats %ds net-dev-q%u: rx-packets=%llu "
+			    "rx-bytes=%llu rx-kicks=%llu rx-irqs=%llu "
+			    "tx-packets=%llu tx-bytes=%llu tx-kicks=%llu "
+			    "tx-irqs=%llu", VIONET_STATS_INTERVAL, i,
+			    (unsigned long long)delta.queue[i].rx_packets,
+			    (unsigned long long)delta.queue[i].rx_bytes,
+			    (unsigned long long)delta.queue[i].rx_kicks,
+			    (unsigned long long)delta.queue[i].rx_irqs,
+			    (unsigned long long)delta.queue[i].tx_packets,
+			    (unsigned long long)delta.queue[i].tx_bytes,
+			    (unsigned long long)delta.queue[i].tx_kicks,
+			    (unsigned long long)delta.queue[i].tx_irqs);
+		}
 	}
 	if (evtimer_add(&vionet_stats_event, &tv) == -1)
 		log_warnx("%s: could not reschedule stats timer", __func__);
@@ -198,7 +262,9 @@ vionet_main(int fd, int fd_vmm)
 	struct vionet_dev	*vionet = NULL;
 	struct viodev_msg 	 msg;
 	struct vmd_vm	 	 vm;
+	char			 thread_name[16];
 	ssize_t			 sz;
+	unsigned int		 i;
 	int			 ret;
 
 	/*
@@ -212,7 +278,7 @@ vionet_main(int fd, int fd_vmm)
 
 	/* Initialize iovec arrays. */
 	memset(iov_rx, 0, sizeof(iov_rx));
-	memset(iov_tx, 0, sizeof(iov_tx));
+	memset(tx_workers, 0, sizeof(tx_workers));
 
 	/* Receive our vionet_dev, mostly preconfigured. */
 	sz = atomicio(read, fd, &dev, sizeof(dev));
@@ -268,9 +334,23 @@ vionet_main(int fd, int fd_vmm)
 	/* Initialize inter-thread communication channels. */
 	vm_pipe_init2(&pipe_main, read_pipe_main, &dev);
 	vm_pipe_init2(&pipe_rx, read_pipe_rx, &dev);
-	vm_pipe_init2(&pipe_tx, read_pipe_tx, &dev);
+	for (i = 0; i < VIONET_QUEUE_PAIRS; i++) {
+		tx_workers[i].dev = &dev;
+		tx_workers[i].pair = i;
+		tx_workers[i].vq_idx = VIONET_TXQ(i);
+		vm_pipe_init2(&tx_workers[i].pipe, read_pipe_tx,
+		    &tx_workers[i]);
+	}
 
-	/* Initialize RX and TX threads . */
+	/* Initialize the rwlock before any worker can access device state. */
+	ret = pthread_rwlock_init(&lock, NULL);
+	if (ret) {
+		errno = ret;
+		log_warn("%s: failed to initialize rwlock", __func__);
+		goto fail;
+	}
+
+	/* Initialize the RX thread and one TX worker per queue pair. */
 	ret = pthread_create(&rx_thread, NULL, rx_run_loop, &dev);
 	if (ret) {
 		errno = ret;
@@ -278,20 +358,17 @@ vionet_main(int fd, int fd_vmm)
 		goto fail;
 	}
 	pthread_set_name_np(rx_thread, "rx");
-	ret = pthread_create(&tx_thread, NULL, tx_run_loop, &dev);
-	if (ret) {
-		errno = ret;
-		log_warn("%s: failed to initialize tx thread", __func__);
-		goto fail;
-	}
-	pthread_set_name_np(tx_thread, "tx");
-
-	/* Initialize our rwlock for guarding shared device state. */
-	ret = pthread_rwlock_init(&lock, NULL);
-	if (ret) {
-		errno = ret;
-		log_warn("%s: failed to initialize rwlock", __func__);
-		goto fail;
+	for (i = 0; i < VIONET_QUEUE_PAIRS; i++) {
+		ret = pthread_create(&tx_workers[i].thread, NULL, tx_run_loop,
+		    &tx_workers[i]);
+		if (ret) {
+			errno = ret;
+			log_warn("%s: failed to initialize tx%u thread",
+			    __func__, i);
+			goto fail;
+		}
+		snprintf(thread_name, sizeof(thread_name), "tx%u", i);
+		pthread_set_name_np(tx_workers[i].thread, thread_name);
 	}
 
 	/* Initialize libevent so we can start wiring event handlers. */
@@ -349,13 +426,15 @@ vionet_main(int fd, int fd_vmm)
 	ret = event_base_dispatch(ev_base_main);
 	event_base_free(ev_base_main);
 
-	/* Try stopping the rx & tx threads cleanly by messaging them. */
+	/* Try stopping the rx and tx threads cleanly by messaging them. */
 	vm_pipe_send(&pipe_rx, VIRTIO_THREAD_STOP);
-	vm_pipe_send(&pipe_tx, VIRTIO_THREAD_STOP);
+	for (i = 0; i < VIONET_QUEUE_PAIRS; i++)
+		vm_pipe_send(&tx_workers[i].pipe, VIRTIO_THREAD_STOP);
 
 	/* Wait for threads to stop. */
 	pthread_join(rx_thread, NULL);
-	pthread_join(tx_thread, NULL);
+	for (i = 0; i < VIONET_QUEUE_PAIRS; i++)
+		pthread_join(tx_workers[i].thread, NULL);
 	pthread_rwlock_destroy(&lock);
 
 	/* Cleanup */
@@ -366,7 +445,8 @@ vionet_main(int fd, int fd_vmm)
 		close_fd(pipe_main.read);
 		close_fd(pipe_main.write);
 		close_fd(pipe_rx.write);
-		close_fd(pipe_tx.write);
+		for (i = 0; i < VIONET_QUEUE_PAIRS; i++)
+			close_fd(tx_workers[i].pipe.write);
 		close_fd(pipe_inject[READ]);
 		close_fd(pipe_inject[WRITE]);
 		_exit(ret);
@@ -554,12 +634,18 @@ vionet_rx(struct virtio_dev *dev, int fd)
 	if (stats_enabled) {
 		vionet_stats_add(&vionet_stats.rx_packets, stats_packets);
 		vionet_stats_add(&vionet_stats.rx_bytes, stats_bytes);
+		vionet_stats_add(&vionet_stats.queue[0].rx_packets,
+		    stats_packets);
+		vionet_stats_add(&vionet_stats.queue[0].rx_bytes, stats_bytes);
 	}
 	return (notify);
 reset:
 	if (stats_enabled) {
 		vionet_stats_add(&vionet_stats.rx_packets, stats_packets);
 		vionet_stats_add(&vionet_stats.rx_bytes, stats_bytes);
+		vionet_stats_add(&vionet_stats.queue[0].rx_packets,
+		    stats_packets);
+		vionet_stats_add(&vionet_stats.queue[0].rx_bytes, stats_bytes);
 	}
 	return (-1);
 }
@@ -743,30 +829,159 @@ vionet_rx_event(int fd, short event, void *arg)
 static void
 vionet_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 {
-	switch (vq_idx) {
-	case RXQ:
+	struct vionet_dev *vionet = &dev->vionet;
+	unsigned int pair;
+	uint16_t ctrlq = vionet_ctrlq(dev);
+
+	if (vq_idx >= dev->num_queues) {
+		log_debug("%s: invalid queue ID %u", __func__, vq_idx);
+		return;
+	}
+
+	if (vq_idx == RXQ) {
 		vionet_stats_add(&vionet_stats.rx_kicks, 1);
+		vionet_stats_add(&vionet_stats.queue[0].rx_kicks, 1);
 		rx_enabled = 1;
 		vm_pipe_send(&pipe_rx, VIRTIO_NOTIFY);
-		break;
-	case TXQ:
+		return;
+	}
+	if (vq_idx == ctrlq) {
+		vionet_stats_add(&vionet_stats.ctrl_kicks, 1);
+		vionet_handle_ctrl(dev);
+		return;
+	}
+	if (vq_idx == VIONET_RXQ(1)) {
+		/* RX remains deliberately pinned to queue pair zero. */
+		vionet_stats_add(&vionet_stats.rx_kicks, 1);
+		vionet_stats_add(&vionet_stats.queue[1].rx_kicks, 1);
+		return;
+	}
+	if (vq_idx < VIONET_CTRLQ_MQ && (vq_idx & 1) != 0) {
+		pair = vq_idx / 2;
 		vionet_stats_add(&vionet_stats.tx_kicks, 1);
-		vm_pipe_send(&pipe_tx, VIRTIO_NOTIFY);
-		break;
-	default:
-		/*
-		 * Catch the unimplemented queue ID 2 (control queue) as
-		 * well as any bogus queue IDs.
-		 */
-		log_debug("%s: notify for unimplemented queue ID %d",
-		    __func__, dev->cfg.queue_notify);
-		break;
+		vionet_stats_add(&vionet_stats.queue[pair].tx_kicks, 1);
+		if (pair < vionet->active_queue_pairs)
+			vm_pipe_send(&tx_workers[pair].pipe, VIRTIO_NOTIFY);
+		return;
 	}
 }
 
-static int
-vionet_tx(struct virtio_dev *dev)
+static uint16_t
+vionet_ctrlq(struct virtio_dev *dev)
 {
+	if (dev->driver_feature & VIRTIO_NET_F_MQ)
+		return (VIONET_CTRLQ_MQ);
+	return (VIONET_CTRLQ_SINGLE);
+}
+
+/*
+ * Process the VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET command.  Other control
+ * classes are not advertised and receive the standard VIRTIO_NET_ERR status.
+ */
+static int
+vionet_ctrl(struct virtio_dev *dev)
+{
+	struct vionet_dev *vionet = &dev->vionet;
+	struct virtio_vq_info *vq_info = &dev->vq[vionet_ctrlq(dev)];
+	struct vring_desc *desc, *table;
+	struct vring_avail *avail;
+	struct vring_used *used;
+	void *data;
+	uint8_t *cmd, *status;
+	uint16_t idx, hdr_idx, pairs;
+	char *vr;
+	int notify = 0;
+
+	if ((dev->status & VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK) == 0)
+		return (0);
+	vr = vq_info->q_hva;
+	if (vr == NULL)
+		return (-1);
+
+	table = (struct vring_desc *)vr;
+	avail = (struct vring_avail *)(vr + vq_info->vq_availoffset);
+	used = (struct vring_used *)(vr + vq_info->vq_usedoffset);
+	idx = vq_info->last_avail;
+
+	while (idx != avail->idx) {
+		hdr_idx = avail->ring[idx & vq_info->mask];
+		desc = &table[hdr_idx & vq_info->mask];
+		if (DESC_WRITABLE(desc) || desc->len < 2 ||
+		    (desc->flags & VRING_DESC_F_NEXT) == 0)
+			return (-1);
+		cmd = hvaddr_mem(desc->addr, 2);
+		if (cmd == NULL)
+			return (-1);
+
+		desc = &table[desc->next & vq_info->mask];
+		if (DESC_WRITABLE(desc) || desc->len < sizeof(pairs) ||
+		    (desc->flags & VRING_DESC_F_NEXT) == 0)
+			return (-1);
+		data = hvaddr_mem(desc->addr, sizeof(pairs));
+		if (data == NULL)
+			return (-1);
+		memcpy(&pairs, data, sizeof(pairs));
+
+		desc = &table[desc->next & vq_info->mask];
+		if (!DESC_WRITABLE(desc) || desc->len < 1)
+			return (-1);
+		status = hvaddr_mem(desc->addr, 1);
+		if (status == NULL)
+			return (-1);
+		*status = VIRTIO_NET_ERR;
+		if (cmd[0] == VIRTIO_NET_CTRL_MQ &&
+		    cmd[1] == VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET &&
+		    pairs >= 1 && pairs <= VIONET_QUEUE_PAIRS) {
+			vionet->active_queue_pairs = pairs;
+			*status = VIRTIO_NET_OK;
+		}
+
+		used->ring[used->idx & vq_info->mask].id = hdr_idx;
+		used->ring[used->idx & vq_info->mask].len = 1;
+		__sync_synchronize();
+		used->idx++;
+		idx++;
+	}
+
+	if (idx != vq_info->last_avail &&
+	    !(avail->flags & VRING_AVAIL_F_NO_INTERRUPT))
+		notify = 1;
+	vq_info->last_avail = idx;
+
+	return (notify);
+}
+
+static void
+vionet_handle_ctrl(struct virtio_dev *dev)
+{
+	struct vionet_dev *vionet = &dev->vionet;
+	uint32_t generation;
+	int ret;
+
+	pthread_rwlock_wrlock(&lock);
+	generation = vionet->reset_generation;
+	ret = vionet_ctrl(dev);
+	if (ret != 0 && generation == vionet->reset_generation) {
+		if (ret == 1)
+			dev->isr |= 1;
+		else {
+			log_warnx("%s: requesting device reset", __func__);
+			dev->status |= DEVICE_NEEDS_RESET;
+			dev->isr |= VIRTIO_CONFIG_ISR_CONFIG_CHANGE;
+		}
+	}
+	pthread_rwlock_unlock(&lock);
+
+	if (ret == 1)
+		vionet_assert_irq(dev, vionet_ctrlq(dev));
+	else if (ret == -1)
+		vionet_assert_irq(dev, VIODEV_QUEUE_CONFIG);
+}
+
+static int
+vionet_tx(struct vionet_tx_worker *worker)
+{
+	struct virtio_dev *dev = worker->dev;
 	uint16_t idx, hdr_idx;
 	size_t chain_len, iov_cnt;
 	ssize_t dhcpsz = 0, sz;
@@ -790,7 +1005,7 @@ vionet_tx(struct virtio_dev *dev)
 		return (0);
 	}
 
-	vq_info = &dev->vq[TXQ];
+	vq_info = &dev->vq[worker->vq_idx];
 	idx = vq_info->last_avail;
 	vr = vq_info->q_hva;
 	if (vr == NULL)
@@ -809,7 +1024,7 @@ vionet_tx(struct virtio_dev *dev)
 			goto reset;
 		}
 
-		iov = &iov_tx[0];
+		iov = &worker->iov[0];
 		iov_cnt = 0;
 		chain_len = 0;
 
@@ -847,7 +1062,7 @@ vionet_tx(struct virtio_dev *dev)
 			}
 
 			/* Collect our IO information, translating gpa's. */
-			iov = &iov_tx[iov_cnt];
+			iov = &worker->iov[iov_cnt];
 			iov->iov_len = desc->len;
 			iov->iov_base = hvaddr_mem(desc->addr, iov->iov_len);
 			if (iov->iov_base == NULL)
@@ -855,7 +1070,7 @@ vionet_tx(struct virtio_dev *dev)
 			chain_len += iov->iov_len;
 
 			/* Guard against infinitely looping chains. */
-			if (++iov_cnt >= nitems(iov_tx)) {
+			if (++iov_cnt >= nitems(worker->iov)) {
 				log_warnx("%s: infinite chain detected",
 				    __func__);
 				goto reset;
@@ -875,7 +1090,7 @@ vionet_tx(struct virtio_dev *dev)
 		 * descriptor with packet data contains a large enough buffer
 		 * for this inspection.
 		 */
-		iov = &iov_tx[0];
+		iov = &worker->iov[0];
 		if (vionet->lockedmac) {
 			if (iov->iov_len < ETHER_HDR_LEN) {
 				log_warnx("%s: insufficient header data",
@@ -902,7 +1117,7 @@ vionet_tx(struct virtio_dev *dev)
 		}
 
 		/* Write our packet to the tap(4). */
-		sz = writev(vionet->data_fd, iov_tx, iov_cnt);
+		sz = writev(vionet->data_fd, worker->iov, iov_cnt);
 		if (sz == -1 && errno != ENOBUFS) {
 			log_warn("%s", __func__);
 			goto reset;
@@ -946,12 +1161,20 @@ drop:
 	if (stats_enabled) {
 		vionet_stats_add(&vionet_stats.tx_packets, stats_packets);
 		vionet_stats_add(&vionet_stats.tx_bytes, stats_bytes);
+		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_packets,
+		    stats_packets);
+		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_bytes,
+		    stats_bytes);
 	}
 	return (notify);
 reset:
 	if (stats_enabled) {
 		vionet_stats_add(&vionet_stats.tx_packets, stats_packets);
 		vionet_stats_add(&vionet_stats.tx_bytes, stats_bytes);
+		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_packets,
+		    stats_packets);
+		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_bytes,
+		    stats_bytes);
 	}
 	return (-1);
 }
@@ -1196,6 +1419,7 @@ vionet_cfg_write(struct virtio_dev *dev, struct viodev_msg *msg)
 	struct vionet_dev *vionet = (struct vionet_dev *)&dev->vionet;
 	uint32_t data = msg->data;
 	uint16_t reg = msg->reg & 0xFF;
+	unsigned int i;
 	uint8_t sz = msg->io_sz;
 	int pausing = 0;
 
@@ -1278,11 +1502,12 @@ vionet_cfg_write(struct virtio_dev *dev, struct viodev_msg *msg)
 			/* Reset device and virtqueues. */
 			dev->driver_feature = 0;
 			dev->isr = 0;
+			vionet->active_queue_pairs = 1;
 			pci_cfg->config_msix_vector = VIRTIO_MSI_NO_VECTOR;
 			pci_cfg->queue_select = 0;	/* Technically RXQ. */
 			virtio_update_qs(dev);
-			virtio_vq_init(dev, RXQ);
-			virtio_vq_init(dev, TXQ);
+			for (i = 0; i < dev->num_queues; i++)
+				virtio_vq_init(dev, i);
 		}
 		DPRINTF("%s: dev %u status [%s%s%s%s%s%s]", __func__,
 		    dev->pci_id,
@@ -1407,7 +1632,8 @@ vionet_cfg_write(struct virtio_dev *dev, struct viodev_msg *msg)
 		rx_enabled = 0;
 		vionet_deassert_pic_irq(dev);
 		vm_pipe_send(&pipe_rx, VIRTIO_THREAD_PAUSE);
-		vm_pipe_send(&pipe_tx, VIRTIO_THREAD_PAUSE);
+		for (i = 0; i < VIONET_QUEUE_PAIRS; i++)
+			vm_pipe_send(&tx_workers[i].pipe, VIRTIO_THREAD_PAUSE);
 	}
 }
 
@@ -1481,6 +1707,9 @@ vionet_dev_read(struct virtio_dev *dev, struct viodev_msg *msg)
 	case VIRTIO_NET_CONFIG_MAC + 5:
 		data = (uint8_t)vionet->mac[reg - VIRTIO_NET_CONFIG_MAC];
 		break;
+	case VIRTIO_NET_CONFIG_MAX_QUEUES:
+		data = VIONET_QUEUE_PAIRS;
+		break;
 	default:
 		log_warnx("%s: invalid register 0x%04x", __func__, reg);
 	}
@@ -1532,21 +1761,23 @@ rx_run_loop(void *arg)
 static void *
 tx_run_loop(void *arg)
 {
+	struct vionet_tx_worker *worker = arg;
 	int			 ret;
 
-	ev_base_tx = event_base_new();
+	worker->event_base = event_base_new();
 
 	/* Wire up event handling for our inter-thread communication channel. */
-	event_base_set(ev_base_tx, &pipe_tx.read_ev);
-	event_add(&pipe_tx.read_ev, NULL);
+	event_base_set(worker->event_base, &worker->pipe.read_ev);
+	event_add(&worker->pipe.read_ev, NULL);
 
 	/* Begin our event loop with our channel event active. */
-	ret = event_base_dispatch(ev_base_tx);
-	event_base_free(ev_base_tx);
+	ret = event_base_dispatch(worker->event_base);
+	event_base_free(worker->event_base);
+	worker->event_base = NULL;
 
-	log_debug("%s: exiting (%d)", __func__, ret);
+	log_debug("%s: tx%u exiting (%d)", __func__, worker->pair, ret);
 
-	close_fd(pipe_tx.read);
+	close_fd(worker->pipe.read);
 
 	return (NULL);
 }
@@ -1590,7 +1821,8 @@ read_pipe_rx(int fd, short event, void *arg)
 static void
 read_pipe_tx(int fd, short event, void *arg)
 {
-	struct virtio_dev	*dev = (struct virtio_dev*)arg;
+	struct vionet_tx_worker	*worker = arg;
+	struct virtio_dev	*dev = worker->dev;
 	struct vionet_dev	*vionet = (struct vionet_dev*)&dev->vionet;
 	enum pipe_msg_type	 msg;
 	int			 raise_irq = 0, ret = 0;
@@ -1599,13 +1831,13 @@ read_pipe_tx(int fd, short event, void *arg)
 	if (!(event & EV_READ))
 		fatalx("%s: invalid event type", __func__);
 
-	msg = vm_pipe_recv(&pipe_tx);
+	msg = vm_pipe_recv(&worker->pipe);
 
 	switch (msg) {
 	case VIRTIO_NOTIFY:
 		pthread_rwlock_rdlock(&lock);
 		generation = vionet->reset_generation;
-		ret = vionet_tx(dev);
+		ret = vionet_tx(worker);
 		pthread_rwlock_unlock(&lock);
 		break;
 	case VIRTIO_THREAD_START:
@@ -1615,7 +1847,7 @@ read_pipe_tx(int fd, short event, void *arg)
 		/* Nothing to do when pausing on the tx side. */
 		break;
 	case VIRTIO_THREAD_STOP:
-		event_base_loopexit(ev_base_tx, NULL);
+		event_base_loopexit(worker->event_base, NULL);
 		break;
 	default:
 		fatalx("%s: invalid channel message: %d", __func__, msg);
@@ -1642,8 +1874,9 @@ read_pipe_tx(int fd, short event, void *arg)
 	pthread_rwlock_unlock(&lock);
 
 	if (raise_irq)
-		vm_pipe_send(&pipe_main, ret == 1 ? VIRTIO_RAISE_IRQ_TX :
-		    VIRTIO_RAISE_IRQ_CONFIG);
+		vm_pipe_send(&pipe_main, ret == 1 ?
+		    (worker->pair == 0 ? VIRTIO_RAISE_IRQ_TX :
+		    VIRTIO_RAISE_IRQ_TX1) : VIRTIO_RAISE_IRQ_CONFIG);
 }
 
 /*
@@ -1666,6 +1899,9 @@ read_pipe_main(int fd, short event, void *arg)
 	case VIRTIO_RAISE_IRQ_TX:
 		vionet_assert_irq(dev, TXQ);
 		break;
+	case VIRTIO_RAISE_IRQ_TX1:
+		vionet_assert_irq(dev, VIONET_TXQ(1));
+		break;
 	case VIRTIO_RAISE_IRQ_CONFIG:
 		vionet_assert_irq(dev, VIODEV_QUEUE_CONFIG);
 		break;
@@ -1682,14 +1918,22 @@ static void
 vionet_assert_irq(struct virtio_dev *dev, uint16_t vq_idx)
 {
 	struct viodev_msg	msg;
+	unsigned int		pair;
 	int			ret;
 
 	memset(&msg, 0, sizeof(msg));
-	if (vq_idx == RXQ)
-		vionet_stats_add(&vionet_stats.rx_irqs, 1);
-	else if (vq_idx == TXQ)
-		vionet_stats_add(&vionet_stats.tx_irqs, 1);
-	else if (vq_idx == VIODEV_QUEUE_CONFIG)
+	if (vq_idx == vionet_ctrlq(dev))
+		vionet_stats_add(&vionet_stats.ctrl_irqs, 1);
+	else if (vq_idx < VIONET_CTRLQ_MQ) {
+		pair = vq_idx / 2;
+		if ((vq_idx & 1) == 0) {
+			vionet_stats_add(&vionet_stats.rx_irqs, 1);
+			vionet_stats_add(&vionet_stats.queue[pair].rx_irqs, 1);
+		} else {
+			vionet_stats_add(&vionet_stats.tx_irqs, 1);
+			vionet_stats_add(&vionet_stats.queue[pair].tx_irqs, 1);
+		}
+	} else if (vq_idx == VIODEV_QUEUE_CONFIG)
 		vionet_stats_add(&vionet_stats.config_irqs, 1);
 	msg.irq = dev->irq;
 	msg.vcpu = 0; /* XXX: smp */
