@@ -542,7 +542,7 @@ This points at serialized userspace device processing and the single virtio-net
 queue rather than residual IPI/HLT exits.  Pause/unpause is intentionally
 deferred; forced termination remains an optional lifecycle check.
 
-### Virtual CPU topology for interrupt affinity (two-vCPU runtime validated)
+### Virtual CPU topology for interrupt affinity (1/2/3/4/8-vCPU validated)
 
 Virtual CPUID now reports one package with one single-threaded core per vCPU.
 OpenBSD/amd64 currently derives Intel topology from legacy leaves 1 and 4 and
@@ -556,12 +556,13 @@ This is a prerequisite for OpenBSD virtio-net multiqueue: `intrmap` excludes
 CPUs with a nonzero SMT ID, so the former Intel cache-topology result reduced
 an SMP guest to one usable interrupt CPU.  AMD no longer presents every vCPU
 as core zero in a separate package.  A full `GENERIC.MP` kernel build passes.
-With the kernel installed, a two-vCPU OpenBSD guest reports `smt 0`, core IDs
-0 and 1, and `package 0` for both CPUs.  It boots, permits login and shuts down
-cleanly.  Runtime validation at four, eight and one non-power-of-two vCPU
-count remains pending.
+With the kernel installed, OpenBSD guests at one, two, three, four and eight
+vCPUs boot, permit login, exchange network traffic and shut down cleanly.
+Every CPU reports `smt 0`, a unique core ID equal to its vCPU ID, and
+`package 0`.  The three-vCPU run specifically validates the non-power-of-two
+APIC-ID-width case.
 
-### Two-queue virtio-net TX path (basic two-vCPU runtime validated)
+### Two-queue virtio-net TX path (runtime and performance validated)
 
 Virtio-net now advertises `VIRTIO_NET_F_CTRL_VQ` and `VIRTIO_NET_F_MQ`, two
 queue pairs, and the standard `max_virtqueue_pairs` device-config field.  The
@@ -579,21 +580,46 @@ this milestone.  Five-second verbose statistics now split kicks, interrupts,
 packets and bytes by queue pair and include the control queue.
 
 A fresh vmd build and the complete `regress/usr.sbin/vmd` suite pass.  With
-the topology kernel and vmd installed, a two-vCPU OpenBSD guest boots, permits
-login, exchanges ping traffic and shuts down cleanly.  `vmstat -zi` exposes
-four MSI-X handlers: `vio0:0` configuration, `vio0:1` control, and
-`vio0:2`/`:3` for queue pairs 0/1.  The control vector received two interrupts
-and pair 0 received traffic interrupts, confirming MQ control and queue-vector
-setup.  The light ping test did not exercise pair 1.
+the topology kernel and vmd installed, OpenBSD guests at one, two, three, four
+and eight vCPUs boot, permit login, exchange ping traffic and shut down
+cleanly.  SMP guests report two queues.  `vmstat -zi` exposes four MSI-X
+handlers: `vio0:0` configuration, `vio0:1` control, and `vio0:2`/`:3` for
+queue pairs 0/1.  Under eight-vCPU parallel TX, the two pair handlers reached
+42,106 and 22,517 interrupts respectively.  More importantly, vmd's packet
+counters show both TX workers carrying comparable packet and byte loads while
+RX remains exclusively on q0, exactly matching the intended TX-only design.
 
-Parallel guest-to-host traffic should make both `net-dev-q0` and
-`net-dev-q1` report TX packets, while RX packets should remain on q0.  Guest
-`vio0:3` may also increment, but TX completion interrupts can remain suppressed
-unless the ring needs them, so the vmd per-queue packet counters are the
-definitive check.  Also boot a one-vCPU guest to exercise the
-non-MQ queue-2 control layout, then repeat the established one- and
-four-stream iperf3 matrix at two, four and eight vCPUs.  TSO is deliberately
-deferred until the external vionet TSO diff is available.
+The one-vCPU guest reports one queue, passes network traffic and shuts down
+cleanly.  This confirms that declining MQ leaves the data queues usable with
+the alternate queue-2 control layout.  No control command is expected in that
+configuration, so the queue-2 control handler itself was not directly driven.
+
+Two 12-second runs per cell in the two-vCPU directional matrix produced:
+
+| Direction / streams | pre-MQ x2AVIC mean | MQ range (mean) | change |
+|---------------------|--------------------:|----------------:|-------:|
+| guest -> host, 1 | 1.14 Gbit/s | 1.13-1.37 (1.25) Gbit/s | +10% |
+| guest -> host, 4 | 1.25 Gbit/s | 2.33-2.34 (2.34) Gbit/s | +87% |
+| host -> guest, 1 | 1.55 Gbit/s | 1.66-1.77 (1.72) Gbit/s | +11% |
+| host -> guest, 4 | 1.95 Gbit/s | 1.80-2.01 (1.91) Gbit/s | -2% |
+
+The strong gain is confined to parallel guest TX, where the two independent
+workers can do useful work.  Host-to-guest traffic remains effectively flat,
+as expected from the deliberately single tap reader and q0-only RX path.
+
+The established four-stream guest-to-host scaling test was also repeated:
+
+| vCPUs | single-queue mean | MQ runs | MQ mean | mean change |
+|------:|------------------:|--------:|--------:|------------:|
+| 2 | 1.21 Gbit/s | 2.34, 2.33 Gbit/s | 2.34 Gbit/s | +93% |
+| 4 | 1.05 Gbit/s | 1.09, 2.26, 2.22 Gbit/s | 1.86 Gbit/s | +77% |
+| 8 | 1.18 Gbit/s | 2.19, 2.19 Gbit/s | 2.19 Gbit/s | +86% |
+
+The first four-vCPU run was an isolated low outlier; the following two runs
+were stable at a 2.24 Gbit/s mean.  It is retained in the table rather than
+discarded.  Even including it, all tested SMP sizes improve materially over
+the matched single-queue baseline.  TSO remains deliberately deferred until
+the external vionet TSO diff is available.
 
 ## Known remaining gaps
 
@@ -655,9 +681,9 @@ does not implement IOMMU-posted interrupts.
 - PM1A S5 poweroff is implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
 - Virtio-net exposes two queue pairs with independent TX workers and MSI-X
-  queue affinity.  Basic two-vCPU boot, ping and shutdown are validated, but
-  parallel TX use and performance are not; RX deliberately remains on queue 0
-  behind one tap reader.
+  queue affinity.  Runtime testing at one, two, three, four and eight vCPUs
+  validates topology, the one-pair fallback, both TX workers and clean
+  shutdown.  RX deliberately remains on queue 0 behind one tap reader.
 
 ## Next steps after testing
 
@@ -675,12 +701,9 @@ does not implement IOMMU-posted interrupts.
    HLT userspace exits to zero.  Pause/unpause is deferred for now.
 5. Runtime-test the legacy AMD AVIC prototype on a bit-13-capable host and
    repeat the instrumented network matrix.
-6. Runtime-test the two-pair virtio-net TX path and MSI-X queue affinity, then
-   repeat the same single- and four-stream matrix.  Confirm a one-vCPU guest
-   still uses the non-MQ queue layout correctly.
-7. Graft and validate vionet TSO after the external diff is available; keep
+6. Graft and validate vionet TSO after the external diff is available; keep
    host tap RX and generic tap-layer scaling outside this effort.
-8. Add active ACPI PM1 event sources and SCI delivery as they become needed.
-9. Add LAPIC/IOAPIC lowest-priority delivery.
-10. Extend MSI routing only when a guest needs logical/x2APIC delivery or
+7. Add active ACPI PM1 event sources and SCI delivery as they become needed.
+8. Add LAPIC/IOAPIC lowest-priority delivery.
+9. Extend MSI routing only when a guest needs logical/x2APIC delivery or
    interrupt remapping.

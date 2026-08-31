@@ -37,17 +37,20 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
   queue has its own worker and MSI-X queue vector; RX intentionally remains
   on queue 0 behind the single tap reader.  The control queue supports the
   standard queue-pair command and retains the queue-2 layout when MQ is not
-  negotiated.  A fresh vmd build and the vmd regression suite pass.  A
-  two-vCPU guest boots, pings and shuts down cleanly with distinct control and
-  two queue-pair MSI-X handlers; parallel use of TX pair 1 and performance
-  validation remain pending.
+  negotiated.  A fresh vmd build and the vmd regression suite pass.  Runtime
+  tests at one, two, three, four and eight vCPUs validate the one-pair
+  fallback, both TX workers, MSI-X queue affinity, networking and clean
+  shutdown.  Parallel two-vCPU guest TX improves from 1.25 to 2.34 Gbit/s;
+  parallel RX remains flat, as expected from the single tap reader.
 - Virtual CPUID topology now describes one package containing one single-
   threaded core per configured vCPU.  The legacy Intel leaf 1/4 view, modern
   leaves 0x0b/0x1f and AMD leaves 0x80000008/0x8000001e use the same APIC-ID
   width, including non-power-of-two vCPU counts.  This prevents OpenBSD's
   interrupt mapper from discarding virtual CPUs as SMT siblings before
-  virtio-net multiqueue negotiation.  The kernel builds; guest runtime
-  validation is pending installation of the matching kernel.
+  virtio-net multiqueue negotiation.  The kernel builds, and guests at one,
+  two, three, four and eight vCPUs report one package containing distinct
+  single-threaded cores.  The three-vCPU case validates non-power-of-two
+  topology decoding.
 - An initial AMD xAPIC AVIC implementation is build-tested.  It accelerates
   fixed edge IPIs plus LAPIC timer, IOAPIC and MSI/MSI-X vector delivery,
   while retaining userspace assistance for INIT/SIPI, LAPIC timer
@@ -85,16 +88,28 @@ eight-vCPU, four-stream interval produces roughly 147,000 fixed ICR writes
 and 495,000 LAPIC MMIO writes in five seconds.  A stats-disabled control run
 matches the instrumented throughput.
 
+## Two-pair TX measurements (2026-08-31)
+
+The TX-only multiqueue experiment does remove the previous virtio-net
+bottleneck for parallel guest transmission.  In the full two-vCPU matrix,
+four-stream guest-to-host throughput rose from 1.25 to 2.34 Gbit/s (+87%).
+Single-stream guest TX rose from 1.14 to 1.25 Gbit/s, while one- and
+four-stream host-to-guest results remained effectively flat at 1.72 and 1.91
+Gbit/s.  This direction split is consistent with the implementation: there
+are two TX workers, but still only one tap reader feeding RX queue 0.
+
+Against the matched pre-MQ four-stream scaling means of 1.21, 1.05 and 1.18
+Gbit/s, the new two-pair means were 2.34, 1.86 and 2.19 Gbit/s at two, four and
+eight vCPUs.  The four-vCPU mean conservatively includes a 1.09 Gbit/s
+outlier; its following two runs were 2.26 and 2.22 Gbit/s.  vmd counters show
+comparable traffic on both TX workers, and the eight-vCPU guest recorded
+42,106 and 22,517 interrupts on the two queue-pair MSI-X handlers.
+
 Before implementing the broader items below, prioritize:
 
-1. extend the successful two-vCPU topology test to four, eight and a
-   non-power-of-two vCPU count;
-2. drive parallel guest TX through queue pair 1, validate the one-vCPU non-MQ
-   queue layout, then repeat the identical iperf3 scaling matrix to separate
-   APIC savings from useful TX queue parallelism;
-3. graft and measure vionet TSO after the external diff is available, without
+1. graft and measure vionet TSO after the external diff is available, without
    expanding this work into generic tap-layer receive scaling; and
-4. retain legacy AMD AVIC validation and Intel APICv feasibility work as
+2. retain legacy AMD AVIC validation and Intel APICv feasibility work as
    hardware-specific follow-ups.
 
 x2APIC alone changes MMIO register access into intercepted MSR access; without
