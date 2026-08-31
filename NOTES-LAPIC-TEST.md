@@ -542,7 +542,7 @@ This points at serialized userspace device processing and the single virtio-net
 queue rather than residual IPI/HLT exits.  Pause/unpause is intentionally
 deferred; forced termination remains an optional lifecycle check.
 
-### Virtual CPU topology for interrupt affinity (build validated)
+### Virtual CPU topology for interrupt affinity (two-vCPU runtime validated)
 
 Virtual CPUID now reports one package with one single-threaded core per vCPU.
 OpenBSD/amd64 currently derives Intel topology from legacy leaves 1 and 4 and
@@ -556,11 +556,12 @@ This is a prerequisite for OpenBSD virtio-net multiqueue: `intrmap` excludes
 CPUs with a nonzero SMT ID, so the former Intel cache-topology result reduced
 an SMP guest to one usable interrupt CPU.  AMD no longer presents every vCPU
 as core zero in a separate package.  A full `GENERIC.MP` kernel build passes.
-After installing the kernel, guest dmesg should report `smt 0`, a unique core
-ID and `package 0` for every vCPU.  Runtime validation at two, four, eight and
-one non-power-of-two vCPU count remains pending.
+With the kernel installed, a two-vCPU OpenBSD guest reports `smt 0`, core IDs
+0 and 1, and `package 0` for both CPUs.  It boots, permits login and shuts down
+cleanly.  Runtime validation at four, eight and one non-power-of-two vCPU
+count remains pending.
 
-### Two-queue virtio-net TX path (build validated)
+### Two-queue virtio-net TX path (basic two-vCPU runtime validated)
 
 Virtio-net now advertises `VIRTIO_NET_F_CTRL_VQ` and `VIRTIO_NET_F_MQ`, two
 queue pairs, and the standard `max_virtqueue_pairs` device-config field.  The
@@ -577,10 +578,16 @@ queue 1 notifications are left idle.  No tap(4) interface changes are part of
 this milestone.  Five-second verbose statistics now split kicks, interrupts,
 packets and bytes by queue pair and include the control queue.
 
-A fresh vmd build and the complete `regress/usr.sbin/vmd` suite pass.  Runtime
-validation requires both the topology kernel above and this vmd.  An SMP
-OpenBSD guest should report `vio0: 2 queues`; under parallel guest-to-host
-traffic both `net-dev-q0` and `net-dev-q1` should report TX packets, while RX
+A fresh vmd build and the complete `regress/usr.sbin/vmd` suite pass.  With
+the topology kernel and vmd installed, a two-vCPU OpenBSD guest boots, permits
+login, exchanges ping traffic and shuts down cleanly.  `vmstat -zi` exposes
+four MSI-X handlers: `vio0:0` configuration, `vio0:1` control, and
+`vio0:2`/`:3` for queue pairs 0/1.  The control vector received two interrupts
+and pair 0 received traffic interrupts, confirming MQ control and queue-vector
+setup.  The light ping test did not exercise pair 1.
+
+Parallel guest-to-host traffic should make both `net-dev-q0` and
+`net-dev-q1` report TX packets and should increment guest `vio0:3`, while RX
 packets should remain on q0.  Also boot a one-vCPU guest to exercise the
 non-MQ queue-2 control layout, then repeat the established one- and
 four-stream iperf3 matrix at two, four and eight vCPUs.  TSO is deliberately
@@ -646,8 +653,9 @@ does not implement IOMMU-posted interrupts.
 - PM1A S5 poweroff is implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
 - Virtio-net exposes two queue pairs with independent TX workers and MSI-X
-  queue affinity, but the implementation is not runtime-validated yet and RX
-  deliberately remains on queue 0 behind one tap reader.
+  queue affinity.  Basic two-vCPU boot, ping and shutdown are validated, but
+  parallel TX use and performance are not; RX deliberately remains on queue 0
+  behind one tap reader.
 
 ## Next steps after testing
 
