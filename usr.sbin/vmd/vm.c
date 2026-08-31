@@ -24,6 +24,8 @@
 
 #include <dev/vmm/vmm.h>
 
+#include <machine/i82489reg.h>
+
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
@@ -98,6 +100,11 @@ enum vm_stat_counter {
 	VMSTAT_EXIT_MMIO,
 	VMSTAT_EXIT_INTRWIN,
 	VMSTAT_EXIT_AVIC,
+	VMSTAT_EXIT_AVIC_IPI_NOTRUN,
+	VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE,
+	VMSTAT_EXIT_AVIC_IPI_OTHER,
+	VMSTAT_EXIT_AVIC_EOI,
+	VMSTAT_EXIT_AVIC_NOACCEL_OTHER,
 	VMSTAT_EXIT_X2APIC,
 	VMSTAT_EXIT_HLT,
 	VMSTAT_EXIT_OTHER,
@@ -122,8 +129,12 @@ vm_stats_inc(uint32_t vcpu_id, enum vm_stat_counter counter)
 }
 
 static void
-vm_stats_count_exit(uint32_t vcpu_id, uint16_t reason)
+vm_stats_count_exit(struct vm_run_params *vrp)
 {
+	struct vm_exit_avic *vea = &vrp->vrp_exit->vea;
+	uint32_t vcpu_id = vrp->vrp_vcpu_id;
+	uint16_t reason = vrp->vrp_exit_reason;
+
 	vm_stats_inc(vcpu_id, VMSTAT_RUN);
 	if (reason == VM_EXIT_NONE)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_NONE);
@@ -133,10 +144,27 @@ vm_stats_count_exit(uint32_t vcpu_id, uint16_t reason)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_MMIO);
 	else if (reason == VMX_EXIT_INT_WINDOW || reason == SVM_VMEXIT_VINTR)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_INTRWIN);
-	else if (reason == SVM_AVIC_INCOMPLETE_IPI ||
-	    reason == SVM_AVIC_NOACCEL)
+	else if (reason == SVM_AVIC_INCOMPLETE_IPI) {
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC);
-	else if (reason == VM_EXIT_X2APIC)
+		switch (vea->vea_ipi_failure) {
+		case I82489DX_AVIC_IPI_TARGET_NOT_RUNNING:
+			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_IPI_NOTRUN);
+			break;
+		case I82489DX_AVIC_IPI_INVALID_TYPE:
+			vm_stats_inc(vcpu_id,
+			    VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE);
+			break;
+		default:
+			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_IPI_OTHER);
+			break;
+		}
+	} else if (reason == SVM_AVIC_NOACCEL) {
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC);
+		if (vea->vea_offset == LAPIC_EOI)
+			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_EOI);
+		else
+			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_NOACCEL_OTHER);
+	} else if (reason == VM_EXIT_X2APIC)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_X2APIC);
 	else if (reason == VMX_EXIT_HLT || reason == SVM_VMEXIT_HLT)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_HLT);
@@ -191,6 +219,19 @@ vm_stats_report(int fd, short event, void *arg)
 			    (unsigned long long)delta[VMSTAT_INJECT],
 			    (unsigned long long)delta[VMSTAT_INTR_ASSERT],
 			    (unsigned long long)delta[VMSTAT_INTR_DEASSERT]);
+			log_info("stats %ds vcpu%zu-avic: "
+			    "ipi-not-running=%llu ipi-invalid-type=%llu "
+			    "ipi-other=%llu eoi=%llu noaccel-other=%llu",
+			    VM_STATS_INTERVAL, i,
+			    (unsigned long long)
+			    delta[VMSTAT_EXIT_AVIC_IPI_NOTRUN],
+			    (unsigned long long)
+			    delta[VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE],
+			    (unsigned long long)
+			    delta[VMSTAT_EXIT_AVIC_IPI_OTHER],
+			    (unsigned long long)delta[VMSTAT_EXIT_AVIC_EOI],
+			    (unsigned long long)
+			    delta[VMSTAT_EXIT_AVIC_NOACCEL_OTHER]);
 		}
 	}
 
@@ -1226,7 +1267,7 @@ vcpu_run_loop(void *arg)
 			    __func__, current_vm->vm_vmid, n);
 			break;
 		}
-		vm_stats_count_exit(n, vrp->vrp_exit_reason);
+		vm_stats_count_exit(vrp);
 
 		/* INIT supersedes any ordinary exit which raced with its kick. */
 		mutex_lock(&vcpu_run_mtx[n]);
