@@ -587,8 +587,10 @@ and pair 0 received traffic interrupts, confirming MQ control and queue-vector
 setup.  The light ping test did not exercise pair 1.
 
 Parallel guest-to-host traffic should make both `net-dev-q0` and
-`net-dev-q1` report TX packets and should increment guest `vio0:3`, while RX
-packets should remain on q0.  Also boot a one-vCPU guest to exercise the
+`net-dev-q1` report TX packets, while RX packets should remain on q0.  Guest
+`vio0:3` may also increment, but TX completion interrupts can remain suppressed
+unless the ring needs them, so the vmd per-queue packet counters are the
+definitive check.  Also boot a one-vCPU guest to exercise the
 non-MQ queue-2 control layout, then repeat the established one- and
 four-stream iperf3 matrix at two, four and eight vCPUs.  TSO is deliberately
 deferred until the external vionet TSO diff is available.
