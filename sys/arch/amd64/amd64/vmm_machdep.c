@@ -162,6 +162,13 @@ static int svm_avic_handle_exit(struct vcpu *);
 static void svm_avic_vcpu_load(struct vcpu *, struct cpu_info *);
 static void svm_avic_vcpu_put(struct vcpu *);
 static int svm_avic_inject(struct vcpu *, uint8_t, int);
+static int svm_avic_hlt_wakeup(struct vcpu *, int);
+static int svm_avic_hlt_consume_kick(struct vcpu *);
+static int svm_avic_hlt_is_blocked(struct vcpu *);
+static int svm_avic_has_pending(struct vcpu *);
+static void svm_avic_hlt_prepare(struct vcpu *);
+static int svm_avic_hlt_wait(struct vcpu *);
+static int svm_x2avic_wake_ipi_targets(struct vcpu *, uint64_t, uint8_t);
 static void svm_avic_set_mode(struct vcpu *, uint8_t);
 static void svm_avic_export_state(struct vcpu *, uint32_t *);
 static void svm_avic_import_state(struct vcpu *, const uint32_t *, uint8_t,
@@ -542,6 +549,10 @@ vm_intr_pending(struct vm_intr_params *vip)
 		    vip->vip_level != 0);
 		goto out;
 	}
+	if (vip->vip_type == VMM_INTR_KICK) {
+		vmm_vcpu_kick(vcpu);
+		goto out;
+	}
 	if (vip->vip_type != VMM_INTR_PENDING) {
 		ret = EINVAL;
 		goto out;
@@ -556,8 +567,10 @@ vm_intr_pending(struct vm_intr_params *vip)
 	 * the target consumes them at run entry.  Deassertions are reconciled
 	 * by the next VMM_IOC_RUN; an extra interrupt-window exit is harmless.
 	 */
-	if (vip->vip_intr)
+	if (vip->vip_intr) {
 		atomic_setbits_int(&vcpu->vc_intr_latch, 1);
+		(void)svm_avic_hlt_wakeup(vcpu, 1);
+	}
 #ifdef MULTIPROCESSOR
 	ci = READ_ONCE(vcpu->vc_curcpu);
 	if (ci != NULL)
@@ -567,6 +580,21 @@ vm_intr_pending(struct vm_intr_params *vip)
 out:
 	refcnt_rele_wake(&vm->vm_refcnt);
 	return (ret);
+}
+
+void
+vmm_vcpu_kick(struct vcpu *vcpu)
+{
+#ifdef MULTIPROCESSOR
+	struct cpu_info *ci;
+#endif
+
+	(void)svm_avic_hlt_wakeup(vcpu, 1);
+#ifdef MULTIPROCESSOR
+	ci = READ_ONCE(vcpu->vc_curcpu);
+	if (ci != NULL)
+		x86_send_ipi(ci, X86_IPI_NOP);
+#endif
 }
 
 /*
@@ -2935,6 +2963,11 @@ vcpu_reset_regs(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 		vcpu->vc_intr = 0;
 		atomic_swap_uint(&vcpu->vc_intr_latch, 0);
 		vcpu->vc_irqready = 0;
+		mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
+		vcpu->vc_svm_avic_hlt_event = 0;
+		vcpu->vc_svm_avic_hlt_kick = 0;
+		vcpu->vc_svm_avic_hlt_blocked = 0;
+		mtx_leave(&vcpu->vc_svm_avic_hlt_mtx);
 	}
 
 	return (ret);
@@ -3165,6 +3198,209 @@ svm_avic_vcpu_put(struct vcpu *vcpu)
 		svm_avic_phys_update(vcpu, 0, SVM_AVIC_PHYS_RUNNING);
 }
 
+/*
+ * Wake an x2AVIC vCPU which is sleeping in the kernel after HLT.  Event
+ * wakeups leave the vCPU in VMM_IOC_RUN; kicks return it to vmd so that
+ * pause, INIT, and legacy interrupt state can be processed there.
+ */
+static int
+svm_avic_hlt_wakeup(struct vcpu *vcpu, int kick)
+{
+	int active = 0;
+
+	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
+	if (READ_ONCE(vcpu->vc_svm_avic_mode) == VMM_AVIC_X2APIC) {
+		if (kick)
+			vcpu->vc_svm_avic_hlt_kick = 1;
+		else
+			vcpu->vc_svm_avic_hlt_event = 1;
+		wakeup(&vcpu->vc_svm_avic_hlt_event);
+		active = 1;
+	}
+	mtx_leave(&vcpu->vc_svm_avic_hlt_mtx);
+
+	return (active);
+}
+
+static int
+svm_avic_hlt_consume_kick(struct vcpu *vcpu)
+{
+	int kick;
+
+	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
+	kick = vcpu->vc_svm_avic_hlt_kick;
+	vcpu->vc_svm_avic_hlt_kick = 0;
+	mtx_leave(&vcpu->vc_svm_avic_hlt_mtx);
+
+	return (kick);
+}
+
+static int
+svm_avic_hlt_is_blocked(struct vcpu *vcpu)
+{
+	int blocked;
+
+	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
+	blocked = vcpu->vc_svm_avic_hlt_blocked;
+	mtx_leave(&vcpu->vc_svm_avic_hlt_mtx);
+
+	return (blocked);
+}
+
+static int
+svm_avic_has_pending(struct vcpu *vcpu)
+{
+	uint32_t irr, ppr, svr;
+	int bit, i, vector;
+
+	svr = *svm_avic_reg(vcpu, LAPIC_SVR);
+	if ((svr & LAPIC_SVR_ENABLE) == 0)
+		return (0);
+	ppr = *svm_avic_reg(vcpu, LAPIC_PPRI) & LAPIC_TPRI_MASK;
+	for (i = 7; i >= 0; i--) {
+		irr = *svm_avic_reg(vcpu, LAPIC_IRR + (i << 4));
+		if (irr == 0)
+			continue;
+		for (bit = 31; bit >= 0; bit--)
+			if (irr & (1U << bit))
+				break;
+		vector = (i << 5) | bit;
+		return ((vector & 0xf0) > (ppr & 0xf0));
+	}
+
+	return (0);
+}
+
+/* Snapshot IRR immediately before VMRUN and retire stale wake state. */
+static void
+svm_avic_hlt_prepare(struct vcpu *vcpu)
+{
+	int i;
+
+	if (vcpu->vc_svm_avic_mode != VMM_AVIC_X2APIC)
+		return;
+
+	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
+	vcpu->vc_svm_avic_hlt_event = 0;
+	for (i = 0; i < nitems(vcpu->vc_svm_avic_hlt_irr); i++)
+		vcpu->vc_svm_avic_hlt_irr[i] =
+		    *svm_avic_reg(vcpu, LAPIC_IRR + (i << 4));
+	mtx_leave(&vcpu->vc_svm_avic_hlt_mtx);
+}
+
+/*
+ * Keep an interruptible HLT inside VMM_IOC_RUN while x2AVIC is active.
+ * Comparing IRR with the pre-VMRUN snapshot closes the race where hardware
+ * queued an IPI while IsRunning was being cleared and therefore generated no
+ * incomplete-IPI exit for another vCPU to handle.
+ */
+static int
+svm_avic_hlt_wait(struct vcpu *vcpu)
+{
+	int i, ret = 0;
+
+	if (vcpu->vc_svm_avic_mode != VMM_AVIC_X2APIC)
+		return (EAGAIN);
+
+	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
+	vcpu->vc_svm_avic_hlt_blocked = 1;
+	for (;;) {
+		if (vcpu->vc_svm_avic_hlt_kick || vcpu_must_stop(vcpu)) {
+			vcpu->vc_svm_avic_hlt_kick = 0;
+			vcpu->vc_svm_avic_hlt_event = 0;
+			break;
+		}
+		if (vcpu->vc_svm_avic_hlt_event) {
+			vcpu->vc_svm_avic_hlt_blocked = 0;
+			break;
+		}
+		if (svm_avic_has_pending(vcpu)) {
+			vcpu->vc_svm_avic_hlt_blocked = 0;
+			break;
+		}
+		for (i = 0; i < nitems(vcpu->vc_svm_avic_hlt_irr); i++) {
+			if (vcpu->vc_svm_avic_hlt_irr[i] !=
+			    *svm_avic_reg(vcpu, LAPIC_IRR + (i << 4)))
+				break;
+		}
+		if (i != nitems(vcpu->vc_svm_avic_hlt_irr)) {
+			vcpu->vc_svm_avic_hlt_blocked = 0;
+			break;
+		}
+
+		WRITE_ONCE(vcpu->vc_curcpu, NULL);
+		ret = msleep_nsec(&vcpu->vc_svm_avic_hlt_event,
+		    &vcpu->vc_svm_avic_hlt_mtx, PWAIT | PCATCH,
+		    "vmmhlt", INFSLP);
+		WRITE_ONCE(vcpu->vc_curcpu, curcpu());
+		if (ret != 0) {
+			/* Let vm_run() yield rather than terminate the vCPU. */
+			ret = 0;
+			break;
+		}
+	}
+	vcpu->vc_svm_avic_hlt_event = 0;
+	mtx_leave(&vcpu->vc_svm_avic_hlt_mtx);
+
+	return (ret);
+}
+
+static int
+svm_x2avic_ipi_target(struct vcpu *source, struct vcpu *target, uint64_t icr)
+{
+	uint32_t cluster, dest, logical, lo, shorthand;
+
+	lo = (uint32_t)icr;
+	shorthand = lo & LAPIC_DEST_MASK;
+	switch (shorthand) {
+	case LAPIC_DEST_SELF:
+		return (target == source);
+	case LAPIC_DEST_ALLINCL:
+		return (1);
+	case LAPIC_DEST_ALLEXCL:
+		return (target != source);
+	}
+
+	dest = icr >> 32;
+	if (lo & LAPIC_DSTMODE_LOG) {
+		cluster = dest >> 16;
+		logical = dest & 0xffff;
+		return ((target->vc_id >> 4) == cluster &&
+		    (logical & (1U << (target->vc_id & 0xf))) != 0);
+	}
+	if (dest == 0xffffffff)
+		return (1);
+	return (target->vc_id == dest);
+}
+
+/* Wake every x2APIC destination whose IRR was populated by hardware. */
+static int
+svm_x2avic_wake_ipi_targets(struct vcpu *source, uint64_t icr, uint8_t index)
+{
+	struct vcpu *target;
+	struct vm *vm = source->vc_parent;
+	uint32_t dest, lo;
+	int handled = 1, matched = 0;
+
+	lo = (uint32_t)icr;
+	dest = icr >> 32;
+	if ((lo & (LAPIC_DEST_MASK | LAPIC_DSTMODE_LOG)) == 0 &&
+	    dest != 0xffffffff && dest != index)
+		return (0);
+
+	rw_enter_read(&vm->vm_vcpu_lock);
+	SLIST_FOREACH(target, &vm->vm_vcpu_list, vc_vcpu_link) {
+		if (!svm_x2avic_ipi_target(source, target, icr))
+			continue;
+		matched = 1;
+		if (!svm_avic_hlt_wakeup(target, 0))
+			handled = 0;
+	}
+	rw_exit_read(&vm->vm_vcpu_lock);
+
+	return (matched && handled);
+}
+
 static int
 svm_avic_inject(struct vcpu *vcpu, uint8_t vector, int level)
 {
@@ -3198,6 +3434,8 @@ svm_avic_inject(struct vcpu *vcpu, uint8_t vector, int level)
 	    (entry & SVM_AVIC_PHYS_HOST_ID_MASK) != curcpu()->ci_apicid)
 		wrmsr(MSR_AMD_SVM_AVIC_DOORBELL,
 		    entry & SVM_AVIC_PHYS_HOST_ID_MASK);
+	else if ((entry & SVM_AVIC_PHYS_RUNNING) == 0)
+		(void)svm_avic_hlt_wakeup(vcpu, 0);
 
 	return (0);
 }
@@ -3417,6 +3655,10 @@ vcpu_init(struct vcpu *vcpu, struct vm_create_params *vcp)
 	vcpu->vc_last_pcpu = NULL;
 
 	rw_init(&vcpu->vc_lock, "vcpu");
+	mtx_init(&vcpu->vc_svm_avic_hlt_mtx, IPL_NONE);
+	vcpu->vc_svm_avic_hlt_event = 0;
+	vcpu->vc_svm_avic_hlt_kick = 0;
+	vcpu->vc_svm_avic_hlt_blocked = 0;
 
 	/* Shadow PAT MSR, starting with host's value. */
 	vcpu->vc_shadow_pat = rdmsr(MSR_CR_PAT);
@@ -4624,6 +4866,9 @@ svm_handle_hlt(struct vcpu *vcpu)
 		return (EIO);
 	}
 
+	if (vcpu->vc_svm_avic_mode == VMM_AVIC_X2APIC)
+		return (svm_avic_hlt_wait(vcpu));
+
 	return (EAGAIN);
 }
 
@@ -4746,6 +4991,12 @@ svm_avic_handle_exit(struct vcpu *vcpu)
 		vea->vea_ipi_failure = (uint8_t)(info2 >> 32);
 		vea->vea_x2apic =
 		    vcpu->vc_svm_avic_mode == VMM_AVIC_X2APIC;
+		if (vea->vea_x2apic &&
+		    vea->vea_ipi_failure ==
+		    SVM_AVIC_IPI_TARGET_NOT_RUNNING &&
+		    svm_x2avic_wake_ipi_targets(vcpu, info1,
+		    vea->vea_index))
+			return (0);
 		return (EAGAIN);
 	}
 
@@ -7493,7 +7744,7 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 int
 vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 {
-	int ret = 0;
+	int blocked, kicked = 0, ret = 0;
 	struct region_descriptor gdt;
 	struct cpu_info *ci = NULL;
 	uint64_t exit_reason;
@@ -7595,6 +7846,19 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 		break;
 	}
 	memset(&vcpu->vc_exit, 0, sizeof(vcpu->vc_exit));
+	/* A returned VMM_IOC_RUN acknowledges any earlier administrative kick. */
+	(void)svm_avic_hlt_consume_kick(vcpu);
+	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
+	if (vcpu->vc_svm_avic_hlt_blocked &&
+	    vcpu->vc_inject.vie_type != VCPU_INJECT_NONE)
+		vcpu->vc_svm_avic_hlt_blocked = 0;
+	blocked = vcpu->vc_svm_avic_hlt_blocked;
+	mtx_leave(&vcpu->vc_svm_avic_hlt_mtx);
+	if (blocked) {
+		ret = svm_avic_hlt_wait(vcpu);
+		if (ret != 0 || svm_avic_hlt_is_blocked(vcpu))
+			goto out;
+	}
 
 	while (ret == 0) {
 		vmm_update_pvclock(vcpu);
@@ -7690,6 +7954,9 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			vcpu->vc_inject.vie_type = VCPU_INJECT_NONE;
 		}
 
+		if (svm_avic_hlt_consume_kick(vcpu))
+			break;
+		svm_avic_hlt_prepare(vcpu);
 		TRACEPOINT(vmm, guest_enter, vcpu, vrp);
 
 		/* Start / resume the VCPU */
@@ -7763,6 +8030,8 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			 * the exit handler determines help from vmd is needed.
 			 */
 			ret = svm_handle_exit(vcpu);
+			kicked = ret == 0 && svm_avic_hlt_consume_kick(vcpu);
+			blocked = svm_avic_hlt_is_blocked(vcpu);
 
 			if (svm_get_iflag(vcpu, vcpu->vc_gueststate.vg_rflags))
 				vcpu->vc_irqready = 1;
@@ -7787,7 +8056,7 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			 * Exit to vmd if we are terminating, failed to enter,
 			 * or need help (device I/O)
 			 */
-			if (ret || vcpu_must_stop(vcpu))
+			if (ret || kicked || blocked || vcpu_must_stop(vcpu))
 				break;
 
 			if ((vcpu->vc_intr ||
@@ -7810,6 +8079,7 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 	 * way to enter the guest. Copy the guest registers to the exit struct
 	 * and return to vmd.
 	 */
+out:
 	if (vcpu_readregs_svm(vcpu, VM_RWREGS_ALL, &vcpu->vc_exit.vrs))
 		ret = EINVAL;
 

@@ -486,6 +486,41 @@ this noisy sample.  Virtio-net still exposes one queue pair, and x2AVIC does
 not eliminate userspace device processing or every interrupt-related exit.
 Four/eight-vCPU x2AVIC stress and network scaling remain to be measured.
 
+### x2AVIC HLT fast path (build-tested; host runtime pending)
+
+The aggregate `avic` statistic was split by hardware exit cause before moving
+another part of the LAPIC into the kernel.  In a representative five-second
+interval during a two-vCPU, four-stream guest-to-host TCP run, vCPU 0 reported
+32,699 AVIC exits and vCPU 1 reported 19,437.  All 52,136 were incomplete IPIs
+with `target not running`; EOI, invalid-type and other AVIC causes were zero.
+The same interval contained 60,182 HLT exits.  A 12-second diagnostic run
+reached 1.47 Gbit/s, but its purpose was to classify exits rather than establish
+a new performance baseline.
+
+The resulting fast path is deliberately limited to active x2AVIC vCPUs:
+
+- an interruptible guest HLT sleeps in vmm(4) without returning from
+  `VMM_IOC_RUN`;
+- a target-not-running incomplete IPI uses the full x2APIC ICR destination to
+  wake matching vCPUs after hardware has already queued their IRR bits, then
+  resumes the sender without vmd assistance;
+- direct LAPIC vectors wake the same kernel wait, while INIT/SIPI, unsupported
+  IPI types, LAPIC timer programming and other uncommon exits still use vmd;
+- a pre-VMRUN IRR snapshot plus a deliverable-IRR/PPR check covers the
+  IsRunning-to-HLT transition without re-queuing hardware vectors; and
+- explicit kicks preserve pause, INIT/legacy-interrupt and termination
+  behavior.  A paused vCPU retains its architectural HLT state in vmm(4),
+  re-enters the kernel wait after unpause and resumes only when a real
+  interrupt becomes deliverable.
+
+Non-x2AVIC AMD guests and Intel guests continue to use the existing userspace
+HLT condition variable.  A staged-header vmd build, full `GENERIC.MP` build and
+LAPIC regression pass.  After installing the matching kernel and vmd, the
+first runtime acceptance test is boot/relink/pause/unpause/poweroff/forced-stop
+at two vCPUs.  Under the same network load, userspace `hlt` and
+`ipi-not-running` counts should fall close to zero; the intercepted x2APIC
+timer/configuration exits will remain.
+
 ## Known remaining gaps
 
 ### AMD AVIC prototype (host runtime validation pending)
@@ -558,10 +593,11 @@ does not implement IOMMU-posted interrupts.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
    `/dev/vmm` ioctl path already drops the kernel big lock before VMM_IOC_RUN,
    so no global execution serialization is currently known.
-4. Extend mode-gated AMD x2AVIC validation on this bit-18-only host to four
-   and eight vCPUs, including stress, pause/unpause and the network matrix.
-   Add per-reason AVIC exit counters if needed to separate incomplete IPIs,
-   EOIs and unaccelerated accesses in the remaining exit load.
+4. Runtime-test the x2AVIC kernel HLT fast path at two vCPUs first: boot,
+   relink, pause/unpause, clean shutdown and forced termination, then repeat
+   the four-stream network sample.  Confirm that `ipi-not-running` and HLT
+   userspace exits collapse.  Continue at four and eight vCPUs only after
+   those lifecycle tests pass.
 5. Runtime-test the legacy AMD AVIC prototype on a bit-13-capable host and
    repeat the instrumented network matrix.
 6. Add virtio-net multiqueue and MSI-X queue affinity, then repeat the same

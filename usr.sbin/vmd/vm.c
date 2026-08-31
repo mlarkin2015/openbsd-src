@@ -53,6 +53,7 @@ static void *event_thread(void *);
 static void *lapic_timer_thread(void *);
 static void *vcpu_run_loop(void *);
 static int vcpu_apply_pending_startup(uint32_t);
+static int vcpu_kick(uint32_t, uint32_t);
 static int vmm_create_vm(struct vmd_vm *);
 static void pause_vm(struct vmd_vm *);
 static void unpause_vm(struct vmd_vm *);
@@ -673,6 +674,12 @@ pause_vm(struct vmd_vm *vm)
 		if (ret) {
 			log_warnx("%s: can't broadcast vcpu run cond (%d)",
 			    __func__, (int)ret);
+			return;
+		}
+		if ((vm->vm_avic & VMM_AVIC_X2APIC) != 0 &&
+		    (ret = vcpu_kick(vm->vm_vmmid, n)) != 0) {
+			log_warnx("%s: can't kick vcpu %u: %s", __func__, n,
+			    strerror(ret));
 			return;
 		}
 	}
@@ -1376,6 +1383,22 @@ vcpu_intr(uint32_t vmm_id, uint32_t vcpu_id, uint8_t intr)
 }
 
 #ifdef __amd64__
+static int
+vcpu_kick(uint32_t vmm_id, uint32_t vcpu_id)
+{
+	struct vm_intr_params vip;
+
+	memset(&vip, 0, sizeof(vip));
+	vip.vip_vm_id = vmm_id;
+	vip.vip_vcpu_id = vcpu_id;
+	vip.vip_type = VMM_INTR_KICK;
+
+	if (ioctl(env->vmd_vmm_fd, VMM_IOC_INTR, &vip) == -1)
+		return (errno);
+
+	return (0);
+}
+
 int
 vcpu_intr_vector(uint32_t vmm_id, uint32_t vcpu_id, uint8_t vector,
     int level)
