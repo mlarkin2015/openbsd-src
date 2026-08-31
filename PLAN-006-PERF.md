@@ -50,12 +50,14 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
 - Runtime testing also fixed an IPI-versus-HLT lost-wakeup race in the vCPU
   run loop and implemented ACPI S5 shutdown through PM1A.  Repeated kernel
   relinks and guest poweroffs now complete without hangs.
-- Per-reason AVIC statistics show that the remaining accelerated-APIC exits
-  under two-vCPU TCP load are overwhelmingly x2AVIC incomplete IPIs whose
-  target is not running.  An x2AVIC-only kernel HLT fast path is build-tested:
-  normal HLT waits remain inside `VMM_IOC_RUN`, queued vectors wake that wait,
-  and non-x2AVIC guests retain the vmd condition-variable path.  Runtime
-  validation is pending a host-kernel reboot.
+- Per-reason AVIC statistics showed that the remaining accelerated-APIC exits
+  under two-vCPU TCP load were overwhelmingly x2AVIC incomplete IPIs whose
+  target was not running.  The x2AVIC-only kernel HLT fast path is now runtime
+  validated: normal HLT waits remain inside `VMM_IOC_RUN`, queued vectors wake
+  that wait, and non-x2AVIC guests retain the vmd condition-variable path.
+  Two four-stream guest-to-host runs measured 1.20 and 1.21 Gbit/s while vmd
+  reported zero HLT, AVIC and target-not-running exits.  This removes the
+  targeted round trips but does not demonstrate a network-throughput gain.
 
 ## SMP network measurements (2026-08-28)
 
