@@ -518,20 +518,29 @@ HLT condition variable.  A staged-header vmd build, full `GENERIC.MP` build and
 LAPIC regression pass.  With the matching kernel and vmd installed, a two-vCPU
 OpenBSD guest booted, permitted login and shut down cleanly.
 
-Two guest-to-host, four-stream, 12-second iperf3 runs measured 1.20 and 1.21
-Gbit/s.  During both runs, every five-second vmd sample reported `hlt=0`,
-`avic=0`, and zero for all AVIC subreasons, including `ipi-not-running`.  Before
-the fast path, a representative interval reported 60,182 HLT exits and 52,136
-target-not-running incomplete-IPIs.  The expected unaccelerated x2APIC
-timer/configuration traffic remained at approximately 492-498 aggregate exits
-per five seconds.
+Two guest-to-host, four-stream, 12-second iperf3 runs were repeated at two,
+four and eight vCPUs:
 
-The fast path therefore eliminates the targeted vmm-to-vmd round trips.  The
-1.20-1.21 Gbit/s result remains within the earlier noisy x2AVIC four-stream
-range of 1.19-1.31 Gbit/s, however, so it does not demonstrate a throughput
-gain for the current single-queue virtio-net path.  Pause/unpause and forced
-termination remain explicit lifecycle checks before extending the test to
-four and eight vCPUs.
+| vCPUs | run 1 | run 2 | mean | HLT/AVIC userspace exits | aggregate x2APIC exits/5s |
+|------:|------:|------:|-----:|-------------------------:|---------------------------:|
+| 2 | 1.20 Gbit/s | 1.21 Gbit/s | 1.21 Gbit/s | 0 | 492-498 |
+| 4 | 1.02 Gbit/s | 1.07 Gbit/s | 1.05 Gbit/s | 0 | 982-1,002 |
+| 8 | 1.16 Gbit/s | 1.20 Gbit/s | 1.18 Gbit/s | 0 | 1,968-2,008 |
+
+Every five-second sample also reported zero for all AVIC subreasons, including
+`ipi-not-running`.  Before the fast path, a representative two-vCPU interval
+reported 60,182 HLT exits and 52,136 target-not-running incomplete-IPIs.  The
+remaining x2APIC exits are the expected unaccelerated timer/configuration
+traffic and scale at approximately 250 exits per vCPU per five seconds.
+
+The fast path therefore eliminates the targeted vmm-to-vmd round trips at all
+three tested CPU counts.  Throughput remains within the earlier noisy results,
+however, so it does not demonstrate a gain for the current single-queue
+virtio-net path.  Under load, vCPU0 continues to handle most device I/O and
+interrupt assertions; at eight vCPUs, vCPUs 4 through 7 are often timer-only.
+This points at serialized userspace device processing and the single virtio-net
+queue rather than residual IPI/HLT exits.  Pause/unpause is intentionally
+deferred; forced termination remains an optional lifecycle check.
 
 ## Known remaining gaps
 
@@ -605,10 +614,10 @@ does not implement IOMMU-posted interrupts.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
    `/dev/vmm` ioctl path already drops the kernel big lock before VMM_IOC_RUN,
    so no global execution serialization is currently known.
-4. Finish the x2AVIC kernel HLT lifecycle checks with pause/unpause and forced
-   termination.  Two-vCPU boot, login, clean shutdown and four-stream network
-   load pass, with `ipi-not-running` and HLT userspace exits reduced to zero.
-   Continue at four and eight vCPUs after the remaining lifecycle checks.
+4. Optionally finish the x2AVIC kernel HLT lifecycle checks with pause/unpause
+   and forced termination.  Boot, login and clean shutdown pass, and two-,
+   four- and eight-vCPU four-stream network tests reduce `ipi-not-running` and
+   HLT userspace exits to zero.  Pause/unpause is deferred for now.
 5. Runtime-test the legacy AMD AVIC prototype on a bit-13-capable host and
    repeat the instrumented network matrix.
 6. Add virtio-net multiqueue and MSI-X queue affinity, then repeat the same
