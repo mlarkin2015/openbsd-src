@@ -45,8 +45,9 @@ the emulated LAPIC version and an x2AVIC unaccelerated-EOI bug: vmd cleared the
 IOAPIC remote-IRR state, but the hardware LAPIC backing page retained the old
 ISR bit and PPR class.  vmm now retires the reported in-service vector and
 recomputes PPR before vmd completes the IOAPIC half.  FreeBSD boots, permits
-login and shuts down cleanly with two vCPUs; four-vCPU OpenBSD and Linux smoke
-tests also pass.  Repeated reset, pause/reboot and Intel VMX validation remain.
+login and shuts down cleanly with two vCPUs, and sustains guest-to-host iperf3
+load with eight; four-vCPU OpenBSD and Linux smoke tests also pass.  Repeated
+reset, pause/reboot and Intel VMX validation remain.
 
 ## Verified current state (original source audit, 2026-08-21)
 
@@ -70,7 +71,7 @@ What does **not** exist (gaps that gate Windows):
 
 | Gap | Impact on Windows |
 |---|---|
-| SMP lifecycle/architecture coverage incomplete | OpenBSD 2/4/8, Linux 4 and FreeBSD 2 boot; repeated reset/pause/reboot and Intel VMX still need validation |
+| SMP lifecycle/architecture coverage incomplete | OpenBSD 2/4/8, Linux 4 and FreeBSD 2/8 boot; repeated reset/pause/reboot and Intel VMX still need validation |
 | No display device (VGA/virtio-gpu) | Windows Setup is graphical — cannot install blind |
 | No input (i8042 PS/2, USB tablet) | Cannot interact with Setup |
 | No IDE/AHCI storage (i82093aa is an IOAPIC, not IDE) | Storage = virtio only, needs driver ISO during setup |
@@ -105,8 +106,9 @@ Everything else depends on these. Order within the phase:
    `vm.c`/`i82489dx.c`): multi-vCPU admission, AP wait-for-SIPI, physical ICR
    fixed/INIT/SIPI delivery, logical destinations, IOAPIC lowest-priority
    arbitration and CPUID/APICBASE topology are implemented.  OpenBSD guests
-   boot with 2, 4 and 8 vCPUs, Linux with 4, and FreeBSD with 2.  Continue with
-   repeated INIT-SIPI, IPI/timer/device stress and pause/reboot behavior.
+   boot with 2, 4 and 8 vCPUs, Linux with 4, and FreeBSD with 2 and 8; the
+   eight-vCPU FreeBSD test sustained guest-to-host network load.  Continue
+   with repeated INIT-SIPI, longer stress and pause/reboot behavior.
 2. **OVMF as ROM** (userspace): load `ovmf.fd` through the existing bios path;
    map flash read-only in EPT; add NVRAM varstore pflash region (below firmware
    flash) with EPT write-trap persistence to `/var/vm/<vm>/nvram`;
