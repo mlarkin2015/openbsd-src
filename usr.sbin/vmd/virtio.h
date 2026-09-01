@@ -202,11 +202,15 @@ struct virtio_backing {
  * There is one virtio_vq_info per virtq.
  */
 struct virtio_vq_info {
-	/* Guest physical address of virtq */
+	/* Guest physical addresses of the split virtqueue areas. */
 	uint64_t q_gpa;
+	uint64_t q_avail_gpa;
+	uint64_t q_used_gpa;
 
-	/* Host virtual address of virtq */
+	/* Host virtual addresses of the split virtqueue areas. */
 	void *q_hva;
+	void *q_avail_hva;
+	void *q_used_hva;
 
 	/* Queue size: number of queue entries in virtq */
 	uint32_t qs;
@@ -216,13 +220,13 @@ struct virtio_vq_info {
 
 	/*
 	 * The offset of the 'available' ring within the virtq located at
-	 * guest physical address qa above
+	 * guest physical address q_gpa above (legacy layout only)
 	 */
 	uint32_t vq_availoffset;
 
 	/*
 	 * The offset of the 'used' ring within the virtq located at guest
-	 * physical address qa above
+	 * physical address q_gpa above (legacy layout only)
 	 */
 	uint32_t vq_usedoffset;
 

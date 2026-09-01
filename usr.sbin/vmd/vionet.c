@@ -541,13 +541,14 @@ vionet_rx(struct virtio_dev *dev, int fd)
 	vq_info = &dev->vq[RXQ];
 	idx = vq_info->last_avail;
 	vr = vq_info->q_hva;
-	if (vr == NULL)
+	if (vr == NULL || vq_info->q_avail_hva == NULL ||
+	    vq_info->q_used_hva == NULL)
 		fatalx("%s: vr == NULL", __func__);
 
-	/* Compute offsets in ring of descriptors, avail ring, and used ring */
+	/* Locate the independently mapped split virtqueue areas. */
 	table = (struct vring_desc *)(vr);
-	avail = (struct vring_avail *)(vr + vq_info->vq_availoffset);
-	used = (struct vring_used *)(vr + vq_info->vq_usedoffset);
+	avail = vq_info->q_avail_hva;
+	used = vq_info->q_used_hva;
 	used->flags |= VRING_USED_F_NO_NOTIFY;
 
 	while (idx != avail->idx) {
@@ -961,12 +962,13 @@ vionet_ctrl(struct virtio_dev *dev)
 	if ((dev->status & VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK) == 0)
 		return (0);
 	vr = vq_info->q_hva;
-	if (vr == NULL)
+	if (vr == NULL || vq_info->q_avail_hva == NULL ||
+	    vq_info->q_used_hva == NULL)
 		return (-1);
 
 	table = (struct vring_desc *)vr;
-	avail = (struct vring_avail *)(vr + vq_info->vq_availoffset);
-	used = (struct vring_used *)(vr + vq_info->vq_usedoffset);
+	avail = vq_info->q_avail_hva;
+	used = vq_info->q_used_hva;
 	idx = vq_info->last_avail;
 
 	while (idx != avail->idx) {
@@ -1144,13 +1146,14 @@ vionet_tx(struct vionet_tx_worker *worker)
 	vq_info = &dev->vq[worker->vq_idx];
 	idx = vq_info->last_avail;
 	vr = vq_info->q_hva;
-	if (vr == NULL)
+	if (vr == NULL || vq_info->q_avail_hva == NULL ||
+	    vq_info->q_used_hva == NULL)
 		fatalx("%s: vr == NULL", __func__);
 
-	/* Compute offsets in ring of descriptors, avail ring, and used ring */
+	/* Locate the independently mapped split virtqueue areas. */
 	table = (struct vring_desc *)(vr);
-	avail = (struct vring_avail *)(vr + vq_info->vq_availoffset);
-	used = (struct vring_used *)(vr + vq_info->vq_usedoffset);
+	avail = vq_info->q_avail_hva;
+	used = vq_info->q_used_hva;
 
 	while (idx != avail->idx) {
 		dhcpsz = 0;
@@ -1665,9 +1668,9 @@ vionet_cfg_write(struct virtio_dev *dev, struct viodev_msg *msg)
 			vionet->active_queue_pairs = 1;
 			pci_cfg->config_msix_vector = VIRTIO_MSI_NO_VECTOR;
 			pci_cfg->queue_select = 0;	/* Technically RXQ. */
-			virtio_update_qs(dev);
 			for (i = 0; i < dev->num_queues; i++)
 				virtio_vq_init(dev, i);
+			virtio_update_qs(dev);
 		}
 		DPRINTF("%s: dev %u status [%s%s%s%s%s%s]", __func__,
 		    dev->pci_id,

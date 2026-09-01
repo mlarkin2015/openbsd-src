@@ -125,6 +125,12 @@ Add and enhance device emulation in vmd(8) to provide the hardware surface that 
   path.  Two-vCPU four-stream guest TX is runtime-validated at 17.8-20.4
   Gbit/s, versus the previous 2.34 Gbit/s mean.  Host receive offloads and
   merged receive buffers remain deliberately disabled, so RX is unchanged.
+- VirtIO 1.x split queues map their descriptor, available and used areas from
+  the three independent guest addresses supplied by the modern transport.
+  Queue reset/reinitialization no longer depends on the negotiated feature
+  bitmap after that bitmap has been cleared.  This is runtime-validated by
+  NetBSD 11 with one and two vCPUs, including DHCP, MSI-X network interrupts,
+  bridged ICMP traffic and clean shutdown.
 
 **Enhancements**:
 1. **MSI-X for all VirtIO devices**:
