@@ -769,12 +769,28 @@ MSI fix it boots normally with MSI-X, mounts its Btrfs root, obtains DHCP and
 reaches login.  The complete `regress/usr.sbin/vmd` suite passes with the new
 MMU, MMIO and LAPIC coverage.
 
-CentOS 7/i386 with Linux 3.10 is a useful legacy control: it detects the
-IOAPIC and its 50 GiB virtio disk, but dracut reports that PCI INT A has no IRQ
-for each virtio function.  That guest relies on firmware PCI INTx routing and
-exposes the already-known minimal-DSDT gap (`PCI0._PRT`/link routing); it is a
-separate ACPI/platform follow-up, not a remaining MSI or 32-bit page-walk
-failure.
+CentOS 7/i386 with Linux 3.10 provided two additional legacy controls.  Its
+older ACPICA disabled the interpreter because the FADT pointed to no FACS;
+vmd now creates a revision-1 FACS at 0x94000 and populates both FADT pointers.
+The guest then evaluated the existing fixed `PCI0._PRT` routes successfully,
+proving that no new link-device or INTx routing model was required.
+
+The guest next stopped after finding the virtio disk.  A `pci=nomsi` boot
+immediately found its partitions and reached login, isolating MSI-X.  CentOS
+programs xAPIC logical-destination, lowest-priority messages (for example,
+address `fee0100c`, data `4141`); vmd previously accepted only fixed delivery
+and silently discarded them.  PCI MSI/MSI-X now shares the LAPIC target/PPR
+selection logic, selects one eligible target for lowest-priority delivery and
+rotates equal-priority ties.  Normal CentOS 7 i386 and amd64 boots both reach
+login, and a two-vCPU OpenBSD GENERIC.MP regression still reaches login with
+virtio MSI-X active.
+
+CentOS still warns that the FADT has no PM timer.  An experimental 24-bit
+3.579545 MHz counter advanced correctly, but CentOS rejected it while its
+LAPIC/PIT calibration was already off by roughly 20x.  The timer was therefore
+removed instead of advertising a clock the guest would not trust.  ACPI PM
+timer implementation and the underlying timer-calibration mismatch remain a
+separate platform follow-up.
 
 ## Known remaining gaps
 
@@ -833,10 +849,11 @@ does not implement IOMMU-posted interrupts.
   lowest-priority, NMI, SMI and ExtINT ICR delivery and IOAPIC-redirection
   ExtINT are not implemented.
 - MSI supports one 64-bit message per device.  MSI-X supports at most 16
-  vectors per device.  xAPIC fixed delivery supports physical and
-  flat/cluster logical destinations; x2APIC/remapped MSI and lowest-priority
-  delivery are not implemented.
-- PM1A S5 poweroff is implemented, but no active PM1 event source asserts SCI.
+  vectors per device.  xAPIC fixed and lowest-priority delivery support
+  physical and flat/cluster logical destinations; x2APIC/remapped MSI is not
+  implemented.
+- PM1A S5 poweroff is implemented, but no ACPI PM timer is advertised and no
+  active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
 - Virtio-net exposes up to four queue pairs with independent TX workers and
   MSI-X queue affinity.  Runtime testing validates one, two and four active
@@ -864,8 +881,8 @@ does not implement IOMMU-posted interrupts.
 6. If further host-to-guest work is justified, add virtio guest offload
    control and merged RX buffers before enabling tap RX offloads; keep generic
    tap-layer scaling outside this effort.
-7. Add active ACPI PM1 event sources and SCI delivery as they become needed.
+7. Resolve the LAPIC/PIT calibration mismatch before adding the 3.579545 MHz
+   ACPI PM timer; add active PM1 event sources and SCI delivery as needed.
 8. Add LAPIC ICR lowest-priority and remaining non-fixed delivery modes when a
    guest requires them.
-9. Extend MSI routing only when a guest needs x2APIC/remapped delivery or
-   lowest-priority arbitration.
+9. Extend MSI routing only when a guest needs x2APIC/remapped delivery.
