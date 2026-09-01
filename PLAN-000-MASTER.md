@@ -29,7 +29,9 @@ The initial SMP gate is now implemented and validated through complete
 2-, 4- and 8-vCPU OpenBSD GENERIC.MP boots.  `vmm(4)` admits up to 64 vCPUs;
 vmd parks AP threads until INIT-SIPI; the LAPIC ICR handles physical fixed,
 INIT and STARTUP IPIs; and CPUID/APICBASE identify the configured topology and
-BSP correctly.
+BSP correctly.  A two-vCPU `vmctl start -b` direct-kernel boot also attaches
+the AP and reaches mountroot using vmd's BDA RSDP and generated ACPI tables,
+without a SeaBIOS payload.
 `vm.conf` and `vmctl` expose validated vCPU-count controls; `vmctl start -p`
 now overrides a configured VM for one boot and restores its configured count
 after stop.  Host builds and focused LAPIC/config regressions pass.  IOAPIC
