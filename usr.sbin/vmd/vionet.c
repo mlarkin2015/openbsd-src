@@ -57,7 +57,6 @@
 #define VIRTIO_NET_ERR			 1
 
 #define RXQ	VIONET_RXQ(0)
-#define TXQ	VIONET_TXQ(0)
 
 extern struct vmd_vm *current_vm;
 
@@ -113,6 +112,8 @@ pthread_t rx_thread;
 struct vm_dev_pipe pipe_main;
 struct vm_dev_pipe pipe_rx;
 struct vionet_tx_worker tx_workers[VIONET_QUEUE_PAIRS];
+CTASSERT(VIRTIO_RAISE_IRQ_TX3 - VIRTIO_RAISE_IRQ_TX + 1 ==
+    VIONET_QUEUE_PAIRS);
 int pipe_inject[2];
 #define READ	0
 #define WRITE	1
@@ -850,10 +851,11 @@ vionet_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 		vionet_handle_ctrl(dev);
 		return;
 	}
-	if (vq_idx == VIONET_RXQ(1)) {
+	if (vq_idx < VIONET_CTRLQ_MQ && (vq_idx & 1) == 0) {
 		/* RX remains deliberately pinned to queue pair zero. */
+		pair = vq_idx / 2;
 		vionet_stats_add(&vionet_stats.rx_kicks, 1);
-		vionet_stats_add(&vionet_stats.queue[1].rx_kicks, 1);
+		vionet_stats_add(&vionet_stats.queue[pair].rx_kicks, 1);
 		return;
 	}
 	if (vq_idx < VIONET_CTRLQ_MQ && (vq_idx & 1) != 0) {
@@ -869,9 +871,7 @@ vionet_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 static uint16_t
 vionet_ctrlq(struct virtio_dev *dev)
 {
-	if (dev->driver_feature & VIRTIO_NET_F_MQ)
-		return (VIONET_CTRLQ_MQ);
-	return (VIONET_CTRLQ_SINGLE);
+	return (VIONET_CTRLQ(dev->driver_feature));
 }
 
 /*
@@ -1873,10 +1873,13 @@ read_pipe_tx(int fd, short event, void *arg)
 	}
 	pthread_rwlock_unlock(&lock);
 
-	if (raise_irq)
-		vm_pipe_send(&pipe_main, ret == 1 ?
-		    (worker->pair == 0 ? VIRTIO_RAISE_IRQ_TX :
-		    VIRTIO_RAISE_IRQ_TX1) : VIRTIO_RAISE_IRQ_CONFIG);
+	if (raise_irq) {
+		if (ret == 1)
+			vm_pipe_send(&pipe_main, VIRTIO_RAISE_IRQ_TX +
+			    worker->pair);
+		else
+			vm_pipe_send(&pipe_main, VIRTIO_RAISE_IRQ_CONFIG);
+	}
 }
 
 /*
@@ -1897,10 +1900,11 @@ read_pipe_main(int fd, short event, void *arg)
 		vionet_assert_irq(dev, RXQ);
 		break;
 	case VIRTIO_RAISE_IRQ_TX:
-		vionet_assert_irq(dev, TXQ);
-		break;
 	case VIRTIO_RAISE_IRQ_TX1:
-		vionet_assert_irq(dev, VIONET_TXQ(1));
+	case VIRTIO_RAISE_IRQ_TX2:
+	case VIRTIO_RAISE_IRQ_TX3:
+		vionet_assert_irq(dev, VIONET_TXQ(msg -
+		    VIRTIO_RAISE_IRQ_TX));
 		break;
 	case VIRTIO_RAISE_IRQ_CONFIG:
 		vionet_assert_irq(dev, VIODEV_QUEUE_CONFIG);
