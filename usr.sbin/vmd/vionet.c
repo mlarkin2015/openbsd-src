@@ -17,13 +17,17 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 #include <sys/types.h>
+#include <sys/ioctl.h>
 
 #include <dev/pci/virtio_pcireg.h>
 #include <dev/pv/virtioreg.h>
 
 #include <net/if.h>
+#include <net/if_tun.h>
 #include <netinet/in.h>
 #include <netinet/if_ether.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
 
 #include <errno.h>
 #include <event.h>
@@ -75,6 +79,11 @@ struct vionet_tx_worker {
 	unsigned int		 pair;
 };
 
+struct vionet_tx_offload {
+	struct tun_hdr	 tun_hdr;
+	int		 tso;
+};
+
 static void *rx_run_loop(void *);
 static void *tx_run_loop(void *);
 static int vionet_rx(struct virtio_dev *, int);
@@ -89,6 +98,8 @@ static uint32_t vionet_cfg_read(struct virtio_dev *, struct viodev_msg *);
 static void vionet_cfg_write(struct virtio_dev *, struct viodev_msg *);
 
 static int vionet_tx(struct vionet_tx_worker *);
+static int vionet_tx_offload(struct virtio_dev *,
+    const struct virtio_net_hdr *, size_t, struct vionet_tx_offload *);
 static int vionet_ctrl(struct virtio_dev *);
 static void vionet_handle_ctrl(struct virtio_dev *);
 static uint16_t vionet_ctrlq(struct virtio_dev *);
@@ -132,6 +143,8 @@ struct vionet_perf_stats {
 	uint64_t tx_kicks;
 	uint64_t rx_irqs;
 	uint64_t tx_irqs;
+	uint64_t tx_csum_packets;
+	uint64_t tx_tso_packets;
 	uint64_t ctrl_kicks;
 	uint64_t ctrl_irqs;
 	uint64_t config_irqs;
@@ -192,6 +205,8 @@ vionet_stats_report(int fd, short event, void *arg)
 	VIONET_STATS_DELTA(tx_kicks);
 	VIONET_STATS_DELTA(rx_irqs);
 	VIONET_STATS_DELTA(tx_irqs);
+	VIONET_STATS_DELTA(tx_csum_packets);
+	VIONET_STATS_DELTA(tx_tso_packets);
 	VIONET_STATS_DELTA(ctrl_kicks);
 	VIONET_STATS_DELTA(ctrl_irqs);
 	VIONET_STATS_DELTA(config_irqs);
@@ -221,7 +236,8 @@ vionet_stats_report(int fd, short event, void *arg)
 		log_info("stats %ds net-dev: rx-packets=%llu rx-bytes=%llu "
 		    "rx-kicks=%llu rx-irqs=%llu rx-packets/irq=%llu "
 		    "tx-packets=%llu tx-bytes=%llu tx-kicks=%llu "
-		    "tx-irqs=%llu tx-packets/irq=%llu kick-ctrl=%llu "
+		    "tx-irqs=%llu tx-packets/irq=%llu tx-csum=%llu "
+		    "tx-tso=%llu kick-ctrl=%llu "
 		    "irq-ctrl=%llu config-irqs=%llu",
 		    VIONET_STATS_INTERVAL,
 		    (unsigned long long)delta.rx_packets,
@@ -234,6 +250,8 @@ vionet_stats_report(int fd, short event, void *arg)
 		    (unsigned long long)delta.tx_kicks,
 		    (unsigned long long)delta.tx_irqs,
 		    (unsigned long long)tx_per_irq,
+		    (unsigned long long)delta.tx_csum_packets,
+		    (unsigned long long)delta.tx_tso_packets,
 		    (unsigned long long)delta.ctrl_kicks,
 		    (unsigned long long)delta.ctrl_irqs,
 		    (unsigned long long)delta.config_irqs);
@@ -299,6 +317,19 @@ vionet_main(int fd, int fd_vmm)
 	log_debug("%s: got vionet dev. tap fd = %d, syncfd = %d, asyncfd = %d"
 	    ", vmm fd = %d", __func__, vionet->data_fd, dev.sync_fd,
 	    dev.async_fd, fd_vmm);
+
+	/*
+	 * Enable tap(4)'s per-packet offload header.  We do not advertise
+	 * receive offloads to the host yet, so headers read from tap contain
+	 * no checksum or segmentation requests.  Headers written to tap may
+	 * still request the transmit offloads negotiated with the guest.
+	 */
+	{
+		struct tun_capabilities cap = { 0 };
+
+		if (ioctl(vionet->data_fd, TUNSCAP, &cap) == -1)
+			fatal("%s: TUNSCAP", __func__);
+	}
 
 	/* Receive our vm information from the vm process. */
 	memset(&vm, 0, sizeof(vm));
@@ -670,16 +701,24 @@ vionet_rx_copy(struct vionet_dev *dev, int fd, const struct iovec *iov,
 	static uint8_t		 buf[VIONET_HARD_MTU];
 	struct packet		*pkt = NULL;
 	struct ether_header	*eh = NULL;
+	struct tun_hdr		 tun_hdr;
+	struct iovec		 tap_iov[2];
 	uint8_t			*payload = buf;
 	size_t			 i, chunk, nbytes, copied = 0;
 	ssize_t			 sz;
 
-	/* If reading from the tap(4), try to right-size the read. */
-	if (fd == dev->data_fd)
+	if (fd == dev->data_fd) {
+		/* Try to right-size the packet portion of the tap(4) read. */
 		nbytes = MIN(chain_len, VIONET_HARD_MTU);
-	else if (fd == pipe_inject[READ])
+		tap_iov[0].iov_base = &tun_hdr;
+		tap_iov[0].iov_len = sizeof(tun_hdr);
+		tap_iov[1].iov_base = buf;
+		tap_iov[1].iov_len = nbytes;
+		sz = readv(fd, tap_iov, nitems(tap_iov));
+	} else if (fd == pipe_inject[READ]) {
 		nbytes = sizeof(struct packet);
-	else {
+		sz = read(fd, buf, nbytes);
+	} else {
 		log_warnx("%s: invalid fd: %d", __func__, fd);
 		return (-1);
 	}
@@ -689,21 +728,29 @@ vionet_rx_copy(struct vionet_dev *dev, int fd, const struct iovec *iov,
 	 * care if we under-read (i.e. sz != nbytes) as we may not have a
 	 * packet large enough to fill the buffer.
 	 */
-	sz = read(fd, buf, nbytes);
 	if (sz == -1) {
 		if (errno != EAGAIN) {
 			log_warn("%s: error reading packet", __func__);
 			return (-1);
 		}
 		return (0);
-	} else if (fd == dev->data_fd && sz < VIONET_MIN_TXLEN) {
-		/* If reading the tap(4), we should get valid ethernet. */
+	} else if (fd == dev->data_fd &&
+	    sz < (ssize_t)(sizeof(tun_hdr) + VIONET_MIN_TXLEN)) {
+		/* A tap(4) read must contain its offload and ethernet headers. */
 		log_warnx("%s: invalid packet size", __func__);
 		return (0);
 	} else if (fd == pipe_inject[READ] && sz != sizeof(struct packet)) {
 		log_warnx("%s: invalid injected packet object (sz=%ld)",
 		    __func__, sz);
 		return (0);
+	}
+	if (fd == dev->data_fd) {
+		if (tun_hdr.th_flags & ~TUN_H_PRIO_MASK) {
+			log_warnx("%s: unexpected receive offload flags 0x%x",
+			    __func__, tun_hdr.th_flags);
+			return (0);
+		}
+		sz -= sizeof(tun_hdr);
 	}
 
 	/* Decompose an injected packet, if that's what we're working with. */
@@ -766,7 +813,9 @@ static ssize_t
 vionet_rx_zerocopy(struct vionet_dev *dev, int fd, const struct iovec *iov,
     int iov_cnt)
 {
-	ssize_t		sz;
+	struct tun_hdr	 tun_hdr;
+	struct iovec	 tap_iov[VIRTIO_QUEUE_SIZE_MAX + 1];
+	ssize_t		 sz;
 
 	if (dev->lockedmac) {
 		log_warnx("%s: zerocopy not available for locked lladdr",
@@ -774,10 +823,27 @@ vionet_rx_zerocopy(struct vionet_dev *dev, int fd, const struct iovec *iov,
 		return (-1);
 	}
 
-	sz = readv(fd, iov, iov_cnt);
+	if (iov_cnt >= VIRTIO_QUEUE_SIZE_MAX)
+		return (-1);
+	tap_iov[0].iov_base = &tun_hdr;
+	tap_iov[0].iov_len = sizeof(tun_hdr);
+	memcpy(&tap_iov[1], iov, iov_cnt * sizeof(*iov));
+
+	sz = readv(fd, tap_iov, iov_cnt + 1);
 	if (sz == -1 && errno == EAGAIN)
 		return (0);
-	return (sz);
+	if (sz == -1)
+		return (-1);
+	if (sz < (ssize_t)(sizeof(tun_hdr) + VIONET_MIN_TXLEN)) {
+		log_warnx("%s: invalid packet size", __func__);
+		return (0);
+	}
+	if (tun_hdr.th_flags & ~TUN_H_PRIO_MASK) {
+		log_warnx("%s: unexpected receive offload flags 0x%x", __func__,
+		    tun_hdr.th_flags);
+		return (0);
+	}
+	return (sz - sizeof(tun_hdr));
 }
 
 
@@ -978,6 +1044,73 @@ vionet_handle_ctrl(struct virtio_dev *dev)
 		vionet_assert_irq(dev, VIODEV_QUEUE_CONFIG);
 }
 
+/*
+ * Translate the virtio checksum and segmentation metadata supplied by the
+ * guest into the native tap(4) offload header.  tap(4) does not expose the
+ * arbitrary checksum offset operation from the virtio protocol, but the TCP
+ * and UDP offsets used by the network drivers are directly representable.
+ */
+static int
+vionet_tx_offload(struct virtio_dev *dev, const struct virtio_net_hdr *hdr,
+    size_t packet_len, struct vionet_tx_offload *offload)
+{
+	uint8_t gso_type;
+
+	memset(offload, 0, sizeof(*offload));
+	if (hdr->flags & ~VIRTIO_NET_HDR_F_NEEDS_CSUM)
+		return (-1);
+
+	if (hdr->flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
+		if ((dev->driver_feature & VIRTIO_NET_F_CSUM) == 0)
+			return (-1);
+		if (hdr->csum_start > packet_len ||
+		    hdr->csum_offset > packet_len - hdr->csum_start ||
+		    sizeof(uint16_t) >
+		    packet_len - hdr->csum_start - hdr->csum_offset)
+			return (-1);
+
+		switch (hdr->csum_offset) {
+		case offsetof(struct tcphdr, th_sum):
+			offload->tun_hdr.th_flags |= TUN_H_TCP_CSUM;
+			break;
+		case offsetof(struct udphdr, uh_sum):
+			offload->tun_hdr.th_flags |= TUN_H_UDP_CSUM;
+			break;
+		default:
+			return (-1);
+		}
+	}
+
+	gso_type = hdr->gso_type;
+	if (gso_type & VIRTIO_NET_HDR_GSO_ECN)
+		return (-1);
+	switch (gso_type) {
+	case VIRTIO_NET_HDR_GSO_NONE:
+		break;
+	case VIRTIO_NET_HDR_GSO_TCPV4:
+		if ((dev->driver_feature & VIRTIO_NET_F_HOST_TSO4) == 0)
+			return (-1);
+		goto tso;
+	case VIRTIO_NET_HDR_GSO_TCPV6:
+		if ((dev->driver_feature & VIRTIO_NET_F_HOST_TSO6) == 0)
+			return (-1);
+tso:
+		if ((hdr->flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) == 0 ||
+		    (offload->tun_hdr.th_flags & TUN_H_TCP_CSUM) == 0 ||
+		    hdr->gso_size == 0 || hdr->hdr_len == 0 ||
+		    hdr->hdr_len > packet_len)
+			return (-1);
+		offload->tun_hdr.th_flags |= TUN_H_TCP_MSS;
+		offload->tun_hdr.th_mss = hdr->gso_size;
+		offload->tso = 1;
+		break;
+	default:
+		return (-1);
+	}
+
+	return (0);
+}
+
 static int
 vionet_tx(struct vionet_tx_worker *worker)
 {
@@ -992,11 +1125,14 @@ vionet_tx(struct vionet_tx_worker *worker)
 	struct vring_avail *avail;
 	struct vring_used *used;
 	struct virtio_vq_info *vq_info;
+	struct virtio_net_hdr net_hdr, *guest_hdr;
+	struct vionet_tx_offload offload;
 	struct ether_header *eh;
 	struct iovec *iov;
 	struct packet pkt;
 	uint8_t status = 0;
 	uint64_t stats_bytes = 0, stats_packets = 0;
+	uint64_t stats_csum_packets = 0, stats_tso_packets = 0;
 
 	status = dev->status & VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK;
 	stats_enabled = log_getverbose() == 1;
@@ -1017,6 +1153,8 @@ vionet_tx(struct vionet_tx_worker *worker)
 	used = (struct vring_used *)(vr + vq_info->vq_usedoffset);
 
 	while (idx != avail->idx) {
+		dhcpsz = 0;
+		dhcppkt = NULL;
 		hdr_idx = avail->ring[idx & vq_info->mask];
 		desc = &table[hdr_idx & vq_info->mask];
 		if (DESC_WRITABLE(desc)) {
@@ -1024,8 +1162,7 @@ vionet_tx(struct vionet_tx_worker *worker)
 			goto reset;
 		}
 
-		iov = &worker->iov[0];
-		iov_cnt = 0;
+		iov_cnt = 1;	/* Reserve slot 0 for struct tun_hdr. */
 		chain_len = 0;
 
 		/*
@@ -1036,18 +1173,21 @@ vionet_tx(struct vionet_tx_worker *worker)
 			log_warnx("%s: invalid descriptor length", __func__);
 			goto reset;
 		}
-		iov->iov_len = desc->len;
+		guest_hdr = hvaddr_mem(desc->addr, sizeof(*guest_hdr));
+		if (guest_hdr == NULL)
+			goto reset;
+		memcpy(&net_hdr, guest_hdr, sizeof(net_hdr));
 
-		if (iov->iov_len > sizeof(struct virtio_net_hdr)) {
+		if (desc->len > sizeof(struct virtio_net_hdr)) {
 			/* Chop off the virtio header, leaving packet data. */
-			iov->iov_len -= sizeof(struct virtio_net_hdr);
+			iov = &worker->iov[iov_cnt++];
+			iov->iov_len = desc->len - sizeof(struct virtio_net_hdr);
 			iov->iov_base = hvaddr_mem(desc->addr +
 			    sizeof(struct virtio_net_hdr), iov->iov_len);
 			if (iov->iov_base == NULL)
 				goto reset;
 
 			chain_len += iov->iov_len;
-			iov_cnt++;
 		}
 
 		/*
@@ -1061,25 +1201,32 @@ vionet_tx(struct vionet_tx_worker *worker)
 				goto reset;
 			}
 
+			if (iov_cnt >= nitems(worker->iov)) {
+				log_warnx("%s: infinite chain detected",
+				    __func__);
+				goto reset;
+			}
+
 			/* Collect our IO information, translating gpa's. */
-			iov = &worker->iov[iov_cnt];
+			iov = &worker->iov[iov_cnt++];
 			iov->iov_len = desc->len;
 			iov->iov_base = hvaddr_mem(desc->addr, iov->iov_len);
 			if (iov->iov_base == NULL)
 				goto reset;
 			chain_len += iov->iov_len;
 
-			/* Guard against infinitely looping chains. */
-			if (++iov_cnt >= nitems(worker->iov)) {
-				log_warnx("%s: infinite chain detected",
-				    __func__);
-				goto reset;
-			}
 		}
 
-		/* Check if we've got a minimum viable amount of data. */
-		if (chain_len < VIONET_MIN_TXLEN)
+		/* Check if we've got a viable ethernet frame or TSO packet. */
+		if (chain_len < VIONET_MIN_TXLEN ||
+		    chain_len > VIONET_MAX_TXLEN)
 			goto drop;
+		if (vionet_tx_offload(dev, &net_hdr, chain_len, &offload) == -1) {
+			log_warnx("%s: invalid transmit offload header", __func__);
+			goto drop;
+		}
+		worker->iov[0].iov_base = &offload.tun_hdr;
+		worker->iov[0].iov_len = sizeof(offload.tun_hdr);
 
 		/*
 		 * Packet inspection for ethernet header (if using a "local"
@@ -1090,7 +1237,7 @@ vionet_tx(struct vionet_tx_worker *worker)
 		 * descriptor with packet data contains a large enough buffer
 		 * for this inspection.
 		 */
-		iov = &worker->iov[0];
+		iov = &worker->iov[1];
 		if (vionet->lockedmac) {
 			if (iov->iov_len < ETHER_HDR_LEN) {
 				log_warnx("%s: insufficient header data",
@@ -1122,9 +1269,14 @@ vionet_tx(struct vionet_tx_worker *worker)
 			log_warn("%s", __func__);
 			goto reset;
 		}
-		if (sz >= 0) {
+		if (sz >= (ssize_t)sizeof(offload.tun_hdr)) {
 			stats_packets++;
-			stats_bytes += sz;
+			stats_bytes += sz - sizeof(offload.tun_hdr);
+			if (offload.tun_hdr.th_flags &
+			    (TUN_H_TCP_CSUM | TUN_H_UDP_CSUM))
+				stats_csum_packets++;
+			if (offload.tso)
+				stats_tso_packets++;
 		}
 		chain_len += sizeof(struct virtio_net_hdr);
 drop:
@@ -1161,6 +1313,10 @@ drop:
 	if (stats_enabled) {
 		vionet_stats_add(&vionet_stats.tx_packets, stats_packets);
 		vionet_stats_add(&vionet_stats.tx_bytes, stats_bytes);
+		vionet_stats_add(&vionet_stats.tx_csum_packets,
+		    stats_csum_packets);
+		vionet_stats_add(&vionet_stats.tx_tso_packets,
+		    stats_tso_packets);
 		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_packets,
 		    stats_packets);
 		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_bytes,
@@ -1171,6 +1327,10 @@ reset:
 	if (stats_enabled) {
 		vionet_stats_add(&vionet_stats.tx_packets, stats_packets);
 		vionet_stats_add(&vionet_stats.tx_bytes, stats_bytes);
+		vionet_stats_add(&vionet_stats.tx_csum_packets,
+		    stats_csum_packets);
+		vionet_stats_add(&vionet_stats.tx_tso_packets,
+		    stats_tso_packets);
 		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_packets,
 		    stats_packets);
 		vionet_stats_add(&vionet_stats.queue[worker->pair].tx_bytes,
