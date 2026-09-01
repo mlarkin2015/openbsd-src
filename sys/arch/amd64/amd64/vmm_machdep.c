@@ -4156,17 +4156,30 @@ vm_run(struct vm_run_params *vrp)
 	WRITE_ONCE(vcpu->vc_curcpu, NULL);
 
 	if (vcpu_rv == 0 || vcpu_rv == EAGAIN) {
-		/* vcpu requires useland assist or is yielding */
-		vrp->vrp_exit_reason = (vcpu_rv == 0) ? VM_EXIT_NONE
-		    : vcpu->vc_gueststate.vg_exit_reason;
-		vrp->vrp_irqready = vcpu->vc_irqready;
-		vcpu->vc_state = VCPU_STATE_STOPPED;
-		ret = copyout(&vcpu->vc_exit, vrp->vrp_exit,
-		    sizeof(struct vm_exit));
+		/*
+		 * Do not overwrite a concurrent termination request while
+		 * returning from an in-kernel HLT wait or another normal exit.
+		 * If the RUNNING -> STOPPED transition loses that race, report a
+		 * terminal exit instead of allowing vmd to re-enter the vCPU.
+		 */
+		old = atomic_cas_uint(&vcpu->vc_state, VCPU_STATE_RUNNING,
+		    VCPU_STATE_STOPPED);
+		if (old == VCPU_STATE_REQTERM) {
+			vrp->vrp_exit_reason = VM_EXIT_TERMINATED;
+			atomic_store_int(&vcpu->vc_state, VCPU_STATE_TERMINATED);
+		} else {
+			KASSERT(old == VCPU_STATE_RUNNING);
+			/* vcpu requires userspace assist or is yielding */
+			vrp->vrp_exit_reason = (vcpu_rv == 0) ? VM_EXIT_NONE
+			    : vcpu->vc_gueststate.vg_exit_reason;
+			vrp->vrp_irqready = vcpu->vc_irqready;
+			ret = copyout(&vcpu->vc_exit, vrp->vrp_exit,
+			    sizeof(struct vm_exit));
+		}
 	} else {
 		/* vcpu is in a terminal state */
 		vrp->vrp_exit_reason = VM_EXIT_TERMINATED;
-		vcpu->vc_state = VCPU_STATE_TERMINATED;
+		atomic_store_int(&vcpu->vc_state, VCPU_STATE_TERMINATED);
 	}
 out_unlock:
 	rw_exit_write(&vcpu->vc_lock);
@@ -4896,7 +4909,7 @@ vmx_handle_intr(struct vcpu *vcpu)
  *  vcpu: The VCPU that executed the HLT instruction
  *
  * Return Values:
- *  EIO: The guest halted with interrupts disabled
+ *  EIO: The BSP halted with interrupts disabled
  *  EAGAIN: Normal return to vmd - vmd should halt scheduling this VCPU
  *   until a virtual interrupt is ready to inject
  */
@@ -4909,11 +4922,19 @@ svm_handle_hlt(struct vcpu *vcpu)
 	/* All HLT insns are 1 byte */
 	vcpu->vc_gueststate.vg_rip += 1;
 
-	if (!svm_get_iflag(vcpu, rflags)) {
+	if (!svm_get_iflag(vcpu, rflags) && vcpu->vc_id == 0) {
 		DPRINTF("%s: guest halted with interrupts disabled\n",
 		    __func__);
 		return (EIO);
 	}
+
+	/*
+	 * Firmware and an operating system may park an AP with CLI; HLT until
+	 * a later INIT/SIPI.  Return these non-interruptible AP halts to vmd so
+	 * the vCPU thread remains available for that startup sequence.
+	 */
+	if (!svm_get_iflag(vcpu, rflags))
+		return (EAGAIN);
 
 	if (vcpu->vc_svm_avic_mode == VMM_AVIC_X2APIC)
 		return (svm_avic_hlt_wait(vcpu));
@@ -4924,8 +4945,9 @@ svm_handle_hlt(struct vcpu *vcpu)
 /*
  * vmx_handle_hlt
  *
- * Handle HLT exits. HLTing the CPU with interrupts disabled will terminate
- * the guest (no NMIs handled) by returning EIO to vmd.
+ * Handle HLT exits. HLTing the BSP with interrupts disabled will terminate
+ * the guest (no NMIs handled) by returning EIO to vmd.  An AP may use this
+ * state to wait for a later INIT/SIPI and is instead parked by vmd.
  *
  * Parameters:
  *  vcpu: The VCPU that executed the HLT instruction
@@ -4933,7 +4955,7 @@ svm_handle_hlt(struct vcpu *vcpu)
  * Return Values:
  *  EINVAL: An error occurred extracting information from the VMCS, or an
  *   invalid HLT instruction was encountered
- *  EIO: The guest halted with interrupts disabled
+ *  EIO: The BSP halted with interrupts disabled
  *  EAGAIN: Normal return to vmd - vmd should halt scheduling this VCPU
  *   until a virtual interrupt is ready to inject
  *
@@ -4959,7 +4981,7 @@ vmx_handle_hlt(struct vcpu *vcpu)
 		return (EINVAL);
 	}
 
-	if (!(rflags & PSL_I)) {
+	if (!(rflags & PSL_I) && vcpu->vc_id == 0) {
 		DPRINTF("%s: guest halted with interrupts disabled\n",
 		    __func__);
 		return (EIO);

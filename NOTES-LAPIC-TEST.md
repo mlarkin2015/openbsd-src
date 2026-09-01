@@ -716,6 +716,31 @@ with eight vCPUs under varied guest-to-host iperf3 loads without a fault; the
 highest observed result was 27.2 Gbit/s.  This is a field-test peak rather than
 a controlled multi-run benchmark mean.
 
+### SMP halt and reboot lifecycle (2026-08-31)
+
+Final lifecycle testing exposed three independent teardown and reset issues:
+
+- vmd did not supply SeaBIOS's `FW_CFG_NB_CPUS` and `FW_CFG_MAX_CPUS` entries.
+  A uniprocessor guest kernel in a VM configured with four vCPUs therefore
+  left the three firmware APs spinning on SeaBIOS's SMP lock and consumed
+  roughly 300% host CPU.  vmd now publishes both CPU counts, and an AP that
+  halts with interrupts disabled remains restartable by INIT/SIPI while the
+  BSP's terminal HLT behavior is retained on both SVM and VMX.
+- a concurrent termination request could be overwritten when `vm_run()`
+  changed a vCPU from running to stopped.  The transition now preserves
+  `VCPU_STATE_REQTERM`, reports `VM_EXIT_TERMINATED`, and completes forced
+  termination without leaving an x2AVIC HLT waiter behind.
+- a reset or terminal exit on one vCPU did not stop its siblings.  The first
+  terminal vCPU now marks the VM as stopping, kicks or wakes every peer, and
+  prevents them from re-entering the guest.  `run_vm()` joins each thread once
+  and preserves an `EAGAIN` reset request instead of replacing it with a
+  sibling's successful status.
+
+The final build passed a four-vCPU OpenBSD VM running a GENERIC uniprocessor
+guest without the firmware AP spin, OpenBSD SMP reboot, and Ubuntu 24 SMP
+reboot and halt/poweroff.  The earlier forced-stop test also completed without
+requiring `kill -9`.
+
 ## Known remaining gaps
 
 ### AMD AVIC prototype (host runtime validation pending)
@@ -758,10 +783,11 @@ LAPIC MMIO/ICR exits; device-process transitions remain because this prototype
 does not implement IOMMU-posted interrupts.
 
 - Concurrent execution, INIT-SIPI and interrupt delivery through boot are
-  validated with OpenBSD guests at two, four and eight vCPUs, Linux at four,
-  and FreeBSD at two and eight; the eight-vCPU FreeBSD test sustained
-  guest-to-host network load.  Longer cross-guest stress, repeated AP reset,
-  pause/unpause and guest reboot remain to be validated.
+  validated with OpenBSD guests at two, four and eight vCPUs, Linux at four
+  and eight, and FreeBSD at two and eight.  The eight-vCPU FreeBSD test
+  sustained guest-to-host network load.  OpenBSD and Ubuntu SMP reboot, Ubuntu
+  halt/poweroff, and forced termination are also validated.  Longer
+  cross-guest stress, repeated reset loops and pause/unpause remain.
 - Four/eight-vCPU field validation was on AMD SVM.  The common assertion latch
   and Intel VMX run path are both updated and build-tested, and VMX reset
   reconstructs its interrupt-window control without SVM's dummy vector, but an
@@ -788,13 +814,13 @@ does not implement IOMMU-posted interrupts.
 1. Extend the passing Linux four-vCPU smoke test with sustained
    timer/IPI/virtio interrupt stress; FreeBSD network-load coverage now reaches
    eight vCPUs.
-2. Exercise pause/unpause and guest reboot with APs both parked and running,
-   including repeated INIT-SIPI sequences.
+2. Exercise pause/unpause with APs both parked and running, and extend the
+   passing OpenBSD/Ubuntu reboot tests into repeated reset loops.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
    `/dev/vmm` ioctl path already drops the kernel big lock before VMM_IOC_RUN,
    so no global execution serialization is currently known.
-4. Optionally finish the x2AVIC kernel HLT lifecycle checks with pause/unpause
-   and forced termination.  Boot, login and clean shutdown pass, and two-,
+4. Optionally finish the x2AVIC kernel HLT lifecycle checks with pause/unpause.
+   Boot, login, clean shutdown and forced termination pass, and two-,
    four- and eight-vCPU four-stream network tests reduce `ipi-not-running` and
    HLT userspace exits to zero.  Pause/unpause is deferred for now.
 5. Runtime-test the legacy AMD AVIC prototype on a bit-13-capable host and

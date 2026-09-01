@@ -53,6 +53,8 @@ static void *event_thread(void *);
 static void *lapic_timer_thread(void *);
 static void *vcpu_run_loop(void *);
 static int vcpu_apply_pending_startup(uint32_t);
+static int vcpu_should_stop(void);
+static void vcpu_stop_peers(uint32_t);
 static int vcpu_kick(uint32_t, uint32_t);
 static int vmm_create_vm(struct vmd_vm *);
 static void pause_vm(struct vmd_vm *);
@@ -76,6 +78,7 @@ pthread_mutex_t vcpu_unpause_mtx[VMM_MAX_VCPUS_PER_VM];
 
 pthread_mutex_t vm_mtx;
 uint8_t vcpu_hlt[VMM_MAX_VCPUS_PER_VM];
+uint8_t vcpu_hlt_intr[VMM_MAX_VCPUS_PER_VM];
 uint8_t vcpu_done[VMM_MAX_VCPUS_PER_VM];
 uint64_t vcpu_wake_gen[VMM_MAX_VCPUS_PER_VM];
 uint64_t vcpu_enter_gen[VMM_MAX_VCPUS_PER_VM];
@@ -89,6 +92,7 @@ enum vcpu_runstate {
 
 static uint8_t vcpu_runstate[VMM_MAX_VCPUS_PER_VM];
 static uint8_t vcpu_sipi_vector[VMM_MAX_VCPUS_PER_VM];
+static uint8_t vm_vcpus_stopping;
 
 static volatile int lapic_timer_stop = 0;
 
@@ -862,7 +866,7 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	struct vmop_create_params *vmc;
 	uint8_t evdone = 0;
 	size_t i;
-	int ret;
+	int join_ret, ret;
 	pthread_t *tid, evtid, laptid;
 	char tname[MAXCOMLEN + 1];
 	struct vm_run_params **vrp;
@@ -873,6 +877,7 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	if (vmc->vmc_nmemranges == 0 ||
 	    vmc->vmc_nmemranges > VMM_MAX_MEM_RANGES)
 		return (EINVAL);
+	__atomic_store_n(&vm_vcpus_stopping, 0, __ATOMIC_RELAXED);
 
 	tid = calloc(vmc->vmc_ncpus, sizeof(pthread_t));
 	if (tid == NULL) {
@@ -981,6 +986,7 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 		}
 
 		vcpu_hlt[i] = 0;
+		vcpu_hlt_intr[i] = 0;
 		vcpu_done[i] = 0;
 		vcpu_wake_gen[i] = 0;
 		vcpu_enter_gen[i] = 0;
@@ -1043,24 +1049,6 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 			return (ret);
 		}
 
-		/*
-		 * Did a VCPU thread exit with an error? => return the first one
-		 */
-		mutex_lock(&vm_mtx);
-		for (i = 0; i < vmc->vmc_ncpus; i++) {
-			if (vcpu_done[i] == 0)
-				continue;
-
-			if (pthread_join(tid[i], &exit_status)) {
-				log_warn("failed to join thread %zd", i);
-				mutex_unlock(&vm_mtx);
-				return (EIO);
-			}
-
-			ret = (intptr_t)exit_status;
-		}
-		mutex_unlock(&vm_mtx);
-
 		/* Did the event thread exit? => return with an error */
 		if (evdone) {
 			if (pthread_join(evtid, &exit_status)) {
@@ -1083,6 +1071,27 @@ run_vm(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 			break;
 
 		/* Some more threads to wait for, start over */
+	}
+
+	/*
+	 * Each vCPU publishes vcpu_done before taking threadmutex to notify this
+	 * thread.  Drop threadmutex before joining, and join each vCPU exactly
+	 * once after all of them have published completion.
+	 */
+	mutex_unlock(&threadmutex);
+	ret = 0;
+	for (i = 0; i < vmc->vmc_ncpus; i++) {
+		join_ret = pthread_join(tid[i], &exit_status);
+		if (join_ret != 0) {
+			log_warnx("failed to join thread %zd: %s", i,
+			    strerror(join_ret));
+			return (EIO);
+		}
+
+		/* A guest reset takes precedence over sibling exit statuses. */
+		if ((intptr_t)exit_status == EAGAIN ||
+		    (ret == 0 && (intptr_t)exit_status != 0))
+			ret = (intptr_t)exit_status;
 	}
 
 	lapic_timer_stop = 1;
@@ -1169,6 +1178,11 @@ vcpu_run_loop(void *arg)
 	int paused = 0, vector;
 
 	for (;;) {
+		if (vcpu_should_stop()) {
+			ret = 0;
+			break;
+		}
+
 		ret = vcpu_apply_pending_startup(n);
 		if (ret != 0)
 			break;
@@ -1304,7 +1318,7 @@ vcpu_run_loop(void *arg)
 		mutex_lock(&vcpu_run_mtx[n]);
 		paused = vcpu_runstate[n] != VCPU_RUNSTATE_RUNNING;
 		mutex_unlock(&vcpu_run_mtx[n]);
-		if (paused)
+		if (paused && !vcpu_should_stop())
 			continue;
 
 		/* If the VM is terminating, exit normally */
@@ -1322,7 +1336,16 @@ vcpu_run_loop(void *arg)
 			if (ret)
 				break;
 		}
+
+		/* A sibling requested teardown; do not re-enter the guest. */
+		if (vcpu_should_stop()) {
+			ret = 0;
+			break;
+		}
 	}
+
+	if (ret != 0)
+		vcpu_stop_peers(n);
 
 	mutex_lock(&vm_mtx);
 	vcpu_done[n] = 1;
@@ -1333,6 +1356,48 @@ vcpu_run_loop(void *arg)
 	mutex_unlock(&threadmutex);
 
 	return ((void *)ret);
+}
+
+/* Return whether another vCPU has started terminating this VM. */
+static int
+vcpu_should_stop(void)
+{
+	return (__atomic_load_n(&vm_vcpus_stopping, __ATOMIC_ACQUIRE));
+}
+
+/*
+ * Once a vCPU reports a terminal status, wake parked vCPUs and kick running
+ * vCPUs out of VMM_IOC_RUN so every run-loop thread observes the stop request.
+ * A normal vCPU exit does not stop its peers: firmware and an operating system
+ * may park an AP before the BSP reports the reset.
+ */
+static void
+vcpu_stop_peers(uint32_t source)
+{
+	uint32_t i, ncpus;
+	int first, ret;
+
+	first = __atomic_exchange_n(&vm_vcpus_stopping, 1,
+	    __ATOMIC_ACQ_REL) == 0;
+	if (!first)
+		return;
+
+	ncpus = current_vm->vm_params.vmc_ncpus;
+	for (i = 0; i < ncpus; i++) {
+		mutex_lock(&vcpu_run_mtx[i]);
+		ret = pthread_cond_broadcast(&vcpu_run_cond[i]);
+		mutex_unlock(&vcpu_run_mtx[i]);
+		if (ret != 0)
+			log_warnx("%s: can't wake vcpu %u (%d)", __func__, i,
+			    ret);
+
+		if (i == source)
+			continue;
+		ret = vcpu_kick(current_vm->vm_vmmid, i);
+		if (ret != 0)
+			log_debug("%s: cannot kick vcpu %u: %s", __func__, i,
+			    strerror(ret));
+	}
 }
 
 /*
@@ -1620,18 +1685,21 @@ remap_guest_mem(struct vmd_vm *vm, int vmm_fd)
 }
 
 void
-vcpu_halt(uint32_t vcpu_id)
+vcpu_halt(uint32_t vcpu_id, int interruptible)
 {
 	mutex_lock(&vcpu_run_mtx[vcpu_id]);
+	vcpu_hlt_intr[vcpu_id] = interruptible != 0;
 	/*
 	 * An interrupt can race the HLT exit after it has signalled this
 	 * condition variable but before the vCPU thread records the halt.
 	 * Keep the vCPU runnable when that interrupt is still pending; otherwise
 	 * the earlier signal is lost and an SMP guest can wait forever for an
-	 * IPI which is already in its LAPIC IRR.
+	 * IPI which is already in its LAPIC IRR.  A non-interruptible AP halt is
+	 * instead kept parked until INIT/SIPI changes its run state.
 	 */
-	if (vcpu_wake_gen[vcpu_id] == vcpu_enter_gen[vcpu_id] &&
-	    !intr_pending(vcpu_id))
+	if (!interruptible ||
+	    (vcpu_wake_gen[vcpu_id] == vcpu_enter_gen[vcpu_id] &&
+	    !intr_pending(vcpu_id)))
 		vcpu_hlt[vcpu_id] = 1;
 	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
 }
@@ -1641,7 +1709,8 @@ vcpu_unhalt(uint32_t vcpu_id)
 {
 	mutex_lock(&vcpu_run_mtx[vcpu_id]);
 	vcpu_wake_gen[vcpu_id]++;
-	vcpu_hlt[vcpu_id] = 0;
+	if (!vcpu_hlt[vcpu_id] || vcpu_hlt_intr[vcpu_id])
+		vcpu_hlt[vcpu_id] = 0;
 	mutex_unlock(&vcpu_run_mtx[vcpu_id]);
 }
 
