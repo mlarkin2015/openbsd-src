@@ -77,12 +77,15 @@ struct x86_prefix {
 enum x86_opcode_type {
 	OP_UNKNOWN = 0,		/* Default value when undecoded. */
 	OP_AND,
+	OP_CMP,
 	OP_IN,
 	OP_INS,
 	OP_MOV,
 	OP_MOVZX,
 	OP_OUT,
 	OP_OUTS,
+	OP_PUSH,
+	OP_SUB,
 	OP_TEST,
 	OP_TWO_BYTE,		/* Opcode is two bytes, not one. */
 	OP_UNSUPPORTED,		/* Valid decode, but no current support. */
@@ -92,6 +95,7 @@ enum x86_opcode_type {
 enum x86_operand_enc {
 	OP_ENC_UNKNOWN = 0,
 	OP_ENC_I,		/* Only immediate operand */
+	OP_ENC_M,		/* Only ModRM operand */
 	OP_ENC_MI,		/* Immediate to ModRM */
 	OP_ENC_MR,		/* Register to ModRM */
 	OP_ENC_RM,		/* ModRm to Register */

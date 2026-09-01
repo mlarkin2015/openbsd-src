@@ -1,6 +1,6 @@
 # PLAN-000-MASTER: Bringing vmm/vmd to Windows Guest Support
 
-**Status**: implementation in progress. **Date**: 2026-08-31.
+**Status**: implementation in progress. **Date**: 2026-09-01.
 **Scope**: OpenBSD hypervisor (kernel `vmm(4)` + userspace `vmd(8)`) capable of
 installing and running Microsoft Windows 10/11 as guests.
 
@@ -51,6 +51,15 @@ SeaBIOS now receives the configured CPU count, parked APs no longer spin for a
 uniprocessor guest, and VM-wide stop/reset coordination makes OpenBSD and
 Ubuntu SMP reboot plus Ubuntu halt/poweroff reliable.  Repeated reset loops,
 pause/unpause and Intel VMX validation remain.
+
+The closeout also restored 32-bit guest support.  The userspace GVA walker now
+handles non-PAE and PAE32 page-table formats and high physical frames
+correctly; MMIO decoding covers the OpenBSD/i386 LAPIC `pushl`, `subl` and
+`cmpl` sequences; and fixed MSI/MSI-X messages resolve xAPIC physical and
+flat/cluster logical destinations.  OpenBSD 7.9/i386 boots, networks and
+powers off, while Gentoo/i686 6.12 boots normally with virtio MSI-X after a
+`pci=nomsi` control isolated the logical-delivery fault.  CentOS 7/i386 reaches
+its virtio disk but still requires the planned ACPI PCI INTx `_PRT` routing.
 
 ## Verified current state (original source audit, 2026-08-21)
 
