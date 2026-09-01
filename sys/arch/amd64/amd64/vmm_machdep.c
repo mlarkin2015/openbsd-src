@@ -173,6 +173,7 @@ static void svm_avic_set_mode(struct vcpu *, uint8_t);
 static void svm_avic_export_state(struct vcpu *, uint32_t *);
 static void svm_avic_import_state(struct vcpu *, const uint32_t *, uint8_t,
     uint8_t);
+static void svm_avic_eoi(struct vcpu *, uint8_t);
 static void svm_x2avic_msr_intercepts(struct vcpu *, int);
 static int vmm_write_apicbase(struct vcpu *, uint64_t);
 static int vmm_x2apic_msr(struct vcpu *, uint32_t, int, uint64_t);
@@ -3440,6 +3441,54 @@ svm_avic_inject(struct vcpu *vcpu, uint8_t vector, int level)
 	return (0);
 }
 
+/*
+ * Complete the LAPIC half of an unaccelerated AVIC EOI trap.  The vector in
+ * EXITINFO2 identifies the in-service interrupt which caused the trap.  The
+ * IOAPIC half is completed by vmd after the exit is returned to userspace.
+ *
+ * Clear only the reported ISR bit so this remains harmless on hardware which
+ * has already retired it, and preserve a second instance queued in IRR while
+ * the first interrupt was in service.
+ */
+static void
+svm_avic_eoi(struct vcpu *vcpu, uint8_t vector)
+{
+	volatile uint32_t *isr;
+	uint32_t bit, isrv = 0, ppr, tpr;
+	uint16_t offset;
+	int i;
+
+	if (vector < 32)
+		return;
+
+	offset = (vector / 32) << 4;
+	bit = 1U << (vector % 32);
+	isr = svm_avic_reg(vcpu, LAPIC_ISR + offset);
+	atomic_clearbits_int(isr, bit);
+
+	for (i = 7; i >= 0; i--) {
+		uint32_t map;
+		int n;
+
+		map = *svm_avic_reg(vcpu, LAPIC_ISR + (i << 4));
+		if (map == 0)
+			continue;
+		for (n = 31; n >= 0; n--)
+			if (map & (1U << n))
+				break;
+		isrv = (i << 5) | n;
+		break;
+	}
+
+	tpr = *svm_avic_reg(vcpu, LAPIC_TPRI) & LAPIC_TPRI_MASK;
+	if ((tpr & 0xf0) >= (isrv & 0xf0))
+		ppr = tpr;
+	else
+		ppr = isrv & 0xf0;
+	*svm_avic_reg(vcpu, LAPIC_PPRI) = ppr;
+	svm_set_dirty(vcpu, SVM_CLEANBITS_TPR);
+}
+
 static int
 svm_avic_init_vcpu(struct vcpu *vcpu, struct vm_create_params *vcp)
 {
@@ -5007,6 +5056,8 @@ svm_avic_handle_exit(struct vcpu *vcpu)
 	    vcpu->vc_svm_avic_mode == VMM_AVIC_X2APIC;
 
 	if (vea->vea_write && svm_avic_trap_write(vea->vea_offset)) {
+		if (vea->vea_offset == LAPIC_EOI)
+			svm_avic_eoi(vcpu, vea->vea_vector);
 		value = *svm_avic_reg(vcpu, vea->vea_offset);
 		vea->vea_value = value;
 		if (vea->vea_offset == LAPIC_ICRLO)

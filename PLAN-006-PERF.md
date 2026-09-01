@@ -80,6 +80,13 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
   round trips but does not demonstrate a network-throughput gain.  The
   remaining device I/O is concentrated on vCPU0, and x2APIC timer exits scale
   linearly at approximately 250 per vCPU per five seconds.
+- FreeBSD SMP exposed a correctness gap in the x2AVIC unaccelerated-EOI path.
+  The AVIC exit carried the level-triggered vector to vmd, which completed the
+  IOAPIC remote-IRR side effect, but the LAPIC backing page retained that
+  vector in ISR and retained its PPR class.  vmm now clears the reported ISR
+  bit and recomputes PPR while preserving a new same-vector request in IRR.
+  FreeBSD 15.1-p3 boots, permits login and shuts down cleanly with two vCPUs;
+  four-vCPU OpenBSD and Linux smoke tests also pass.
 
 ## SMP network measurements (2026-08-28)
 
