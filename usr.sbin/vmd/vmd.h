@@ -559,7 +559,7 @@ int 	 vcpu_intr_vector(uint32_t, uint32_t, uint8_t, int);
 #endif /* __amd64 __ */
 
 /* vm.c (mi functions) */
-void	 vcpu_halt(uint32_t);
+void	 vcpu_halt(uint32_t, int);
 void	 vcpu_unhalt(uint32_t);
 void	 vcpu_signal_run(uint32_t);
 void	 vcpu_assert_init(uint32_t);

@@ -39,8 +39,12 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   shutdown after correcting the LAPIC version and unaccelerated-EOI backing
   state.  It also runs with eight vCPUs under varied guest-to-host iperf3
   loads, reaching an observed peak of 27.2 Gbit/s.  Four-vCPU Linux and
-  OpenBSD smoke tests pass with the same kernel.  Repeated INIT-SIPI,
-  pause/unpause and reboot remain manual items.
+  OpenBSD smoke tests pass with the same kernel, and an eight-vCPU Linux guest
+  passed package-update stress and reached 17.7 Gbit/s guest-to-host.  A
+  four-vCPU-configured OpenBSD VM running a GENERIC uniprocessor kernel no
+  longer spins its firmware APs.  OpenBSD SMP reboot, Ubuntu 24 SMP reboot and
+  Ubuntu halt/poweroff pass after VM-wide stop/reset coordination.  Repeated
+  reset loops, pause/unpause and Intel VMX remain manual items.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
