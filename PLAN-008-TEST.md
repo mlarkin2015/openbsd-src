@@ -34,10 +34,11 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
 - Manual SMP validation boots OpenBSD GENERIC.MP guests with two, four and
   eight vCPUs.  Four/eight-vCPU fsck/mountroot testing exposed and validated
   the fix for a lost `VMM_IOC_INTR` assertion at `VMM_IOC_RUN` entry.  Longer
-  stress and an Intel VMX field run remain manual test items.  A FreeBSD
-  15.1-p3 SMP retry identified a bad extended-APIC-space advertisement; its
-  kernel fix is installed pending a host reboot and retest.  SMP Linux,
-  repeated INIT-SIPI, pause/unpause and reboot also remain manual items.
+  stress and an Intel VMX field run remain manual test items.  FreeBSD
+  15.1-p3 now completes a two-vCPU x2APIC/x2AVIC boot, login and clean
+  shutdown after correcting the LAPIC version and unaccelerated-EOI backing
+  state.  Four-vCPU Linux and OpenBSD smoke tests pass with the same kernel.
+  Repeated INIT-SIPI, pause/unpause and reboot remain manual items.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure

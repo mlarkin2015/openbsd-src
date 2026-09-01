@@ -695,9 +695,22 @@ page advertised bit 31 in the LAPIC version register.  On AMD, that bit means
 the extended APIC register space exists; FreeBSD consequently read x2APIC MSR
 0x840 (`LAPIC_EXT_FEATURES`), which vmm correctly rejected with #GP because
 that register space is not implemented.  The advertised version is now
-0x00060010 in both models, and the regression checks it exactly.  The matching
-GENERIC.MP kernel is built and installed as `/bsd`; final FreeBSD SMP boot
-validation requires rebooting the host into it.
+0x00060010 in both models, and the regression checks it exactly.
+
+That correction allowed AP startup but did not resolve a later ZFS mountroot
+hang.  Instrumenting the x2AVIC backing page found vector 48 simultaneously
+present in ISR and IRR on CPU 1 with PPR stuck at class 0x30.  The first vtblk
+interrupt's AVIC unaccelerated-EOI exit had reached vmd, which cleared the
+IOAPIC remote-IRR state, but neither hardware nor vmm had retired the vector
+from the LAPIC backing-page ISR.  The second instance could therefore remain
+pending indefinitely.  vmm now clears the EOI exit's reported ISR bit,
+recomputes PPR from the remaining ISR and TPR state, and leaves a concurrent
+same-vector IRR/TMR request intact; vmd continues to complete the IOAPIC half.
+
+The matched kernel completed a FreeBSD 15.1-p3 two-vCPU boot, login and clean
+shutdown with x2APIC/x2AVIC enabled.  A software-xAPIC control boot with
+`hw.apic.x2apic_mode=0` also passed during diagnosis.  Four-vCPU OpenBSD and
+Linux guests booted normally with the final kernel.
 
 ## Known remaining gaps
 
@@ -741,9 +754,9 @@ LAPIC MMIO/ICR exits; device-process transitions remain because this prototype
 does not implement IOMMU-posted interrupts.
 
 - Concurrent execution, INIT-SIPI and interrupt delivery through boot are
-  validated with OpenBSD guests at two, four and eight vCPUs.  Longer stress,
-  repeated AP reset, pause/unpause, guest reboot, and SMP Linux/FreeBSD remain
-  to be validated.
+  validated with OpenBSD guests at two, four and eight vCPUs, Linux at four,
+  and FreeBSD at two.  Longer cross-guest stress, repeated AP reset,
+  pause/unpause and guest reboot remain to be validated.
 - Four/eight-vCPU field validation was on AMD SVM.  The common assertion latch
   and Intel VMX run path are both updated and build-tested, and VMX reset
   reconstructs its interrupt-window control without SVM's dummy vector, but an
@@ -766,9 +779,8 @@ does not implement IOMMU-posted interrupts.
 
 ## Next steps after testing
 
-1. Reboot into the installed GENERIC.MP kernel and repeat the two-vCPU FreeBSD
-   15.1-p3 boot.  Then boot SMP Linux and stress timer/IPI/virtio interrupt
-   delivery in both guests.
+1. Extend the passing FreeBSD two-vCPU and Linux four-vCPU smoke tests with
+   sustained timer/IPI/virtio interrupt stress and higher FreeBSD CPU counts.
 2. Exercise pause/unpause and guest reboot with APs both parked and running,
    including repeated INIT-SIPI sequences.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
