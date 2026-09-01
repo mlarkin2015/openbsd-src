@@ -562,39 +562,42 @@ Every CPU reports `smt 0`, a unique core ID equal to its vCPU ID, and
 `package 0`.  The three-vCPU run specifically validates the non-power-of-two
 APIC-ID-width case.
 
-### Two-queue virtio-net TX path (runtime and performance validated)
+### Four-pair virtio-net TX path (runtime and performance validated)
 
-Virtio-net now advertises `VIRTIO_NET_F_CTRL_VQ` and `VIRTIO_NET_F_MQ`, two
-queue pairs, and the standard `max_virtqueue_pairs` device-config field.  The
-control virtqueue implements `VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET`, defaults to
-one active pair after reset, and accepts one or two pairs.  Its index follows
-the negotiated layout: queue 2 when MQ was declined and queue 4 when MQ was
-accepted.
+Virtio-net now advertises `VIRTIO_NET_F_CTRL_VQ` and `VIRTIO_NET_F_MQ`, up to
+four queue pairs, and the standard `max_virtqueue_pairs` device-config field.
+The control virtqueue implements `VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET`, defaults
+to one active pair after reset, and accepts one through four pairs.  Its index
+follows the negotiated layout: queue 2 when MQ was declined and queue 8 when
+MQ was accepted.
 
 Each TX queue has an independent worker thread, event loop, notification pipe,
 descriptor scratch space, used-ring accounting and MSI-X queue interrupt.
 This is intentionally a TX-only scaling experiment: the one tap descriptor is
-still read by one RX thread, all host packets are placed on RX queue 0, and RX
-queue 1 notifications are left idle.  No tap(4) interface changes are part of
-this milestone.  Five-second verbose statistics now split kicks, interrupts,
-packets and bytes by queue pair and include the control queue.
+still read by one RX thread, all host packets are placed on RX queue 0, and
+notifications for every other RX queue are left idle.  No tap(4) interface
+changes are part of this milestone.  Five-second verbose statistics split
+kicks, interrupts, packets and bytes by queue pair and include the control
+queue.  Compile-time assertions keep the queue/vector count within the
+16-entry MSI-X table and keep the TX-worker interrupt messages synchronized
+with the configured pair count.
 
 A fresh vmd build and the complete `regress/usr.sbin/vmd` suite pass.  With
-the topology kernel and vmd installed, OpenBSD guests at one, two, three, four
-and eight vCPUs boot, permit login, exchange ping traffic and shut down
-cleanly.  SMP guests report two queues.  `vmstat -zi` exposes four MSI-X
-handlers: `vio0:0` configuration, `vio0:1` control, and `vio0:2`/`:3` for
-queue pairs 0/1.  Under eight-vCPU parallel TX, the two pair handlers reached
-42,106 and 22,517 interrupts respectively.  More importantly, vmd's packet
-counters show both TX workers carrying comparable packet and byte loads while
-RX remains exclusively on q0, exactly matching the intended TX-only design.
+the topology kernel and four-pair vmd installed, OpenBSD guests at one, two,
+four and eight vCPUs boot, exchange network traffic and shut down cleanly.
+They select one, two, four and four pairs respectively.  A four-pair guest
+exposes six handlers: `vio0:0` configuration, `vio0:1` control, and
+`vio0:2` through `vio0:5` for pairs 0 through 3.  An eight-vCPU/eight-stream
+run incremented every pair handler by 10,961, 3,267, 4,617 and 3,433
+interrupts respectively.
 
 The one-vCPU guest reports one queue, passes network traffic and shuts down
 cleanly.  This confirms that declining MQ leaves the data queues usable with
 the alternate queue-2 control layout.  No control command is expected in that
 configuration, so the queue-2 control handler itself was not directly driven.
 
-Two 12-second runs per cell in the two-vCPU directional matrix produced:
+The initial two-pair implementation produced the following two-vCPU results,
+using two 12-second runs per cell:
 
 | Direction / streams | pre-MQ x2AVIC mean | MQ range (mean) | change |
 |---------------------|--------------------:|----------------:|-------:|
@@ -618,8 +621,21 @@ The established four-stream guest-to-host scaling test was also repeated:
 The first four-vCPU run was an isolated low outlier; the following two runs
 were stable at a 2.24 Gbit/s mean.  It is retained in the table rather than
 discarded.  Even including it, all tested SMP sizes improve materially over
-the matched single-queue baseline.  TSO remains deliberately deferred until
-the external vionet TSO diff is available.
+the matched single-queue baseline.
+
+Raising the cap from two to four pairs did not produce another comparable
+gain.  A four-vCPU/four-stream run reached 2.19 Gbit/s, versus the earlier
+stable two-pair mean of 2.24 Gbit/s.  Four-vCPU/eight-stream runs reached 2.31
+and 2.34 Gbit/s, while one eight-vCPU/eight-stream run reached 2.22 Gbit/s.
+During the eight-stream load, all four TX workers carried comparable packet
+counts; one representative five-second interval reported 261,726, 232,419,
+245,827 and 238,734 packets.  RX remained entirely on q0.
+
+The four-pair support is functional and removes queue count as the reason for
+the observed ceiling, but the current shared tap/write/network path saturates
+at roughly 2.2-2.3 Gbit/s.  Do not increase the cap again without evidence
+from a different workload or after offload work.  TSO remains deliberately
+deferred until the external vionet TSO diff is available.
 
 ## Known remaining gaps
 
@@ -680,10 +696,11 @@ does not implement IOMMU-posted interrupts.
   lowest-priority delivery are not implemented.
 - PM1A S5 poweroff is implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
-- Virtio-net exposes two queue pairs with independent TX workers and MSI-X
-  queue affinity.  Runtime testing at one, two, three, four and eight vCPUs
-  validates topology, the one-pair fallback, both TX workers and clean
-  shutdown.  RX deliberately remains on queue 0 behind one tap reader.
+- Virtio-net exposes up to four queue pairs with independent TX workers and
+  MSI-X queue affinity.  Runtime testing validates one, two and four active
+  pairs, all four TX workers and clean shutdown.  Four pairs do not exceed the
+  two-pair throughput ceiling; RX deliberately remains on queue 0 behind one
+  tap reader.
 
 ## Next steps after testing
 

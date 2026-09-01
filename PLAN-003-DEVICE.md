@@ -112,12 +112,12 @@ Add and enhance device emulation in vmd(8) to provide the hardware surface that 
 - VirtIO 1.0 feature negotiation exists (`virtio.h` has `VIRTIO_F_VERSION_1`)
 - MSI-X capability is partially implemented
 - PCI config space capabilities are present
-- Virtio-net offers two queue pairs with a control virtqueue.  Independent TX
-  workers and per-pair MSI-X vectors are runtime-validated at one, two, three,
-  four and eight vCPUs; RX intentionally remains on queue 0 behind one tap
-  reader.  Four-stream guest TX nearly doubles, while RX performance remains
-  flat.  TSO is the next vionet performance item once its external diff is
-  available.
+- Virtio-net offers up to four queue pairs with a control virtqueue.
+  Independent TX workers and per-pair MSI-X vectors are runtime-validated at
+  one, two and four active pairs; RX intentionally remains on queue 0 behind
+  one tap reader.  Moving from one to two workers nearly doubles parallel
+  guest TX, but four workers remain at the same 2.2-2.3 Gbit/s ceiling.  TSO
+  is the next vionet performance item once its external diff is available.
 
 **Enhancements**:
 1. **MSI-X for all VirtIO devices**:

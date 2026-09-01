@@ -33,15 +33,17 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
 - Event-driven I/O via `event(3)`
 - `vmctl log stats` provides five-second vCPU-exit, LAPIC/IPI and virtio-net
   queue/lock counters for controlled performance work
-- Virtio-net now exposes two queue pairs when MQ is negotiated.  Each TX
+- Virtio-net now exposes up to four queue pairs when MQ is negotiated.  Each TX
   queue has its own worker and MSI-X queue vector; RX intentionally remains
   on queue 0 behind the single tap reader.  The control queue supports the
   standard queue-pair command and retains the queue-2 layout when MQ is not
   negotiated.  A fresh vmd build and the vmd regression suite pass.  Runtime
-  tests at one, two, three, four and eight vCPUs validate the one-pair
-  fallback, both TX workers, MSI-X queue affinity, networking and clean
-  shutdown.  Parallel two-vCPU guest TX improves from 1.25 to 2.34 Gbit/s;
-  parallel RX remains flat, as expected from the single tap reader.
+  tests at one, two, four and eight vCPUs validate selection of one, two, four
+  and four pairs, MSI-X queue affinity, networking and clean shutdown.
+  Moving from one to two workers improves parallel two-vCPU guest TX from
+  1.25 to 2.34 Gbit/s, but four active workers remain at approximately the
+  same 2.2-2.3 Gbit/s ceiling.  Parallel RX remains flat, as expected from the
+  single tap reader.
 - Virtual CPUID topology now describes one package containing one single-
   threaded core per configured vCPU.  The legacy Intel leaf 1/4 view, modern
   leaves 0x0b/0x1f and AMD leaves 0x80000008/0x8000001e use the same APIC-ID
@@ -104,6 +106,19 @@ eight vCPUs.  The four-vCPU mean conservatively includes a 1.09 Gbit/s
 outlier; its following two runs were 2.26 and 2.22 Gbit/s.  vmd counters show
 comparable traffic on both TX workers, and the eight-vCPU guest recorded
 42,106 and 22,517 interrupts on the two queue-pair MSI-X handlers.
+
+## Four-pair TX measurements (2026-08-31)
+
+The device now advertises four pairs and OpenBSD guests select one, two or
+four according to their CPU count.  Four-vCPU/eight-stream runs reached 2.31
+and 2.34 Gbit/s; an eight-vCPU/eight-stream run reached 2.22 Gbit/s.  All four
+TX workers carried comparable loads, including a representative interval of
+261,726, 232,419, 245,827 and 238,734 packets, while RX remained on q0.
+
+This establishes that queue negotiation and worker distribution are not the
+reason throughput stops scaling beyond two pairs.  Keep the four-pair cap for
+now, but do not increase it again before measuring TSO or finding a workload
+that exceeds the current shared tap/write/network ceiling.
 
 Before implementing the broader items below, prioritize:
 
