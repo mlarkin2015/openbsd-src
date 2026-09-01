@@ -157,6 +157,11 @@ main(void)
 	assert(stats.icr_writes == 6);
 	assert(stats.ipi_targets == 2);
 
+	/* Linux/i386 MSI-X uses flat logical destination bit 0 for the BSP. */
+	write_reg(0, LAPIC_LDR, 1U << LAPIC_ID_SHIFT);
+	assert(i82489dx_targets(0x01, 1) == 0x01);
+	write_reg(0, LAPIC_LDR, 0);
+
 	/* Flat-mode logical fixed delivery selects the matching LDR bit. */
 	write_reg(1, LAPIC_LDR, 2U << LAPIC_ID_SHIFT);
 	write_reg(0, LAPIC_ICRHI, 2U << LAPIC_ID_SHIFT);

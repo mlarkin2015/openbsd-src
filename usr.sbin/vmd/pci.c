@@ -31,6 +31,7 @@
 #include "vmd.h"
 #include "pci.h"
 #include "atomicio.h"
+#include "i82489dx.h"
 #include "mmio.h"
 
 struct pci pci;
@@ -378,7 +379,9 @@ pci_msix_enabled(struct pci_dev *dev)
 static void
 pci_msi_deliver(uint64_t address, uint32_t data)
 {
+	uint64_t targets;
 	uint32_t dest;
+	uint32_t i;
 	uint8_t delivery, vector;
 
 	if ((address & PCI_MSI_ADDR_MASK) != PCI_MSI_ADDR_BASE ||
@@ -387,11 +390,6 @@ pci_msi_deliver(uint64_t address, uint32_t data)
 		    address);
 		return;
 	}
-	if (address & PCI_MSI_ADDR_DESTMODE) {
-		log_debug("%s: logical MSI destination unsupported", __func__);
-		return;
-	}
-
 	delivery = (data >> PCI_MSI_DATA_DELIVERY_SHIFT) &
 	    PCI_MSI_DATA_DELIVERY_MASK;
 	if (delivery != PCI_MSI_DELIVERY_FIXED) {
@@ -403,7 +401,12 @@ pci_msi_deliver(uint64_t address, uint32_t data)
 	dest = (address >> PCI_MSI_ADDR_DEST_SHIFT) &
 	    PCI_MSI_ADDR_DEST_MASK;
 	vector = data & PCI_MSI_DATA_VECTOR_MASK;
-	vcpu_assert_vector(current_vm->vm_vmmid, dest, vector);
+	targets = i82489dx_targets(dest,
+	    (address & PCI_MSI_ADDR_DESTMODE) != 0);
+	for (i = 0; i < current_vm->vm_params.vmc_ncpus; i++) {
+		if (targets & (1ULL << i))
+			vcpu_assert_vector(current_vm->vm_vmmid, i, vector);
+	}
 }
 
 void

@@ -29,7 +29,7 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
 - `regress/` directory exists with regression tests for lib/, sbin/, usr.bin/, usr.sbin/
 - Existing focused vmd tests under `regress/usr.sbin/vmd/` cover configuration,
   disk formats, LAPIC ICR/reset behavior, IOAPIC logical/lowest-priority
-  routing and x86 MMIO decoding.
+  routing, x86 MMIO decoding, and non-PAE/PAE32 guest page-table translation.
 - Existing vmm tests under `regress/sys/` remain limited.
 - Manual SMP validation boots OpenBSD GENERIC.MP guests with two, four and
   eight vCPUs.  Four/eight-vCPU fsck/mountroot testing exposed and validated
@@ -45,6 +45,11 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   longer spins its firmware APs.  OpenBSD SMP reboot, Ubuntu 24 SMP reboot and
   Ubuntu halt/poweroff pass after VM-wide stop/reset coordination.  Repeated
   reset loops, pause/unpause and Intel VMX remain manual items.
+- OpenBSD 7.9/i386 now boots with an IOAPIC/APIC clock, mounts root, obtains
+  DHCP, passes SSH/ping checks and powers off cleanly.  Gentoo/i686 6.12 boots
+  its Btrfs root with virtio MSI-X after a `pci=nomsi` control run isolated and
+  validated the xAPIC logical-MSI fix.  CentOS 7/i386 detects its virtio disk
+  but remains a legacy PCI INTx/ACPI `_PRT` routing test case.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure

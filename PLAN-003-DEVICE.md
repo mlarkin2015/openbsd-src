@@ -110,7 +110,9 @@ Add and enhance device emulation in vmd(8) to provide the hardware surface that 
 
 **Current state**:
 - VirtIO 1.0 feature negotiation exists (`virtio.h` has `VIRTIO_F_VERSION_1`)
-- MSI-X capability is partially implemented
+- generic PCI MSI and MSI-X capabilities are implemented for the modern
+  virtio devices, including MMIO table/PBA masking and pending delivery;
+  fixed xAPIC messages support physical and flat/cluster logical destinations
 - PCI config space capabilities are present
 - Virtio-net offers up to four queue pairs with a control virtqueue.
   Independent TX workers and per-pair MSI-X vectors are runtime-validated at
