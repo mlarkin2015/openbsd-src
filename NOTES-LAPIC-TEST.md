@@ -809,6 +809,30 @@ removed instead of advertising a clock the guest would not trust.  ACPI PM
 timer implementation and the underlying timer-calibration mismatch remain a
 separate platform follow-up.
 
+### NetBSD VirtIO 1.x split queues (2026-09-01)
+
+NetBSD 11/amd64 booted with both one and two vCPUs, but its network transmit
+path initially produced invalid or all-zero Ethernet frames.  vmd treated the
+three independently addressed areas of a modern split virtqueue as offsets
+from one host mapping.  That is valid for the legacy contiguous layout but is
+not guaranteed by the VirtIO 1.x PCI transport.  The descriptor, available
+and used guest addresses and host mappings are now retained separately by all
+modern virtio devices (RNG, network, block and SCSI).
+
+A second failure appeared when NetBSD brought vioif down and back up.  Device
+reset clears the negotiated driver-feature bitmap, while NetBSD can program
+modern queues during reinitialization before renegotiating features.  Queue
+setup now selects the immutable transport offered by the device rather than
+the temporarily empty negotiated bitmap, and reset clears each virtqueue
+before refreshing its selected PCI configuration registers.
+
+The installed vmd completed a two-vCPU NetBSD test with both CPUs online.  The
+guest renewed a DHCP lease, captured frames had valid Ethernet, ARP and ICMP
+headers, and a bridged host ping completed three of three replies.  The vioif
+MSI-X queue counter advanced from zero to 31 with no reported receive,
+transmit or control-queue errors, followed by a clean ACPI S5 shutdown.  The
+virtio block and RNG queues were also exercised by the successful boot.
+
 ## Phase closeout (2026-09-01)
 
 The LAPIC/IOAPIC, SMP, x2APIC/x2AVIC, MSI/MSI-X and virtio-net TX milestone
