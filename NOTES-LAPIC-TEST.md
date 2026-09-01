@@ -1,4 +1,4 @@
-# LAPIC/IOAPIC test notes (2026-08-21)
+# LAPIC/IOAPIC test notes (updated 2026-08-31)
 
 ## State
 
@@ -255,19 +255,21 @@ and exercised through a complete boot by a 2-vCPU OpenBSD guest:
 - vmd resets only vCPU 0 to the firmware entry point.  AP threads are created
   but remain parked in `WAIT_SIPI`; INIT resets the target LAPIC and vCPU, and
   SIPI starts it at `CS.base = vector << 12`, `RIP = 0`.
-- xAPIC ICR physical destinations and self/all destination shorthands deliver
-  fixed, INIT and STARTUP IPIs.  Logical destinations and other delivery modes
-  remain unsupported and are ignored rather than misrouted.
+- xAPIC ICR physical destinations, flat/cluster logical destinations and
+  self/all destination shorthands deliver fixed, INIT and STARTUP IPIs.
+  Lowest-priority, NMI, SMI and ExtINT ICR delivery modes remain unsupported
+  and are ignored rather than misrouted.
 - CPUID leaf 1 reports the configured logical-processor count and APIC ID,
   leaf 0x0b describes one thread per core in one package, and MSR_APICBASE sets
   the BSP bit only on vCPU 0.
 - `vm.conf` accepts `cpus count`; `vmctl start -p count` provides the equivalent
-  command-line control.  Both validate the 1-64 range, while VM instances
-  inherit their parent's count unless explicitly permitted to override it.
-- The new `regress/usr.sbin/vmd/lapic` test covers ICR readback, physical and
-  shorthand targets, fixed/INIT/SIPI dispatch, INIT deassert, LAPIC reset and
-  rejection of logical-destination IPIs.  Config regressions cover valid and
-  excessive vCPU counts.  GENERIC.MP, vmd and vmctl all build successfully.
+  command-line control and overrides a configured VM for one boot.  Both
+  validate the 1-64 range, while VM instances inherit their parent's count
+  unless explicitly permitted to override it.
+- The new `regress/usr.sbin/vmd/lapic` test covers ICR readback, physical,
+  logical and shorthand targets, fixed/INIT/SIPI dispatch, INIT deassert and
+  LAPIC reset.  Config regressions cover valid and excessive vCPU counts.
+  GENERIC.MP, vmd and vmctl all build successfully.
 
 The first 2-vCPU OpenBSD field test attached both `cpu0` and `cpu1`, proving
 that INIT-SIPI reached and ran the AP trampoline, but then entered a tight IPI
@@ -672,6 +674,31 @@ four-stream host-to-guest control reached 2.06 Gbit/s with zero retransmits,
 consistent with the earlier 1.91 Gbit/s result and confirming the tap-header
 change did not break the unaccelerated RX path.
 
+## LAPIC/SMP closeout fixes (2026-08-31)
+
+Two remaining table-stakes items were completed and tested:
+
+- `vmctl start -p count configured-vm` now applies a one-boot vCPU-count
+  override without treating the request as a new diskless VM.  vmd preserves
+  the configured count separately and restores it after stop or failed start.
+  A configured one-vCPU OpenBSD VM was started with `-p 2`; `vmctl status`
+  reported two vCPUs while running and one again after forced stop.
+- IOAPIC fixed delivery now resolves xAPIC physical, flat-logical and
+  cluster-logical destinations.  Lowest-priority delivery selects the enabled
+  target with the lowest PPR class and rotates equal-priority ties.  The LAPIC
+  regression uses the real IOAPIC model and covers logical multicast,
+  PPR-based selection and round-robin arbitration.
+
+A fresh two-vCPU FreeBSD 15.1-p3 test found one additional compatibility bug
+before AP startup.  Both the userspace LAPIC model and the AMD AVIC backing
+page advertised bit 31 in the LAPIC version register.  On AMD, that bit means
+the extended APIC register space exists; FreeBSD consequently read x2APIC MSR
+0x840 (`LAPIC_EXT_FEATURES`), which vmm correctly rejected with #GP because
+that register space is not implemented.  The advertised version is now
+0x00060010 in both models, and the regression checks it exactly.  The matching
+GENERIC.MP kernel is built and installed as `/bsd`; final FreeBSD SMP boot
+validation requires rebooting the host into it.
+
 ## Known remaining gaps
 
 ### AMD AVIC prototype (host runtime validation pending)
@@ -721,10 +748,9 @@ does not implement IOMMU-posted interrupts.
   and Intel VMX run path are both updated and build-tested, and VMX reset
   reconstructs its interrupt-window control without SVM's dummy vector, but an
   SMP boot on Intel hardware remains to be exercised.
-- IOAPIC destination-mode handling still ignores logical mode / lowest-prio
-  delivery (dest used directly as vcpu id).
-- LAPIC ICR fixed delivery supports physical destinations plus flat/cluster
-  logical destinations.  Lowest-priority, NMI, SMI and ExtINT delivery modes
+- IOAPIC fixed and lowest-priority delivery support physical, flat-logical and
+  cluster-logical destinations.  LAPIC ICR fixed delivery supports the same
+  destinations, but lowest-priority, NMI, SMI and ExtINT ICR delivery modes
   are not implemented.
 - MSI supports one 64-bit message per device.  MSI-X supports at most 16
   vectors per device.  x2APIC/remapped MSI, logical destinations, and
@@ -740,9 +766,9 @@ does not implement IOMMU-posted interrupts.
 
 ## Next steps after testing
 
-1. Continue longer OpenBSD stress at eight vCPUs, then boot SMP Linux and
-   FreeBSD guests; confirm every AP attaches and stress timer/IPI/virtio
-   interrupt delivery.
+1. Reboot into the installed GENERIC.MP kernel and repeat the two-vCPU FreeBSD
+   15.1-p3 boot.  Then boot SMP Linux and stress timer/IPI/virtio interrupt
+   delivery in both guests.
 2. Exercise pause/unpause and guest reboot with APs both parked and running,
    including repeated INIT-SIPI sequences.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the
@@ -758,6 +784,7 @@ does not implement IOMMU-posted interrupts.
    control and merged RX buffers before enabling tap RX offloads; keep generic
    tap-layer scaling outside this effort.
 7. Add active ACPI PM1 event sources and SCI delivery as they become needed.
-8. Add LAPIC/IOAPIC lowest-priority delivery.
+8. Add LAPIC ICR lowest-priority and remaining non-fixed delivery modes when a
+   guest requires them.
 9. Extend MSI routing only when a guest needs logical/x2APIC delivery or
    interrupt remapping.
