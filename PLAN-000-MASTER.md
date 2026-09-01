@@ -261,8 +261,9 @@ enlightened Windows.
      cluster-logical destinations are resolved through the LAPIC model;
      lowest-priority delivery selects by PPR class and rotates equal ties.
      Remaining work:
-   - NMI, ExtINT, SMI and Init IOAPIC delivery modes are rejected rather than
-     misdelivered as fixed vectors.
+   - NMI, ExtINT, SMI and Init IOAPIC-redirection delivery modes are rejected
+     rather than misdelivered as fixed vectors.  This does not include the
+     implemented 8259 PIC-through-LINT0 ExtINT compatibility path.
    - EOI broadcast suppression is not implemented.
 
 ## Risk register

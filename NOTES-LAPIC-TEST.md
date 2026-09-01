@@ -257,8 +257,9 @@ and exercised through a complete boot by a 2-vCPU OpenBSD guest:
   SIPI starts it at `CS.base = vector << 12`, `RIP = 0`.
 - xAPIC ICR physical destinations, flat/cluster logical destinations and
   self/all destination shorthands deliver fixed, INIT and STARTUP IPIs.
-  Lowest-priority, NMI, SMI and ExtINT ICR delivery modes remain unsupported
-  and are ignored rather than misrouted.
+  PIC-through-LINT0 ExtINT is implemented separately.  Lowest-priority, NMI,
+  SMI and ExtINT ICR delivery modes remain unsupported and are ignored rather
+  than misrouted.
 - CPUID leaf 1 reports the configured logical-processor count and APIC ID,
   leaf 0x0b describes one thread per core in one package, and MSR_APICBASE sets
   the BSP bit only on vCPU 0.
@@ -767,8 +768,9 @@ does not implement IOMMU-posted interrupts.
   SMP boot on Intel hardware remains to be exercised.
 - IOAPIC fixed and lowest-priority delivery support physical, flat-logical and
   cluster-logical destinations.  LAPIC ICR fixed delivery supports the same
-  destinations, but lowest-priority, NMI, SMI and ExtINT ICR delivery modes
-  are not implemented.
+  destinations.  PIC-through-LINT0 ExtINT is implemented, but
+  lowest-priority, NMI, SMI and ExtINT ICR delivery and IOAPIC-redirection
+  ExtINT are not implemented.
 - MSI supports one 64-bit message per device.  MSI-X supports at most 16
   vectors per device.  x2APIC/remapped MSI, logical destinations, and
   lowest-priority delivery are not implemented.
