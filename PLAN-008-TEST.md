@@ -37,8 +37,10 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   stress and an Intel VMX field run remain manual test items.  FreeBSD
   15.1-p3 now completes a two-vCPU x2APIC/x2AVIC boot, login and clean
   shutdown after correcting the LAPIC version and unaccelerated-EOI backing
-  state.  Four-vCPU Linux and OpenBSD smoke tests pass with the same kernel.
-  Repeated INIT-SIPI, pause/unpause and reboot remain manual items.
+  state.  It also runs with eight vCPUs under varied guest-to-host iperf3
+  loads, reaching an observed peak of 27.2 Gbit/s.  Four-vCPU Linux and
+  OpenBSD smoke tests pass with the same kernel.  Repeated INIT-SIPI,
+  pause/unpause and reboot remain manual items.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
