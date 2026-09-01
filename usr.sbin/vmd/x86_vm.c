@@ -24,6 +24,7 @@
 
 #include <machine/pte.h>
 #include <machine/i82489reg.h>
+#include <machine/psl.h>
 #include <machine/specialreg.h>
 #include "../../sys/arch/amd64/include/vmmvar.h"
 
@@ -732,7 +733,8 @@ vcpu_exit(struct vm_run_params *vrp)
 		break;
 	case VMX_EXIT_HLT:
 	case SVM_VMEXIT_HLT:
-		vcpu_halt(vrp->vrp_vcpu_id);
+		vcpu_halt(vrp->vrp_vcpu_id,
+		    (vrp->vrp_exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS] & PSL_I) != 0);
 		break;
 	case VMX_EXIT_TRIPLE_FAULT:
 	case SVM_VMEXIT_SHUTDOWN:
