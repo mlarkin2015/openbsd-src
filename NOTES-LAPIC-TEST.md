@@ -59,8 +59,14 @@ cpu0: apic clock running at 100MHz
 ```
 
 The same guest mounted its virtio root disk, completed rc, started its
-daemons, and reached the login prompt.  Follow-up repairs made during that
-test are:
+daemons, and reached the login prompt.  A later direct-kernel test used
+`vmctl start -i 1 -c -b /bsd -d openbsd-amd64-test.qcow2 -p 2 x` with no
+firmware payload.  OpenBSD 8.0 GENERIC.MP found the same ACPI tables, attached
+cpu1 through INIT/SIPI, selected the APIC clock, negotiated two virtio-net
+queues and MSI-X, mounted root and completed filesystem checks.  This confirms
+that the BDA RSDP path supports SMP directly and is not SeaBIOS-dependent.
+
+Follow-up repairs made during the original direct-kernel test are:
 
 - `0461f95` publishes the generated ACPI tables through the SeaBIOS loader.
 - `7a28201` repairs IOAPIC register selection, redirection-table masks,
@@ -201,10 +207,10 @@ virtio RNG, network, block, and SCSI devices:
 
 The FADT no longer advertises `FADT_NO_MSI`.  The message decoder implements
 the conventional xAPIC physical- and logical-destination formats at
-0xfee00000, with fixed delivery.  Logical messages use the LAPIC model's
-flat/cluster target resolution.  x2APIC, interrupt remapping and
-lowest-priority delivery remain future work rather than prerequisites for
-ordinary MSI.
+0xfee00000 with fixed and lowest-priority delivery.  Logical messages use the
+LAPIC model's flat/cluster target resolution; lowest-priority delivery selects
+one eligible target by PPR and rotates equal-priority ties.  x2APIC/remapped
+MSI remains future work rather than a prerequisite for ordinary MSI.
 
 An OpenBSD firmware boot enumerated all three boot devices on MSI-X and
 reached login:
@@ -482,12 +488,13 @@ rather than a controlled statistical confidence interval:
 | guest -> host, 4 | 1.62 Gbit/s | 1.19-1.31 (1.25) Gbit/s | -23% |
 | host -> guest, 4 | 2.27 Gbit/s | 1.91-1.99 (1.95) Gbit/s | -14% |
 
-The performance outcome is therefore mixed: removing software ICR traffic
-substantially improves the single-stream guest-transmit case, but does not by
-itself fix SMP network scaling and did not improve the parallel-flow cases in
-this noisy sample.  Virtio-net still exposes one queue pair, and x2AVIC does
-not eliminate userspace device processing or every interrupt-related exit.
-Four/eight-vCPU x2AVIC stress and network scaling remain to be measured.
+The performance outcome was mixed: removing software ICR traffic substantially
+improved the single-stream guest-transmit case, but did not by itself fix SMP
+network scaling or improve the parallel-flow cases in this noisy sample.
+These initial measurements preceded the x2AVIC HLT fast path and virtio-net
+multiqueue work described below; the later tests cover two, four and eight
+vCPUs.  x2AVIC still does not eliminate userspace device processing or every
+interrupt-related exit.
 
 ### x2AVIC HLT fast path (host runtime validated)
 
@@ -801,6 +808,17 @@ LAPIC/PIT calibration was already off by roughly 20x.  The timer was therefore
 removed instead of advertising a clock the guest would not trust.  ACPI PM
 timer implementation and the underlying timer-calibration mismatch remain a
 separate platform follow-up.
+
+## Phase closeout (2026-09-01)
+
+The LAPIC/IOAPIC, SMP, x2APIC/x2AVIC, MSI/MSI-X and virtio-net TX milestone
+is functionally complete on the AMD SVM/x2AVIC test host.  Firmware and
+direct-kernel SMP boots, 32- and 64-bit guests, INIT/SIPI and ordinary IPIs,
+edge and level device interrupts, reboot/poweroff, MSI-X queue affinity,
+multiqueue TX and TSO all have runtime coverage.  The items below are
+explicitly deferred cross-vendor validation, uncommon architectural modes or
+independent ACPI/RX performance work rather than blockers for closing this
+phase.
 
 ## Known remaining gaps
 
