@@ -39,11 +39,14 @@ ties.  AMD SVM reset now clears stale virtual-
 interrupt-window state, which had delivered dummy vector zero when the AP first
 enabled interrupts.  An atomic kernel assertion latch prevents concurrent
 `VMM_IOC_INTR` calls from being lost to a stale `VMM_IOC_RUN` pending snapshot;
-this fixed the four/eight-vCPU fsck/mountroot TLB-shootdown hang.  A FreeBSD
-15.1-p3 SMP retry exposed an incorrect AMD extended-APIC-space bit in the
-emulated LAPIC version; the corrected kernel is installed pending a host
-reboot and guest retest.  SMP Linux, repeated reset, pause and reboot
-validation remain next.
+this fixed the four/eight-vCPU fsck/mountroot TLB-shootdown hang.  FreeBSD
+15.1-p3 SMP testing exposed both an incorrect AMD extended-APIC-space bit in
+the emulated LAPIC version and an x2AVIC unaccelerated-EOI bug: vmd cleared the
+IOAPIC remote-IRR state, but the hardware LAPIC backing page retained the old
+ISR bit and PPR class.  vmm now retires the reported in-service vector and
+recomputes PPR before vmd completes the IOAPIC half.  FreeBSD boots, permits
+login and shuts down cleanly with two vCPUs; four-vCPU OpenBSD and Linux smoke
+tests also pass.  Repeated reset, pause/reboot and Intel VMX validation remain.
 
 ## Verified current state (original source audit, 2026-08-21)
 
@@ -67,7 +70,7 @@ What does **not** exist (gaps that gate Windows):
 
 | Gap | Impact on Windows |
 |---|---|
-| SMP cross-guest stress/reboot coverage incomplete | OpenBSD SMP boots; Linux/FreeBSD and repeated reset still need validation |
+| SMP lifecycle/architecture coverage incomplete | OpenBSD 2/4/8, Linux 4 and FreeBSD 2 boot; repeated reset/pause/reboot and Intel VMX still need validation |
 | No display device (VGA/virtio-gpu) | Windows Setup is graphical — cannot install blind |
 | No input (i8042 PS/2, USB tablet) | Cannot interact with Setup |
 | No IDE/AHCI storage (i82093aa is an IOAPIC, not IDE) | Storage = virtio only, needs driver ISO during setup |
@@ -102,8 +105,8 @@ Everything else depends on these. Order within the phase:
    `vm.c`/`i82489dx.c`): multi-vCPU admission, AP wait-for-SIPI, physical ICR
    fixed/INIT/SIPI delivery, logical destinations, IOAPIC lowest-priority
    arbitration and CPUID/APICBASE topology are implemented.  OpenBSD guests
-   boot with 2, 4 and 8 vCPUs.  Validate SMP Linux/FreeBSD, repeated INIT-SIPI,
-   IPI/timer/device delivery and pause/reboot behavior.
+   boot with 2, 4 and 8 vCPUs, Linux with 4, and FreeBSD with 2.  Continue with
+   repeated INIT-SIPI, IPI/timer/device stress and pause/reboot behavior.
 2. **OVMF as ROM** (userspace): load `ovmf.fd` through the existing bios path;
    map flash read-only in EPT; add NVRAM varstore pflash region (below firmware
    flash) with EPT write-trap persistence to `/var/vm/<vm>/nvram`;
@@ -264,7 +267,7 @@ enlightened Windows.
 
 | Risk | Mitigation |
 |---|---|
-| LAPIC/IPI rework destabilizes existing guests | OpenBSD SMP boot passes; counts remain per-VM opt-in pending Linux/FreeBSD and long stress validation |
+| LAPIC/IPI rework destabilizes existing guests | OpenBSD, Linux and FreeBSD SMP boots pass; counts remain per-VM opt-in pending lifecycle and long-stress validation |
 | OVMF build/toolchain on OpenBSD painful | Ship prebuilt ovmf.fd initially (Option B in PLAN-001); integrate build later |
 | Windows strictness on ACPI/SMBIOS bugs | Validate offline against golden dumps; use Linux guest acpidump once |
 | Scope creep (TPM crypto, USB, IDE) | Strict phase gating; M0 needs none of them beyond viogpu+i8042 |

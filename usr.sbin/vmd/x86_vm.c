@@ -635,7 +635,7 @@ vcpu_exit_avic(struct vm_run_params *vrp)
 		return (EINVAL);
 	}
 
-	/* AVIC completed a level-triggered EOI before requesting help. */
+	/* vmm completed the LAPIC EOI; finish its IOAPIC side effects. */
 	if (vea->vea_offset == LAPIC_EOI) {
 		i82093aa_eoi(vea->vea_vector);
 		return (0);
