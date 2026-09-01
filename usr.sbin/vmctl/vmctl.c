@@ -106,7 +106,7 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, size_t ncpus,
 		flags |= VMOP_CREATE_CDROM;
 	if (instance)
 		flags |= VMOP_CREATE_INSTANCE;
-	else if (flags != 0) {
+	else if (flags != 0 && flags != VMOP_CREATE_CPU) {
 		if (memsize < 1)
 			memsize = VM_DEFAULT_MEMORY;
 		if (ndisks > VM_MAX_DISKS_PER_VM)
