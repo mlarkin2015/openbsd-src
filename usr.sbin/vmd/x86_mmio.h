@@ -84,6 +84,7 @@ enum x86_opcode_type {
 	OP_MOVZX,
 	OP_OUT,
 	OP_OUTS,
+	OP_POP,
 	OP_PUSH,
 	OP_SUB,
 	OP_TEST,

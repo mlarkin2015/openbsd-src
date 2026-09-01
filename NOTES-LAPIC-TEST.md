@@ -754,8 +754,9 @@ were fixed:
   4 KiB/4 MiB and PAE32 high-frame regressions;
 - the MMIO opcode tables had 255 entries, making opcode `0xff` an out-of-bounds
   lookup.  The exact OpenBSD/i386 LAPIC sequences now decode and emulate
-  `pushl` from MMIO, `subl` from MMIO and `cmpl` against MMIO with the required
-  register, stack and flags semantics; and
+  `pushl` from MMIO, `popl` from the stack directly to MMIO, `subl` from MMIO
+  and `cmpl` against MMIO with the required register, stack and flags
+  semantics; and
 - Linux/i686 programmed virtio MSI-X messages to xAPIC logical destination
   bit 0 (`fee01004`).  vmd previously discarded every logical MSI.  Fixed MSI
   and MSI-X delivery now resolve physical or flat/cluster logical targets
@@ -768,6 +769,15 @@ isolated interrupt delivery from paging and MMIO decoding; after the logical
 MSI fix it boots normally with MSI-X, mounts its Btrfs root, obtains DHCP and
 reaches login.  The complete `regress/usr.sbin/vmd` suite passes with the new
 MMU, MMIO and LAPIC coverage.
+
+OpenBSD 8.0/i386 GENERIC.MP exposed one additional compiler-generated LAPIC
+access at mountroot: `8f 05 80 e0 f6 d0` is `popl 0xd0f6e080`, which restores a
+saved interrupt priority directly from the stack into the LAPIC TPR mapping.
+Opcode `8f /0` now reads `SS:ESP`, performs the MMIO write, and advances ESP
+and EIP only after success.  A regression uses the exact failing instruction
+and checks its stack read, TPR write and register updates.  The installed vmd
+then booted the guest with four vCPUs through filesystem checks and userland to
+login, followed by a clean vmmci shutdown.
 
 CentOS 7/i386 with Linux 3.10 provided two additional legacy controls.  Its
 older ACPICA disabled the interpreter because the FADT pointed to no FACS;

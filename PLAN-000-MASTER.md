@@ -55,14 +55,15 @@ pause/unpause and Intel VMX validation remain.
 The closeout also restored 32-bit guest support.  The userspace GVA walker now
 handles non-PAE and PAE32 page-table formats and high physical frames
 correctly; MMIO decoding covers the OpenBSD/i386 LAPIC `pushl`, `subl` and
-`cmpl` sequences; and fixed or lowest-priority MSI/MSI-X messages resolve
+`cmpl` sequences plus `popl` directly into the task-priority register; and
+fixed or lowest-priority MSI/MSI-X messages resolve
 xAPIC physical and flat/cluster logical destinations.  OpenBSD 7.9/i386 boots,
-networks and powers off, while Gentoo/i686 6.12 boots normally with virtio
-MSI-X after a
-`pci=nomsi` control isolated the logical-delivery fault.  CentOS 7/i386 and
-amd64 now boot normally after adding a FACS for its older ACPICA and accepting
-its xAPIC lowest-priority MSI-X messages.  The absent ACPI PM timer remains a
-separate clock/platform gap.
+networks and powers off, while OpenBSD 8.0/i386 GENERIC.MP boots with four
+vCPUs and shuts down cleanly.  Gentoo/i686 6.12 boots normally with virtio
+MSI-X after a `pci=nomsi` control isolated the logical-delivery fault.
+CentOS 7/i386 and amd64 now boot normally after adding a FACS for its older
+ACPICA and accepting its xAPIC lowest-priority MSI-X messages.  The absent
+ACPI PM timer remains a separate clock/platform gap.
 
 ## Verified current state (original source audit, 2026-08-21)
 
