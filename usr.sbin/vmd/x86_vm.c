@@ -557,7 +557,9 @@ vcpu_exit_inout(struct vm_run_params *vrp)
 			    data_sz);
 			if (ret) {
 				if (ret != EFAULT)
-					fatalx("read_vmem");
+					fatalx("read_vmem: gva=0x%llx "
+					    "segment=%u error=%d", rsi & mask,
+					    segment, ret);
 				/* XXX inject #PF */
 				fatalx("page fault in read_vmem: 0x%llx", rsi);
 			}
@@ -579,7 +581,9 @@ vcpu_exit_inout(struct vm_run_params *vrp)
 			    data_sz);
 			if (ret) {
 				if (ret != EFAULT)
-					fatalx("write_vmem");
+					fatalx("write_vmem: gva=0x%llx "
+					    "segment=%u error=%d", rdi & mask,
+					    segment, ret);
 				/* XXX inject #PF */
 				fatalx("page fault in write_vmem: 0x%llx", rdi);
 			}
@@ -1280,20 +1284,24 @@ read_vmem(struct vm_run_params *vrp, uint8_t segment, uint64_t gva, void *buf,
 			/* XXX inject #AC(0) */
 			return (EINVAL);
 		}
+		seg_ar = seg_info->vsi_ar;
+
 		/* Check for present, non-system segment. */
 		if (!(seg_ar & SEG_AR_P) || !(seg_ar & SEG_AR_S))
 			return (EINVAL);
 
 		/* Check segment limit. */
-		seg_ar = seg_info->vsi_ar;
 		if ((seg_ar & SEG_AR_DC) &&
 		   (uint32_t)gva < seg_info->vsi_limit)
 			return (EINVAL);
 		else if ((uint32_t)gva > seg_info->vsi_limit)
 			return (EINVAL);
 
-		/* Compute guest linear address. */
-		gpa = (uint32_t)gva + seg_info->vsi_base;
+		/* Compute and translate the guest linear address. */
+		gva = (uint32_t)(gva + seg_info->vsi_base);
+		ret = translate_gva(vrp->vrp_exit, gva, &gpa, PROT_READ);
+		if (ret)
+			return (ret);
 		break;
 	case VMM_CPU_MODE_REAL:
 		/* Not in protected mode. */
@@ -1357,8 +1365,11 @@ write_vmem(struct vm_run_params *vrp, uint8_t segment, uint64_t gva, void *buf,
 			return (EINVAL);
 		}
 
-		/* Compute guest linear address. */
-		gpa = (uint32_t)gva + seg_info->vsi_base;
+		/* Compute and translate the guest linear address. */
+		gva = (uint32_t)(gva + seg_info->vsi_base);
+		ret = translate_gva(vrp->vrp_exit, gva, &gpa, PROT_WRITE);
+		if (ret)
+			return (ret);
 		break;
 	case VMM_CPU_MODE_REAL:
 		/* Not in protected mode. */
