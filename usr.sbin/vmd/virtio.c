@@ -1209,8 +1209,10 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			}
 			virtio_dev_init(vm, dev, id, VIONET_QUEUE_SIZE_DEFAULT,
 			    VIRTIO_NET_QUEUES,
-			    (VIRTIO_NET_F_MAC | VIRTIO_NET_F_CTRL_VQ |
-			    VIRTIO_NET_F_MQ | VIRTIO_F_VERSION_1));
+			    (VIRTIO_NET_F_CSUM | VIRTIO_NET_F_MAC |
+			    VIRTIO_NET_F_HOST_TSO4 | VIRTIO_NET_F_HOST_TSO6 |
+			    VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_MQ |
+			    VIRTIO_F_VERSION_1));
 
 			bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_pci_io,
 			    dev);

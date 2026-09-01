@@ -116,8 +116,13 @@ Add and enhance device emulation in vmd(8) to provide the hardware surface that 
   Independent TX workers and per-pair MSI-X vectors are runtime-validated at
   one, two and four active pairs; RX intentionally remains on queue 0 behind
   one tap reader.  Moving from one to two workers nearly doubles parallel
-  guest TX, but four workers remain at the same 2.2-2.3 Gbit/s ceiling.  TSO
-  is the next vionet performance item once its external diff is available.
+  guest TX, but four workers remain at the same 2.2-2.3 Gbit/s ceiling.
+- Virtio-net now negotiates checksum offload plus host TCPv4/TCPv6
+  segmentation offload.  vmd translates guest virtio offload metadata into
+  tap(4)'s native offload header while retaining its scatter/gather payload
+  path.  Two-vCPU four-stream guest TX is runtime-validated at 17.8-20.4
+  Gbit/s, versus the previous 2.34 Gbit/s mean.  Host receive offloads and
+  merged receive buffers remain deliberately disabled, so RX is unchanged.
 
 **Enhancements**:
 1. **MSI-X for all VirtIO devices**:
