@@ -50,6 +50,11 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   its Btrfs root with virtio MSI-X after a `pci=nomsi` control run isolated and
   validated the xAPIC logical-MSI fix.  CentOS 7/i386 detects its virtio disk
   but remains a legacy PCI INTx/ACPI `_PRT` routing test case.
+- NetBSD 11/amd64 boots with one and two vCPUs.  Its modern virtio-net driver
+  obtains DHCP, transmits and receives valid Ethernet frames, advances its
+  MSI-X queue interrupt counter without vioif errors, passes a bridged gateway
+  ping and powers off cleanly.  This covers independent VirtIO 1.x split-ring
+  mappings and queue reinitialization after a device reset.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
