@@ -58,6 +58,8 @@ int i82489dx_is_pending(int);
 int i82489dx_ack(int);
 int i82489dx_enabled(int);
 int i82489dx_extint_enabled(int);
+uint64_t i82489dx_targets(uint8_t, int);
+int i82489dx_lowest_priority(uint64_t, uint32_t);
 int i82489dx_timer_check(uint32_t);
 void i82489dx_stats_snapshot(struct i82489dx_stats *);
 

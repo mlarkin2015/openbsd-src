@@ -3086,7 +3086,7 @@ svm_avic_reset_vlapic(struct vcpu *vcpu)
 		svm_avic_update_logical(vcpu, 0, 0xffffffff);
 	memset((void *)vcpu->vc_vlapic_va, 0, PAGE_SIZE);
 	*svm_avic_reg(vcpu, LAPIC_ID) = vcpu->vc_id << LAPIC_ID_SHIFT;
-	*svm_avic_reg(vcpu, LAPIC_VERS) = (1U << 31) |
+	*svm_avic_reg(vcpu, LAPIC_VERS) =
 	    (6U << LAPIC_VERSION_LVT_SHIFT) | 0x10;
 	*svm_avic_reg(vcpu, LAPIC_DFR) = 0xffffffff;
 	for (offset = LAPIC_LVTT; offset <= LAPIC_LVERR; offset += 0x10)
@@ -3146,7 +3146,7 @@ svm_avic_import_state(struct vcpu *vcpu, const uint32_t *regs, uint8_t mode,
 			*reg = value;
 	}
 
-	*svm_avic_reg(vcpu, LAPIC_VERS) = (1U << 31) |
+	*svm_avic_reg(vcpu, LAPIC_VERS) =
 	    (6U << LAPIC_VERSION_LVT_SHIFT) | 0x10;
 	if (mode == VMM_AVIC_X2APIC) {
 		*svm_avic_reg(vcpu, LAPIC_ID) = vcpu->vc_id;

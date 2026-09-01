@@ -1,6 +1,6 @@
 # PLAN-000-MASTER: Bringing vmm/vmd to Windows Guest Support
 
-**Status**: implementation in progress. **Date**: 2026-08-28.
+**Status**: implementation in progress. **Date**: 2026-08-31.
 **Scope**: OpenBSD hypervisor (kernel `vmm(4)` + userspace `vmd(8)`) capable of
 installing and running Microsoft Windows 10/11 as guests.
 
@@ -30,14 +30,20 @@ The initial SMP gate is now implemented and validated through complete
 vmd parks AP threads until INIT-SIPI; the LAPIC ICR handles physical fixed,
 INIT and STARTUP IPIs; and CPUID/APICBASE identify the configured topology and
 BSP correctly.
-`vm.conf` and `vmctl` expose validated vCPU-count controls.  Host builds and
-focused LAPIC/config regressions pass.  AMD SVM reset now clears stale virtual-
+`vm.conf` and `vmctl` expose validated vCPU-count controls; `vmctl start -p`
+now overrides a configured VM for one boot and restores its configured count
+after stop.  Host builds and focused LAPIC/config regressions pass.  IOAPIC
+fixed delivery resolves physical, flat-logical and cluster-logical
+destinations, while lowest-priority delivery selects by PPR and rotates equal
+ties.  AMD SVM reset now clears stale virtual-
 interrupt-window state, which had delivered dummy vector zero when the AP first
 enabled interrupts.  An atomic kernel assertion latch prevents concurrent
 `VMM_IOC_INTR` calls from being lost to a stale `VMM_IOC_RUN` pending snapshot;
-this fixed the four/eight-vCPU fsck/mountroot TLB-shootdown hang.  Longer
-stress, SMP Linux/FreeBSD, repeated reset, pause and reboot validation remain
-next.
+this fixed the four/eight-vCPU fsck/mountroot TLB-shootdown hang.  A FreeBSD
+15.1-p3 SMP retry exposed an incorrect AMD extended-APIC-space bit in the
+emulated LAPIC version; the corrected kernel is installed pending a host
+reboot and guest retest.  SMP Linux, repeated reset, pause and reboot
+validation remain next.
 
 ## Verified current state (original source audit, 2026-08-21)
 
@@ -94,10 +100,10 @@ Everything else depends on these. Order within the phase:
 
 1. **LAPIC/SMP completion** (kernel, `vmm.c`/`vmm_machdep.c` + userspace
    `vm.c`/`i82489dx.c`): multi-vCPU admission, AP wait-for-SIPI, physical ICR
-   fixed/INIT/SIPI delivery and CPUID/APICBASE topology are implemented.
-   A 2-vCPU OpenBSD guest now boots completely.  Complete its stress run, then
-   validate SMP Linux/FreeBSD, repeated INIT-SIPI, IPI/timer/device delivery
-   and pause/reboot behavior.
+   fixed/INIT/SIPI delivery, logical destinations, IOAPIC lowest-priority
+   arbitration and CPUID/APICBASE topology are implemented.  OpenBSD guests
+   boot with 2, 4 and 8 vCPUs.  Validate SMP Linux/FreeBSD, repeated INIT-SIPI,
+   IPI/timer/device delivery and pause/reboot behavior.
 2. **OVMF as ROM** (userspace): load `ovmf.fd` through the existing bios path;
    map flash read-only in EPT; add NVRAM varstore pflash region (below firmware
    flash) with EPT write-trap persistence to `/var/vm/<vm>/nvram`;
@@ -246,12 +252,12 @@ enlightened Windows.
      dirties all VMCB groups.  A 2-vCPU OpenBSD guest subsequently booted.
 3. **IOAPIC sufficiency assessment** (`i82093aa.c`): redirection indexing,
      edge detection, remote IRR and EOI re-evaluation have been repaired and
-     validated with OpenBSD, Linux and FreeBSD.  Remaining topology work:
-   - Destination is passed straight through as a vcpu id
-     (`i82093aa_deliver`: `int vcpu_id = dest`) ignoring physical-vs-logical
-     dest mode; logical mode + lowest-priority delivery are unimplemented.
-   - Delivery modes other than Fixed (NMI, ExtINT, SMI, Init) accepted but all
-     delivered as fixed vectors.
+     validated with OpenBSD, Linux and FreeBSD.  Physical, flat-logical and
+     cluster-logical destinations are resolved through the LAPIC model;
+     lowest-priority delivery selects by PPR class and rotates equal ties.
+     Remaining work:
+   - NMI, ExtINT, SMI and Init IOAPIC delivery modes are rejected rather than
+     misdelivered as fixed vectors.
    - EOI broadcast suppression is not implemented.
 
 ## Risk register
