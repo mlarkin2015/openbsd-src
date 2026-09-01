@@ -33,6 +33,11 @@
 
 static uint64_t mmio_read_value;
 static int mmio_last_dir;
+static uint64_t mmio_last_addr;
+static uint64_t mmio_write_value;
+static uint64_t mem_read_addr;
+static uint64_t mem_read_value;
+static size_t mem_read_len;
 static uint64_t mem_write_addr;
 static uint64_t mem_write_value;
 static size_t mem_write_len;
@@ -41,12 +46,15 @@ static int
 test_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
 {
 	(void)vcpu_id;
-	(void)addr;
 	mmio_last_dir = dir;
+	mmio_last_addr = addr;
 
-	if (dir != MMIO_DIR_READ)
+	if (dir == MMIO_DIR_READ)
+		*data = mmio_read_value;
+	else if (dir == MMIO_DIR_WRITE)
+		mmio_write_value = *data;
+	else
 		return -1;
-	*data = mmio_read_value;
 	return 0;
 }
 
@@ -284,6 +292,57 @@ test_cmpl_mmio(void)
 }
 
 static void
+test_popl_mmio(void)
+{
+	static const uint8_t bytes[] = {
+		0x8f, 0x05, 0x80, 0xe0, 0xf6, 0xd0
+	};
+	struct vm_exit exit;
+	struct x86_insn insn;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_D;
+	exit.vrs.vrs_sregs[VCPU_REGS_SS].vsi_base = 0;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xd065a521ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RSP] = 0xfeedfacec0100ffcULL;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode 32-bit MMIO POP");
+	if (insn.insn_gva != 0xd0f6e080ULL)
+		errx(1, "POP decoded address 0x%llx",
+		    (unsigned long long)insn.insn_gva);
+
+	mem_read_addr = 0;
+	mem_read_value = 0x89abcdefULL;
+	mem_read_len = 0;
+	mmio_last_dir = -1;
+	mmio_last_addr = 0;
+	mmio_write_value = 0;
+	if (insn_emulate(&exit, &insn, 0) != 0)
+		errx(1, "could not emulate 32-bit MMIO POP");
+	if (mem_read_addr != 0xc0100ffcULL || mem_read_len != 4)
+		errx(1, "POP read %zu bytes at 0x%llx", mem_read_len,
+		    (unsigned long long)mem_read_addr);
+	if (mmio_last_dir != MMIO_DIR_WRITE ||
+	    mmio_last_addr != 0xfee00080ULL ||
+	    mmio_write_value != 0x89abcdefULL)
+		errx(1, "POP wrote 0x%llx to 0x%llx with direction %d",
+		    (unsigned long long)mmio_write_value,
+		    (unsigned long long)mmio_last_addr, mmio_last_dir);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RSP] !=
+	    0xfeedfacec0101000ULL)
+		errx(1, "POP produced RSP 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RSP]);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RIP] !=
+	    0xd065a521ULL + sizeof(bytes))
+		errx(1, "POP advanced RIP to 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RIP]);
+}
+
+static void
 test_pushl_mmio(void)
 {
 	static const uint8_t bytes[] = {
@@ -402,6 +461,7 @@ main(void)
 	test_andl_mmio();
 	test_subl_mmio();
 	test_cmpl_mmio();
+	test_popl_mmio();
 	test_pushl_mmio();
 	test_movl_immediate_rex_b();
 	test_movl_rex_sib();
@@ -414,10 +474,20 @@ translate_gva(struct vm_exit *exit, uint64_t gva, uint64_t *gpa, int prot)
 {
 	(void)exit;
 	(void)prot;
-	if ((gva & 0xfffff000ULL) == 0xd0f3d000ULL)
+	if ((gva & 0xfffff000ULL) == 0xd0f3d000ULL ||
+	    (gva & 0xfffff000ULL) == 0xd0f6e000ULL)
 		*gpa = 0xfee00000ULL | (gva & 0xfff);
 	else
 		*gpa = gva & 0xffffffff;
+	return 0;
+}
+
+int
+read_mem(paddr_t gpa, void *buf, size_t len)
+{
+	mem_read_addr = gpa;
+	mem_read_len = len;
+	memcpy(buf, &mem_read_value, len);
 	return 0;
 }
 

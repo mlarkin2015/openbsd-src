@@ -79,6 +79,7 @@ static int emulate_cmp(struct x86_insn *, struct vm_exit *, uint32_t);
 static void emulate_logic_flags(struct vm_exit *, uint64_t, int);
 static int emulate_mov(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_movzx(struct x86_insn *, struct vm_exit *, uint32_t);
+static int emulate_pop(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_push(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_sub(struct x86_insn *, struct vm_exit *, uint32_t);
 static void emulate_sub_flags(struct vm_exit *, uint64_t, uint64_t, uint64_t,
@@ -105,6 +106,9 @@ const enum x86_opcode_type x86_1byte_opcode_tbl[256] = {
 	[0xA2] = OP_MOV,
 	[0xA3] = OP_MOV,
 	[0xC7] = OP_MOV,
+
+	/* POP r/m (group 1A, /0) */
+	[0x8F] = OP_POP,
 
 	/* PUSH r/m (group 5, /6) */
 	[0xFF] = OP_PUSH,
@@ -139,6 +143,9 @@ const enum x86_operand_enc x86_1byte_operand_enc_tbl[256] = {
 	[0xA2] = OP_ENC_TD,
 	[0xA3] = OP_ENC_TD,
 	[0xC7] = OP_ENC_MI,
+
+	/* POP r/m (group 1A, /0) */
+	[0x8F] = OP_ENC_M,
 
 	/* PUSH r/m (group 5, /6) */
 	[0xFF] = OP_ENC_M,
@@ -373,6 +380,7 @@ str_opcode(struct x86_opcode *opcode)
 	case OP_MOVZX: return "MOVZX";
 	case OP_OUT: return "OUT";
 	case OP_OUTS: return "OUTS";
+	case OP_POP: return "POP";
 	case OP_PUSH: return "PUSH";
 	case OP_SUB: return "SUB";
 	case OP_TEST: return "TEST";
@@ -1381,6 +1389,79 @@ emulate_cmp(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 }
 
 static int
+emulate_pop(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
+{
+	struct vcpu_reg_state *vrs = &exit->vrs;
+	struct vcpu_segment_info *ss = &vrs->vrs_sregs[VCPU_REGS_SS];
+	uint64_t data, gpa, new_sp, old_sp, stack_gva, stack_gpa;
+	mmio_dev_fn_t mmio_fn;
+	int opsz, ret;
+
+	if (insn->insn_opcode.op_encoding != OP_ENC_M ||
+	    !insn->insn_modrm_valid || MODRM_REGOP(insn->insn_modrm) != 0 ||
+	    MODRM_MOD(insn->insn_modrm) == 3) {
+		log_warnx("%s: unsupported encoding or 8F group operation",
+		    __func__);
+		return (EINVAL);
+	}
+
+	/* This is the 32-bit protected-mode form emitted by i386 kernels. */
+	if (insn->insn_cpu_mode != VMM_CPU_MODE_PROT32) {
+		log_warnx("%s: unsupported cpu mode %s", __func__,
+		    str_cpu_mode(insn->insn_cpu_mode));
+		return (ENOTSUP);
+	}
+
+	opsz = get_operand_size(insn);
+	if (opsz != 2 && opsz != 4) {
+		log_warnx("%s: invalid operand size %d", __func__, opsz);
+		return (EINVAL);
+	}
+
+	/* POP reads SS:ESP before incrementing ESP. */
+	old_sp = vrs->vrs_gprs[VCPU_REGS_RSP];
+	stack_gva = (uint32_t)(ss->vsi_base + (uint32_t)old_sp);
+	ret = translate_gva(exit, stack_gva, &stack_gpa, PROT_READ);
+	if (ret != 0) {
+		log_warnx("%s: error translating stack gva 0x%llx: %s",
+		    __func__, stack_gva, strerror(ret));
+		return (ret);
+	}
+	data = 0;
+	ret = read_mem(stack_gpa, &data, opsz);
+	if (ret != 0) {
+		log_warnx("%s: error reading stack gpa 0x%llx: %s",
+		    __func__, stack_gpa, strerror(ret));
+		return (ret);
+	}
+
+	new_sp = (uint32_t)(old_sp + opsz);
+	ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_WRITE);
+	if (ret != 0) {
+		log_warnx("%s: error translating destination gva 0x%lx: %s",
+		    __func__, insn->insn_gva, strerror(ret));
+		return (ret);
+	}
+	if (!mmio_valid_addr(gpa))
+		invalid_mmio_gpa(insn, exit, gpa);
+
+	mmio_fn = mmio_find_dev(gpa);
+	if (mmio_fn == NULL) {
+		log_warnx("%s: no mmio fn for gpa 0x%llx", __func__, gpa);
+		return (ENODEV);
+	}
+	ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
+	if (ret != 0) {
+		log_warnx("%s: mmio function indicated failure", __func__);
+		return (ret);
+	}
+
+	vrs->vrs_gprs[VCPU_REGS_RSP] =
+	    (old_sp & 0xffffffff00000000ULL) | new_sp;
+	return (0);
+}
+
+static int
 emulate_push(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
 	struct vcpu_reg_state *vrs = &exit->vrs;
@@ -1769,6 +1850,10 @@ insn_emulate(struct vm_exit *exit, struct x86_insn *insn, uint32_t vcpu_id)
 
 	case OP_MOVZX:
 		res = emulate_movzx(insn, exit, vcpu_id);
+		break;
+
+	case OP_POP:
+		res = emulate_pop(insn, exit, vcpu_id);
 		break;
 
 	case OP_PUSH:
