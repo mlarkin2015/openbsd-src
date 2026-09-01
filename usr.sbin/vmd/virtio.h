@@ -81,9 +81,18 @@
 #define VIONET_QUEUE_SIZE_DEFAULT	256
 
 /* Virtio network features implemented by vmd. */
+#define VIRTIO_NET_F_CSUM		(1ULL << 0)
 #define VIRTIO_NET_F_MAC		(1ULL << 5)
+#define VIRTIO_NET_F_HOST_TSO4		(1ULL << 11)
+#define VIRTIO_NET_F_HOST_TSO6		(1ULL << 12)
 #define VIRTIO_NET_F_CTRL_VQ		(1ULL << 17)
 #define VIRTIO_NET_F_MQ			(1ULL << 22)
+
+#define VIRTIO_NET_HDR_F_NEEDS_CSUM	1
+#define VIRTIO_NET_HDR_GSO_NONE		0
+#define VIRTIO_NET_HDR_GSO_TCPV4	1
+#define VIRTIO_NET_HDR_GSO_TCPV6	4
+#define VIRTIO_NET_HDR_GSO_ECN		0x80
 
 /* Four queue pairs plus the control virtqueue. */
 #define VIONET_QUEUE_PAIRS		4
@@ -97,10 +106,10 @@
 
 #define VIOBLK_SEG_MAX_DEFAULT		(VIOBLK_QUEUE_SIZE_DEFAULT - 2)
 
-/* Virtio network device is backed by tap(4), so inherit limits */
+/* Virtio network device is backed by tap(4), so inherit its limits. */
 #define VIONET_HARD_MTU		TUNMRU
 #define VIONET_MIN_TXLEN	ETHER_HDR_LEN
-#define VIONET_MAX_TXLEN	VIONET_HARD_MTU + ETHER_HDR_LEN
+#define VIONET_MAX_TXLEN	((64 * 1024) + ETHER_HDR_LEN)
 
 /* VMM Control Interface shutdown timeout (in seconds) */
 #define VMMCI_TIMEOUT_SHORT	3

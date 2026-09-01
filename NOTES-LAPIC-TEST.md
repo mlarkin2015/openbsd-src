@@ -634,8 +634,43 @@ counts; one representative five-second interval reported 261,726, 232,419,
 The four-pair support is functional and removes queue count as the reason for
 the observed ceiling, but the current shared tap/write/network path saturates
 at roughly 2.2-2.3 Gbit/s.  Do not increase the cap again without evidence
-from a different workload or after offload work.  TSO remains deliberately
-deferred until the external vionet TSO diff is available.
+from a different workload or after offload work.
+
+### Virtio-net guest TX TSO (runtime and performance validated)
+
+Virtio-net now negotiates checksum offload and host TCPv4/TCPv6 segmentation
+offload.  Each TX worker validates and translates the guest's
+`virtio_net_hdr` into tap(4)'s native `tun_hdr`, then prepends that header to
+the existing zero-copy payload iovecs.  TCP and UDP partial checksums plus
+TCPv4/TCPv6 GSO are representable.  Unsupported ECN/UFO types, invalid bounds
+and arbitrary checksum offsets are rejected.  The accepted TX size grows from
+the tap MRU to the virtio/tap 64 KiB segmentation limit.
+
+The tap descriptor is placed in header mode with zero receive capabilities.
+Consequently, tap writes accept offload metadata, while host packets are still
+segmented and checksummed before vmd reads them.  Both copy and zero-copy RX
+paths strip the resulting empty tap header and otherwise retain the existing
+single-reader, queue-0 behavior.  This milestone does not negotiate guest TSO,
+merged RX buffers, the guest-offload control class or RX multiqueue.
+
+The supplied `mq.diff` was treated only as historical multiqueue context: it
+contains no virtio TSO/checksum feature negotiation, tap capability ioctl or
+offload-header translation.  The implementation instead follows the current
+tree's `if_vio(4)` producer and tap(4) consumer ABIs.
+
+A fresh vmd build and the complete `regress/usr.sbin/vmd` suite pass.  With
+the new vmd installed, a two-vCPU OpenBSD guest booted with two queues and
+reported `CSUM_TCPv4`, `CSUM_UDPv4`, `CSUM_TCPv6`, `CSUM_UDPv6`, `TSOv4` and
+`TSOv6` in `vio0 hwfeatures`.  Ping, SSH and clean `halt -p` all pass.
+
+Two four-stream, 12-second guest-to-host iperf3 runs reached 17.8 and 20.4
+Gbit/s, for a 19.1 Gbit/s mean.  This is approximately 8.2 times the prior
+four-stream two-vCPU mean of 2.34 Gbit/s.  Representative five-second vionet
+samples reported 671,943 TSO packets out of 676,496 TX packets and 714,639 out
+of 717,263; every TX packet in those samples requested checksum offload.  A
+four-stream host-to-guest control reached 2.06 Gbit/s with zero retransmits,
+consistent with the earlier 1.91 Gbit/s result and confirming the tap-header
+change did not break the unaccelerated RX path.
 
 ## Known remaining gaps
 
@@ -698,9 +733,10 @@ does not implement IOMMU-posted interrupts.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
 - Virtio-net exposes up to four queue pairs with independent TX workers and
   MSI-X queue affinity.  Runtime testing validates one, two and four active
-  pairs, all four TX workers and clean shutdown.  Four pairs do not exceed the
-  two-pair throughput ceiling; RX deliberately remains on queue 0 behind one
-  tap reader.
+  pairs, all four TX workers and clean shutdown.  TX checksum and TCPv4/TCPv6
+  segmentation offload raise two-vCPU parallel guest TX to a 19.1 Gbit/s mean.
+  RX deliberately remains on queue 0 behind one tap reader and does not yet
+  accept host offload metadata.
 
 ## Next steps after testing
 
@@ -718,8 +754,9 @@ does not implement IOMMU-posted interrupts.
    HLT userspace exits to zero.  Pause/unpause is deferred for now.
 5. Runtime-test the legacy AMD AVIC prototype on a bit-13-capable host and
    repeat the instrumented network matrix.
-6. Graft and validate vionet TSO after the external diff is available; keep
-   host tap RX and generic tap-layer scaling outside this effort.
+6. If further host-to-guest work is justified, add virtio guest offload
+   control and merged RX buffers before enabling tap RX offloads; keep generic
+   tap-layer scaling outside this effort.
 7. Add active ACPI PM1 event sources and SCI delivery as they become needed.
 8. Add LAPIC/IOAPIC lowest-priority delivery.
 9. Extend MSI routing only when a guest needs logical/x2APIC delivery or

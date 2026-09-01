@@ -120,10 +120,37 @@ reason throughput stops scaling beyond two pairs.  Keep the four-pair cap for
 now, but do not increase it again before measuring TSO or finding a workload
 that exceeds the current shared tap/write/network ceiling.
 
+## Virtio-net TX TSO measurements (2026-08-31)
+
+Virtio-net now offers `VIRTIO_NET_F_CSUM` and
+`VIRTIO_NET_F_HOST_TSO4/6`.  Each TX worker converts the guest's
+`virtio_net_hdr` checksum/GSO fields to a native tap(4) `tun_hdr`, allowing
+the host network stack to consume TCP superpackets without vmd segmenting or
+copying them.  TCP/UDP checksum offsets and TCPv4/TCPv6 segmentation are
+validated; ECN, UFO and unrepresentable arbitrary checksum offsets are not
+advertised.  TX frames may now carry up to 64 KiB of packet data.
+
+`TUNSCAP` is enabled with zero receive capabilities.  This makes the tap
+header available for writes but asks the host to materialize checksums and
+segments before reads.  The existing single tap reader strips that zeroed
+header and continues to feed RX queue 0; host-to-guest GSO, merged receive
+buffers and RX multiqueue are not part of this milestone.
+
+The two-vCPU OpenBSD guest negotiated two queues and reported checksum,
+TSOv4 and TSOv6 hardware features.  Two four-stream guest-to-host runs reached
+17.8 and 20.4 Gbit/s (19.1 Gbit/s mean), versus the prior 2.34 Gbit/s mean:
+about 8.2 times the throughput.  Representative five-second device samples
+reported 671,943 TSO packets out of 676,496 TX packets and 714,639 out of
+717,263, proving the offload path was active.  A four-stream reverse-direction
+control reached 2.06 Gbit/s with no retransmits, consistent with the earlier
+1.91 Gbit/s single-reader RX result.  The guest booted, remained reachable by
+ping and SSH, and shut down cleanly.
+
 Before implementing the broader items below, prioritize:
 
-1. graft and measure vionet TSO after the external diff is available, without
-   expanding this work into generic tap-layer receive scaling; and
+1. decide whether host-to-guest offload support is worth the required merged
+   receive-buffer and guest-offload-control work, without expanding into
+   generic tap-layer receive scaling; and
 2. retain legacy AMD AVIC validation and Intel APICv feasibility work as
    hardware-specific follow-ups.
 
