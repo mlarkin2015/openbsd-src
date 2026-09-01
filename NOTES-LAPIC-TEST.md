@@ -710,7 +710,10 @@ same-vector IRR/TMR request intact; vmd continues to complete the IOAPIC half.
 The matched kernel completed a FreeBSD 15.1-p3 two-vCPU boot, login and clean
 shutdown with x2APIC/x2AVIC enabled.  A software-xAPIC control boot with
 `hw.apic.x2apic_mode=0` also passed during diagnosis.  Four-vCPU OpenBSD and
-Linux guests booted normally with the final kernel.
+Linux guests booted normally with the final kernel.  FreeBSD subsequently ran
+with eight vCPUs under varied guest-to-host iperf3 loads without a fault; the
+highest observed result was 27.2 Gbit/s.  This is a field-test peak rather than
+a controlled multi-run benchmark mean.
 
 ## Known remaining gaps
 
@@ -755,7 +758,8 @@ does not implement IOMMU-posted interrupts.
 
 - Concurrent execution, INIT-SIPI and interrupt delivery through boot are
   validated with OpenBSD guests at two, four and eight vCPUs, Linux at four,
-  and FreeBSD at two.  Longer cross-guest stress, repeated AP reset,
+  and FreeBSD at two and eight; the eight-vCPU FreeBSD test sustained
+  guest-to-host network load.  Longer cross-guest stress, repeated AP reset,
   pause/unpause and guest reboot remain to be validated.
 - Four/eight-vCPU field validation was on AMD SVM.  The common assertion latch
   and Intel VMX run path are both updated and build-tested, and VMX reset
@@ -779,8 +783,9 @@ does not implement IOMMU-posted interrupts.
 
 ## Next steps after testing
 
-1. Extend the passing FreeBSD two-vCPU and Linux four-vCPU smoke tests with
-   sustained timer/IPI/virtio interrupt stress and higher FreeBSD CPU counts.
+1. Extend the passing Linux four-vCPU smoke test with sustained
+   timer/IPI/virtio interrupt stress; FreeBSD network-load coverage now reaches
+   eight vCPUs.
 2. Exercise pause/unpause and guest reboot with APs both parked and running,
    including repeated INIT-SIPI sequences.
 3. Audit device and EPT paths under genuinely concurrent vCPU exits; the

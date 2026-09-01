@@ -86,7 +86,9 @@ Improve VM performance through paravirtualized clock, VP EOI, balloon device, an
   vector in ISR and retained its PPR class.  vmm now clears the reported ISR
   bit and recomputes PPR while preserving a new same-vector request in IRR.
   FreeBSD 15.1-p3 boots, permits login and shuts down cleanly with two vCPUs;
-  four-vCPU OpenBSD and Linux smoke tests also pass.
+  it also sustains varied guest-to-host iperf3 loads with eight vCPUs, reaching
+  an observed peak of 27.2 Gbit/s.  Four-vCPU OpenBSD and Linux smoke tests
+  also pass.  The FreeBSD result is a field-test peak, not a controlled mean.
 
 ## SMP network measurements (2026-08-28)
 
