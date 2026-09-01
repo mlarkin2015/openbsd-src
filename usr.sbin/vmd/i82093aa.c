@@ -31,6 +31,8 @@ struct i82093aa {
 	uint32_t	redtbl[I82093AA_REDTBL_DWORDS];
 	int		pin_level[I82093AA_PIN_COUNT];
 	int		last_level[I82093AA_PIN_COUNT];
+	uint32_t	ncpus;
+	uint32_t	arb_next;
 	pthread_mutex_t mtx;
 };
 
@@ -191,6 +193,8 @@ i82093aa_init(int numcpus)
 
 	ioapic.reg = 0;
 	ioapic.id = (numcpus + 1) & 0xf;
+	ioapic.ncpus = numcpus;
+	ioapic.arb_next = 0;
 	for (pin = 0; pin < I82093AA_PIN_COUNT; pin++) {
 		ioapic.redtbl[pin * 2] = IOAPIC_REDLO_MASK;
 		ioapic.redtbl[pin * 2 + 1] = 0;
@@ -275,25 +279,41 @@ static int
 i82093aa_deliver(uint8_t dest, int dest_mode, int delivery_mode,
     uint8_t vector, int level)
 {
-	if (dest_mode) {
-		log_debug("%s: logical destination 0x%x unsupported", __func__,
-		    dest);
-		return 0;
-	}
+	uint64_t targets;
+	uint32_t i;
+	int delivered = 0, target;
+
 	if (delivery_mode != IOAPIC_REDLO_DEL_FIXED &&
 	    delivery_mode != IOAPIC_REDLO_DEL_LOPRI) {
 		log_debug("%s: delivery mode %d unsupported", __func__,
 		    delivery_mode);
 		return 0;
 	}
-	if (vector < 32 || !i82489dx_enabled(dest))
+	if (vector < 32)
 		return 0;
 
-	log_debug("%s: vector %u to physical APIC %u", __func__, vector,
-	    dest);
-	i82489dx_vector_irq(dest, 0, vector, level);
+	targets = i82489dx_targets(dest, dest_mode);
+	if (delivery_mode == IOAPIC_REDLO_DEL_LOPRI) {
+		target = i82489dx_lowest_priority(targets, ioapic.arb_next);
+		if (target == -1)
+			return 0;
+		targets = 1ULL << target;
+		ioapic.arb_next = target + 1;
+		if (ioapic.arb_next >= ioapic.ncpus)
+			ioapic.arb_next = 0;
+	}
 
-	return 1;
+	log_debug("%s: vector %u to %s destination 0x%x, targets 0x%llx",
+	    __func__, vector, dest_mode ? "logical" : "physical", dest,
+	    (unsigned long long)targets);
+	for (i = 0; i < ioapic.ncpus; i++) {
+		if ((targets & (1ULL << i)) == 0 || !i82489dx_enabled(i))
+			continue;
+		i82489dx_vector_irq(i, dest_mode, vector, level);
+		delivered = 1;
+	}
+
+	return delivered;
 }
 
 void

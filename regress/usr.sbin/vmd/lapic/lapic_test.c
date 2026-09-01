@@ -2,6 +2,7 @@
 
 #include <sys/types.h>
 
+#include <machine/i82093reg.h>
 #include <machine/i82489reg.h>
 
 #include <assert.h>
@@ -10,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "i82093aa.h"
 #include "i82489dx.h"
 #include "mmio.h"
 #include "vmd.h"
@@ -65,6 +67,31 @@ read_x2apic(uint32_t vcpu, uint32_t reg)
 	return (value);
 }
 
+static void
+write_ioapic(uint32_t reg, uint32_t value)
+{
+	uint64_t data = reg;
+
+	assert(i82093aa_mmio(0, MMIO_DIR_WRITE,
+	    IOAPIC_BASE_DEFAULT + IOAPIC_REG, &data) == 0);
+	data = value;
+	assert(i82093aa_mmio(0, MMIO_DIR_WRITE,
+	    IOAPIC_BASE_DEFAULT + IOAPIC_DATA, &data) == 0);
+}
+
+static void
+program_ioapic(uint8_t pin, uint8_t dest, uint32_t low)
+{
+	write_ioapic(IOAPIC_REDHI(pin), dest << IOAPIC_REDHI_DEST_SHIFT);
+	write_ioapic(IOAPIC_REDLO(pin), low);
+}
+
+static void
+eoi(uint32_t vcpu)
+{
+	write_reg(vcpu, LAPIC_EOI, 0);
+}
+
 int
 main(void)
 {
@@ -76,6 +103,7 @@ main(void)
 	test_vm.vm_params.vmc_ncpus = 4;
 	for (i = 0; i < test_vm.vm_params.vmc_ncpus; i++)
 		i82489dx_init(i);
+	i82093aa_init(test_vm.vm_params.vmc_ncpus);
 
 	/* Physical destination and ICR readback. */
 	write_reg(0, LAPIC_ICRHI, 2U << LAPIC_ID_SHIFT);
@@ -168,6 +196,8 @@ main(void)
 
 	/* x2APIC exposes unshifted physical and derived logical IDs. */
 	assert(read_x2apic(3, 0x02) == 3);
+	assert(read_x2apic(3, 0x03) ==
+	    ((6U << LAPIC_VERSION_LVT_SHIFT) | 0x10));
 	assert(read_x2apic(3, 0x0d) == (1U << 3));
 	write_x2apic(3, 0x08, 0x20);
 	assert(read_x2apic(3, 0x08) == 0x20);
@@ -205,6 +235,58 @@ main(void)
 	assert(i82489dx_avic_deactivate(3, VMM_AVIC_X2APIC,
 	    lapic_state) == 0);
 
+	/* IOAPIC fixed logical delivery multicasts in flat mode. */
+	write_reg(1, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
+	write_reg(2, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
+	write_reg(1, LAPIC_DFR, 0xffffffff);
+	write_reg(2, LAPIC_DFR, 0xffffffff);
+	write_reg(1, LAPIC_LDR, 2U << LAPIC_ID_SHIFT);
+	write_reg(2, LAPIC_LDR, 4U << LAPIC_ID_SHIFT);
+	program_ioapic(16, 0x06, IOAPIC_REDLO_DSTMOD | 0x60);
+	i82093aa_assert_pin(16);
+	assert(i82489dx_ack(1) == 0x60);
+	assert(i82489dx_ack(2) == 0x60);
+	eoi(1);
+	eoi(2);
+	i82093aa_deassert_pin(16);
+
+	/* Lowest-priority delivery rotates ties between matching LAPICs. */
+	program_ioapic(17, 0x06, IOAPIC_REDLO_DSTMOD |
+	    (IOAPIC_REDLO_DEL_LOPRI << IOAPIC_REDLO_DEL_SHIFT) | 0x61);
+	i82093aa_assert_pin(17);
+	assert(i82489dx_ack(1) == 0x61);
+	assert(i82489dx_ack(2) == 0xffff);
+	eoi(1);
+	i82093aa_deassert_pin(17);
+	i82093aa_assert_pin(17);
+	assert(i82489dx_ack(1) == 0xffff);
+	assert(i82489dx_ack(2) == 0x61);
+	eoi(2);
+	i82093aa_deassert_pin(17);
+
+	/* Processor priority wins over the round-robin tie breaker. */
+	write_reg(1, LAPIC_TPRI, 0x40);
+	write_reg(2, LAPIC_TPRI, 0x20);
+	i82093aa_assert_pin(17);
+	assert(i82489dx_ack(1) == 0xffff);
+	assert(i82489dx_ack(2) == 0x61);
+	eoi(2);
+	i82093aa_deassert_pin(17);
+	write_reg(1, LAPIC_TPRI, 0);
+	write_reg(2, LAPIC_TPRI, 0);
+
+	/* Cluster logical mode matches both cluster and local-ID mask. */
+	write_reg(1, LAPIC_DFR, 0);
+	write_reg(2, LAPIC_DFR, 0);
+	write_reg(1, LAPIC_LDR, 0x11U << LAPIC_ID_SHIFT);
+	write_reg(2, LAPIC_LDR, 0x12U << LAPIC_ID_SHIFT);
+	program_ioapic(18, 0x12, IOAPIC_REDLO_DSTMOD | 0x62);
+	i82093aa_assert_pin(18);
+	assert(i82489dx_ack(1) == 0xffff);
+	assert(i82489dx_ack(2) == 0x62);
+	eoi(2);
+	i82093aa_deassert_pin(18);
+
 	return (0);
 }
 
@@ -215,12 +297,6 @@ mmio_dev_add(paddr_t start, paddr_t end, mmio_dev_fn_t fn)
 	(void)end;
 	(void)fn;
 	return (0);
-}
-
-void
-i82093aa_eoi(int vector)
-{
-	(void)vector;
 }
 
 void

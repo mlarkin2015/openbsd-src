@@ -190,7 +190,7 @@ i82489dx_reset_locked(struct i82489dx *lapic, uint32_t vcpu_id)
 	int i;
 
 	lapic->base = LAPIC_BASE;
-	lapic->ver = (1ULL << 31) | (6ULL << LAPIC_VERSION_LVT_SHIFT) | 0x10;
+	lapic->ver = (6U << LAPIC_VERSION_LVT_SHIFT) | 0x10;
 	lapic->tpr = 0;
 	lapic->svr = 0;
 	lapic->id = vcpu_id << LAPIC_ID_SHIFT;
@@ -562,7 +562,7 @@ static uint64_t
 i82489dx_icr_targets(uint32_t source, uint32_t hi, uint32_t lo)
 {
 	uint64_t targets = 0;
-	uint32_t shorthand, dest, dfr, dlid;
+	uint32_t shorthand, dest;
 	int i;
 
 	shorthand = lo & LAPIC_DEST_MASK;
@@ -570,26 +570,8 @@ i82489dx_icr_targets(uint32_t source, uint32_t hi, uint32_t lo)
 
 	switch (shorthand) {
 	case 0:
-		if (lo & LAPIC_DSTMODE_LOG) {
-			for (i = 0; i < lapic_ncpus; i++) {
-				pthread_mutex_lock(&lapics[i].mtx);
-				dfr = lapics[i].dfr;
-				dlid = lapics[i].ldr >> LAPIC_ID_SHIFT;
-				pthread_mutex_unlock(&lapics[i].mtx);
-				if (dfr == 0xffffffff) {
-					if (dlid & dest)
-						targets |= 1ULL << i;
-				} else if ((dlid & 0xf0) == (dest & 0xf0) &&
-				    (dlid & dest & 0x0f))
-					targets |= 1ULL << i;
-			}
-			break;
-		}
-		if (dest == 0xff) {
-			for (i = 0; i < lapic_ncpus; i++)
-				targets |= 1ULL << i;
-		} else if (dest < (uint32_t)lapic_ncpus)
-			targets = 1ULL << dest;
+		targets = i82489dx_targets(dest,
+		    (lo & LAPIC_DSTMODE_LOG) != 0);
 		break;
 	case LAPIC_DEST_SELF:
 		targets = 1ULL << source;
@@ -607,6 +589,69 @@ i82489dx_icr_targets(uint32_t source, uint32_t hi, uint32_t lo)
 	}
 
 	return (targets);
+}
+
+/* Resolve an xAPIC physical or flat/cluster logical destination. */
+uint64_t
+i82489dx_targets(uint8_t dest, int logical)
+{
+	uint64_t targets = 0;
+	uint32_t dfr, dlid;
+	int i;
+
+	if (!logical) {
+		if (dest == 0xff) {
+			for (i = 0; i < lapic_ncpus; i++)
+				targets |= 1ULL << i;
+		} else if (dest < (uint32_t)lapic_ncpus)
+			targets = 1ULL << dest;
+		return (targets);
+	}
+
+	for (i = 0; i < lapic_ncpus; i++) {
+		pthread_mutex_lock(&lapics[i].mtx);
+		dfr = lapics[i].dfr;
+		dlid = lapics[i].ldr >> LAPIC_ID_SHIFT;
+		pthread_mutex_unlock(&lapics[i].mtx);
+		if (dfr == 0xffffffff) {
+			if (dlid & dest)
+				targets |= 1ULL << i;
+		} else if ((dlid & 0xf0) == (dest & 0xf0) &&
+		    (dlid & dest & 0x0f))
+			targets |= 1ULL << i;
+	}
+
+	return (targets);
+}
+
+/* Pick the lowest-PPR enabled target, rotating equal-priority ties. */
+int
+i82489dx_lowest_priority(uint64_t targets, uint32_t start)
+{
+	uint32_t ppr, best_ppr = UINT32_MAX;
+	int best = -1, i, n;
+
+	if (lapic_ncpus == 0)
+		return (-1);
+	start %= lapic_ncpus;
+	for (n = 0; n < lapic_ncpus; n++) {
+		i = (start + n) % lapic_ncpus;
+		if ((targets & (1ULL << i)) == 0)
+			continue;
+		pthread_mutex_lock(&lapics[i].mtx);
+		if ((lapics[i].svr & LAPIC_SVR_ENABLE) == 0) {
+			pthread_mutex_unlock(&lapics[i].mtx);
+			continue;
+		}
+		ppr = i82489dx_ppr(&lapics[i]) & LAPIC_TPRI_INT_MASK;
+		pthread_mutex_unlock(&lapics[i].mtx);
+		if (ppr < best_ppr) {
+			best = i;
+			best_ppr = ppr;
+		}
+	}
+
+	return (best);
 }
 
 static void
