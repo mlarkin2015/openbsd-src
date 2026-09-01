@@ -303,6 +303,7 @@ TAILQ_HEAD(switchlist, vmd_switch);
 
 struct vmd_vm {
 	struct vmop_create_params vm_params;
+	size_t			 vm_ncpus_config;
 
 	/* Owner and identifier information */
 	pid_t			 vm_pid;

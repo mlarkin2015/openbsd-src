@@ -127,11 +127,21 @@ vmd_dispatch_control(int fd, struct privsep_proc *p, struct imsg *imsg)
 					goto start_failed;
 				}
 
-				/* If not running, are our flags ok? */
-				if (vmc.vmc_flags &&
-				    vmc.vmc_flags != VMOP_CREATE_KERNEL) {
+				/* If not running, are our overrides valid? */
+				if (vmc.vmc_flags & ~(VMOP_CREATE_KERNEL |
+				    VMOP_CREATE_CPU)) {
 					cmd = IMSG_VMDOP_START_VM_RESPONSE;
 					goto start_failed;
+				}
+
+				if (vmc.vmc_flags & VMOP_CREATE_CPU) {
+					if (vmc.vmc_ncpus == 0 ||
+					    vmc.vmc_ncpus > VMM_MAX_VCPUS_PER_VM) {
+						res = EINVAL;
+						cmd = IMSG_VMDOP_START_VM_RESPONSE;
+						goto start_failed;
+					}
+					vm->vm_params.vmc_ncpus = vmc.vmc_ncpus;
 				}
 
 				close_fd(vm->vm_kernel);
@@ -145,8 +155,11 @@ vmd_dispatch_control(int fd, struct privsep_proc *p, struct imsg *imsg)
 		/* Try to start the launch of the VM. */
 		res = config_setvm(ps, vm, peer_id,
 		    vm->vm_params.vmc_owner.uid);
-		if (res)
+		if (res) {
+			if (vm->vm_from_config)
+				vm->vm_params.vmc_ncpus = vm->vm_ncpus_config;
 			cmd = IMSG_VMDOP_START_VM_RESPONSE;
+		}
 		break;
 	start_failed:
 		close_fd(kernfd);
@@ -1047,6 +1060,8 @@ vm_stop(struct vmd_vm *vm, int keeptty, const char *caller)
 	    vm->vm_vmid, keeptty ? ", keeping tty open" : "");
 
 	vm->vm_state &= ~(VM_STATE_RUNNING | VM_STATE_SHUTDOWN);
+	/* Command-line CPU counts override one boot, not vm.conf. */
+	vm->vm_params.vmc_ncpus = vm->vm_ncpus_config;
 
 	if (vm->vm_iev.ibuf.fd != -1) {
 		event_del(&vm->vm_iev.ev);
@@ -1226,6 +1241,7 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 
 	memcpy(&vm->vm_params, vmc, sizeof(vm->vm_params));
 	vmc = &vm->vm_params;
+	vm->vm_ncpus_config = vmc->vmc_ncpus;
 	vm->vm_pid = -1;
 	vm->vm_tty = -1;
 	vm->vm_kernel = -1;
