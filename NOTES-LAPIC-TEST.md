@@ -1,4 +1,4 @@
-# LAPIC/IOAPIC test notes (updated 2026-08-31)
+# LAPIC/IOAPIC test notes (updated 2026-09-01)
 
 ## State
 
@@ -199,12 +199,12 @@ virtio RNG, network, block, and SCSI devices:
   bypass the PIC and IOAPIC and enter the destination LAPIC as edge-triggered
   vectors.
 
-The FADT no longer advertises `FADT_NO_MSI`.  The message decoder currently
-implements the conventional xAPIC physical-destination format at
-0xfee00000, with fixed delivery.  This is sufficient for vmd's current
-64-vCPU maximum because its LAPIC IDs fit in the xAPIC destination field.
-x2APIC, interrupt remapping, logical destinations, and lowest-priority
-delivery remain future work rather than prerequisites for ordinary MSI.
+The FADT no longer advertises `FADT_NO_MSI`.  The message decoder implements
+the conventional xAPIC physical- and logical-destination formats at
+0xfee00000, with fixed delivery.  Logical messages use the LAPIC model's
+flat/cluster target resolution.  x2APIC, interrupt remapping and
+lowest-priority delivery remain future work rather than prerequisites for
+ordinary MSI.
 
 An OpenBSD firmware boot enumerated all three boot devices on MSI-X and
 reached login:
@@ -741,6 +741,41 @@ guest without the firmware AP spin, OpenBSD SMP reboot, and Ubuntu 24 SMP
 reboot and halt/poweroff.  The earlier forced-stop test also completed without
 requiring `kill -9`.
 
+### i386/i686 paging, LAPIC MMIO and MSI-X (2026-09-01)
+
+The earlier i386 resets were reproducible with one vCPU and were therefore
+not an SMP-startup failure.  Three independent 32-bit compatibility problems
+were fixed:
+
+- the userspace GVA walker retained stale upper bits after 32-bit PTE reads,
+  discarded physical-address bit 31, applied the wrong CR3 masks to non-PAE
+  and PAE32 paging, and treated PAE PDPTE permission/A-D fields like ordinary
+  entries.  The walker is now isolated in `x86_mmu.c` and has focused non-PAE
+  4 KiB/4 MiB and PAE32 high-frame regressions;
+- the MMIO opcode tables had 255 entries, making opcode `0xff` an out-of-bounds
+  lookup.  The exact OpenBSD/i386 LAPIC sequences now decode and emulate
+  `pushl` from MMIO, `subl` from MMIO and `cmpl` against MMIO with the required
+  register, stack and flags semantics; and
+- Linux/i686 programmed virtio MSI-X messages to xAPIC logical destination
+  bit 0 (`fee01004`).  vmd previously discarded every logical MSI.  Fixed MSI
+  and MSI-X delivery now resolve physical or flat/cluster logical targets
+  through the LAPIC model before asserting the vector.
+
+An OpenBSD 7.9 GENERIC i386 guest now boots through IOAPIC/APIC clock setup,
+mounts root, obtains DHCP, passes SSH and gateway ping tests, and powers off
+cleanly.  Gentoo/i686 6.12 first booted only with GRUB `pci=nomsi`, which
+isolated interrupt delivery from paging and MMIO decoding; after the logical
+MSI fix it boots normally with MSI-X, mounts its Btrfs root, obtains DHCP and
+reaches login.  The complete `regress/usr.sbin/vmd` suite passes with the new
+MMU, MMIO and LAPIC coverage.
+
+CentOS 7/i386 with Linux 3.10 is a useful legacy control: it detects the
+IOAPIC and its 50 GiB virtio disk, but dracut reports that PCI INT A has no IRQ
+for each virtio function.  That guest relies on firmware PCI INTx routing and
+exposes the already-known minimal-DSDT gap (`PCI0._PRT`/link routing); it is a
+separate ACPI/platform follow-up, not a remaining MSI or 32-bit page-walk
+failure.
+
 ## Known remaining gaps
 
 ### AMD AVIC prototype (host runtime validation pending)
@@ -798,8 +833,9 @@ does not implement IOMMU-posted interrupts.
   lowest-priority, NMI, SMI and ExtINT ICR delivery and IOAPIC-redirection
   ExtINT are not implemented.
 - MSI supports one 64-bit message per device.  MSI-X supports at most 16
-  vectors per device.  x2APIC/remapped MSI, logical destinations, and
-  lowest-priority delivery are not implemented.
+  vectors per device.  xAPIC fixed delivery supports physical and
+  flat/cluster logical destinations; x2APIC/remapped MSI and lowest-priority
+  delivery are not implemented.
 - PM1A S5 poweroff is implemented, but no active PM1 event source asserts SCI.
 - REP INS/OUTS has the deferred architectural corner cases listed above.
 - Virtio-net exposes up to four queue pairs with independent TX workers and
@@ -831,5 +867,5 @@ does not implement IOMMU-posted interrupts.
 7. Add active ACPI PM1 event sources and SCI delivery as they become needed.
 8. Add LAPIC ICR lowest-priority and remaining non-fixed delivery modes when a
    guest requires them.
-9. Extend MSI routing only when a guest needs logical/x2APIC delivery or
-   interrupt remapping.
+9. Extend MSI routing only when a guest needs x2APIC/remapped delivery or
+   lowest-priority arbitration.

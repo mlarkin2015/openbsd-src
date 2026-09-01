@@ -33,6 +33,9 @@
 
 static uint64_t mmio_read_value;
 static int mmio_last_dir;
+static uint64_t mem_write_addr;
+static uint64_t mem_write_value;
+static size_t mem_write_len;
 
 static int
 test_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
@@ -201,6 +204,134 @@ test_andl_mmio(void)
 }
 
 static void
+test_subl_mmio(void)
+{
+	static const uint8_t bytes[] = { 0x2b, 0x08 };
+	struct vm_exit exit;
+	struct x86_insn insn;
+	uint64_t expected_flags;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_D;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xd0100000ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RAX] = 0xfec00390ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RCX] = 0xfeedface00000001ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] =
+	    PSL_MBO | PSL_I | PSL_Z | PSL_V;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode 32-bit MMIO SUB");
+	mmio_read_value = 2;
+	mmio_last_dir = -1;
+	if (insn_emulate(&exit, &insn, 0) != 0)
+		errx(1, "could not emulate 32-bit MMIO SUB");
+	if (mmio_last_dir != MMIO_DIR_READ)
+		errx(1, "SUB performed MMIO direction %d", mmio_last_dir);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RCX] != 0xffffffffULL)
+		errx(1, "32-bit SUB produced RCX 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RCX]);
+	expected_flags = PSL_MBO | PSL_I | PSL_C | PSL_PF | PSL_AF | PSL_N;
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] != expected_flags)
+		errx(1, "SUB produced RFLAGS 0x%llx, expected 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS],
+		    (unsigned long long)expected_flags);
+}
+
+static void
+test_cmpl_mmio(void)
+{
+	static const uint8_t bytes[] = {
+		0x3b, 0x1d, 0x80, 0xd0, 0xf3, 0xd0
+	};
+	struct vm_exit exit;
+	struct x86_insn insn;
+	uint64_t expected_flags, old_rbx;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_D;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xd08bac0fULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RBX] = old_rbx =
+	    0xfeedface00000001ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] =
+	    PSL_MBO | PSL_I | PSL_Z | PSL_V;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode 32-bit MMIO CMP");
+	if (insn.insn_gva != 0xd0f3d080ULL)
+		errx(1, "CMP decoded address 0x%llx",
+		    (unsigned long long)insn.insn_gva);
+
+	mmio_read_value = 2;
+	mmio_last_dir = -1;
+	if (insn_emulate(&exit, &insn, 0) != 0)
+		errx(1, "could not emulate 32-bit MMIO CMP");
+	if (mmio_last_dir != MMIO_DIR_READ)
+		errx(1, "CMP performed MMIO direction %d", mmio_last_dir);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RBX] != old_rbx)
+		errx(1, "CMP modified RBX to 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RBX]);
+	expected_flags = PSL_MBO | PSL_I | PSL_C | PSL_PF | PSL_AF | PSL_N;
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS] != expected_flags)
+		errx(1, "CMP produced RFLAGS 0x%llx, expected 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RFLAGS],
+		    (unsigned long long)expected_flags);
+}
+
+static void
+test_pushl_mmio(void)
+{
+	static const uint8_t bytes[] = {
+		0xff, 0x35, 0x80, 0xd0, 0xf3, 0xd0
+	};
+	struct vm_exit exit;
+	struct x86_insn insn;
+
+	memset(&exit, 0, sizeof(exit));
+	exit.vrs.vrs_crs[VCPU_REGS_CR0] = CR0_PE;
+	exit.vrs.vrs_sregs[VCPU_REGS_CS].vsi_ar = CS_D;
+	exit.vrs.vrs_sregs[VCPU_REGS_SS].vsi_base = 0;
+	exit.vrs.vrs_gprs[VCPU_REGS_RIP] = 0xd08bd428ULL;
+	exit.vrs.vrs_gprs[VCPU_REGS_RSP] = 0xfeedfacec0101000ULL;
+	exit.vee.vee_insn_len = sizeof(bytes);
+	memcpy(exit.vee.vee_insn_bytes, bytes, sizeof(bytes));
+
+	if (insn_decode(&exit, &insn) != 0)
+		errx(1, "could not decode 32-bit MMIO PUSH");
+	if (insn.insn_gva != 0xd0f3d080ULL)
+		errx(1, "PUSH decoded address 0x%llx",
+		    (unsigned long long)insn.insn_gva);
+
+	mmio_read_value = 0x89abcdefULL;
+	mmio_last_dir = -1;
+	mem_write_addr = 0;
+	mem_write_value = 0;
+	mem_write_len = 0;
+	if (insn_emulate(&exit, &insn, 0) != 0)
+		errx(1, "could not emulate 32-bit MMIO PUSH");
+	if (mmio_last_dir != MMIO_DIR_READ)
+		errx(1, "PUSH performed MMIO direction %d", mmio_last_dir);
+	if (mem_write_addr != 0xc0100ffcULL || mem_write_len != 4 ||
+	    mem_write_value != 0x89abcdefULL)
+		errx(1, "PUSH wrote 0x%llx/%zu at 0x%llx",
+		    (unsigned long long)mem_write_value, mem_write_len,
+		    (unsigned long long)mem_write_addr);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RSP] !=
+	    0xfeedfacec0100ffcULL)
+		errx(1, "PUSH produced RSP 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RSP]);
+	if (exit.vrs.vrs_gprs[VCPU_REGS_RIP] !=
+	    0xd08bd428ULL + sizeof(bytes))
+		errx(1, "PUSH advanced RIP to 0x%llx",
+		    (unsigned long long)exit.vrs.vrs_gprs[VCPU_REGS_RIP]);
+}
+
+static void
 test_movl_immediate_rex_b(void)
 {
 	static const uint8_t bytes[] = {
@@ -269,6 +400,9 @@ main(void)
 	test_lapic_eoi_absolute_sib();
 	test_movl_zero_extends();
 	test_andl_mmio();
+	test_subl_mmio();
+	test_cmpl_mmio();
+	test_pushl_mmio();
 	test_movl_immediate_rex_b();
 	test_movl_rex_sib();
 	return 0;
@@ -280,7 +414,20 @@ translate_gva(struct vm_exit *exit, uint64_t gva, uint64_t *gpa, int prot)
 {
 	(void)exit;
 	(void)prot;
-	*gpa = gva & 0xffffffff;
+	if ((gva & 0xfffff000ULL) == 0xd0f3d000ULL)
+		*gpa = 0xfee00000ULL | (gva & 0xfff);
+	else
+		*gpa = gva & 0xffffffff;
+	return 0;
+}
+
+int
+write_mem(paddr_t gpa, const void *buf, size_t len)
+{
+	mem_write_addr = gpa;
+	mem_write_value = 0;
+	memcpy(&mem_write_value, buf, len);
+	mem_write_len = len;
 	return 0;
 }
 
