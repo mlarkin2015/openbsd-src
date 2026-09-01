@@ -41,6 +41,7 @@ struct vm_run_params;
 #define VMD_MADT_PADDR		0x91000
 #define VMD_FADT_PADDR		0x92000
 #define VMD_DSDT_PADDR		0x93000
+#define VMD_FACS_PADDR		0x94000
 #define VMD_RSDP_PADDR		0x9D000
 
 #define VMD_PM1A_EVT_BASE	0xB000
@@ -54,7 +55,8 @@ struct vm_run_params;
 
 uint8_t acpi_calculate_checksum(uint8_t *, size_t);
 void acpi_populate_header(struct acpi_table_header *, uint8_t *);
-void acpi_create_fadt(paddr_t, paddr_t);
+void acpi_create_facs(paddr_t);
+void acpi_create_fadt(paddr_t, paddr_t, paddr_t);
 void acpi_create_madt(paddr_t, size_t);
 void acpi_create_xsdt(paddr_t, paddr_t *, size_t);
 void acpi_create_rsdp(paddr_t, paddr_t);

@@ -55,11 +55,14 @@ pause/unpause and Intel VMX validation remain.
 The closeout also restored 32-bit guest support.  The userspace GVA walker now
 handles non-PAE and PAE32 page-table formats and high physical frames
 correctly; MMIO decoding covers the OpenBSD/i386 LAPIC `pushl`, `subl` and
-`cmpl` sequences; and fixed MSI/MSI-X messages resolve xAPIC physical and
-flat/cluster logical destinations.  OpenBSD 7.9/i386 boots, networks and
-powers off, while Gentoo/i686 6.12 boots normally with virtio MSI-X after a
-`pci=nomsi` control isolated the logical-delivery fault.  CentOS 7/i386 reaches
-its virtio disk but still requires the planned ACPI PCI INTx `_PRT` routing.
+`cmpl` sequences; and fixed or lowest-priority MSI/MSI-X messages resolve
+xAPIC physical and flat/cluster logical destinations.  OpenBSD 7.9/i386 boots,
+networks and powers off, while Gentoo/i686 6.12 boots normally with virtio
+MSI-X after a
+`pci=nomsi` control isolated the logical-delivery fault.  CentOS 7/i386 and
+amd64 now boot normally after adding a FACS for its older ACPICA and accepting
+its xAPIC lowest-priority MSI-X messages.  The absent ACPI PM timer remains a
+separate clock/platform gap.
 
 ## Verified current state (original source audit, 2026-08-21)
 
@@ -89,7 +92,7 @@ What does **not** exist (gaps that gate Windows):
 | No IDE/AHCI storage (i82093aa is an IOAPIC, not IDE) | Storage = virtio only, needs driver ISO during setup |
 | fw_cfg missing OVMF entries (`etc/acpi/*`, SMBIOS) | OVMF boots degraded or not at all |
 | No SMBIOS generation | Windows licensing/hardware identity unhappy |
-| Minimal DSDT, optional, no _PRT/_OSC/HPET | Device discovery/power management failures |
+| Minimal DSDT, optional, no _OSC/HPET or PM timer | Device discovery/power management limitations |
 | No UEFI firmware/NVRAM support | Win11 hard-requires UEFI |
 | No Hyper-V TLFS interface | Windows runs unenlightened (or refuses some features) |
 | No TPM 2.0 | Win11 installer check fails |

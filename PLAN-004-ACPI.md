@@ -49,7 +49,8 @@ Implement comprehensive ACPI tables that Windows expects for hardware discovery,
 
 **What**: Extend the FADT to provide Windows with accurate power management and interrupt information.
 
-**Current**: Basic FADT with PM1a/b, PM Timer, SCI=IRQ9
+**Current**: Basic FADT with PM1a event/control, S5 poweroff and SCI=IRQ9;
+FACS is present, but the PM timer is not implemented or advertised.
 
 **Changes**:
 ```c

@@ -257,12 +257,35 @@ acpi_populate_header(struct acpi_table_header *hdr, uint8_t *oemtableid)
 }
 
 /*
- * acpi_create_fadt
+ * acpi_create_facs
  *
- * create FADT (Fixed ACPI Description Table) at 'pa' pointing to DSDT at 'dsdt_pa'
+ * Create the Firmware ACPI Control Structure.  The FACS is not an SDT and
+ * therefore has no standard table header or checksum; the FADT points to it
+ * directly.
  */
 void
-acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
+acpi_create_facs(paddr_t pa)
+{
+	struct acpi_facs facs;
+
+	memset(&facs, 0, sizeof(facs));
+	memcpy(facs.signature, FACS_SIG, sizeof(facs.signature));
+	facs.length = sizeof(facs);
+	facs.version = 1;
+
+	log_warnx("%s: writing FACS to %lx", __func__, pa);
+	if (write_mem(pa, &facs, sizeof(facs)))
+		log_warnx("%s: could not write FACS", __func__);
+}
+
+/*
+ * acpi_create_fadt
+ *
+ * create FADT (Fixed ACPI Description Table) at 'pa' pointing to FACS at
+ * 'facs_pa' and DSDT at 'dsdt_pa'
+ */
+void
+acpi_create_fadt(paddr_t pa, paddr_t facs_pa, paddr_t dsdt_pa)
 {
 	struct acpi_fadt fadt;
 
@@ -277,7 +300,9 @@ acpi_create_fadt(paddr_t pa, paddr_t dsdt_pa)
 	memcpy(fadt.hdr_signature, FADT_SIG, 4);
 	fadt.hdr.length = sizeof(fadt);
 
-	/* DSDT pointer - use both 32-bit and 64-bit fields */
+	/* FACS and DSDT pointers - use both legacy and extended fields. */
+	fadt.firmware_ctl = (uint32_t)facs_pa;
+	fadt.x_firmware_ctl = facs_pa;
 	fadt.dsdt = (uint32_t)dsdt_pa;  /* ACPI 1.0 compatibility */
 	fadt.x_dsdt = dsdt_pa;          /* ACPI 2.0+ 64-bit address */
 
@@ -503,7 +528,9 @@ acpi_init(size_t numcpu)
 
 	/* Create FADT - points to DSDT if available, required for ACPI */
 	if (have_dsdt) {
-		acpi_create_fadt(VMD_FADT_PADDR, VMD_DSDT_PADDR);
+		acpi_create_facs(VMD_FACS_PADDR);
+		acpi_create_fadt(VMD_FADT_PADDR, VMD_FACS_PADDR,
+		    VMD_DSDT_PADDR);
 		tables[numtables++] = VMD_FADT_PADDR;
 		log_warnx("%s: FADT created pointing to DSDT", __func__);
 	}
