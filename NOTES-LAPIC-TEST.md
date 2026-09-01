@@ -127,7 +127,8 @@ bring-up unless a guest demonstrates that it is on the critical path:
 - preserve RCX and honor DF for non-REP string I/O;
 - apply CX/ECX/RCX count width and SI/ESI/RSI wrapping according to the
   instruction's address size;
-- repair protected-mode `read_vmem()` segment setup and paging semantics; and
+- finish protected-mode segment-limit, cross-page element and exception
+  injection edge cases; and
 - add an end-to-end REP OUTS regression (the existing vmm regression only
   checks decoding of one non-REP INS instruction).
 
@@ -832,6 +833,30 @@ headers, and a bridged host ping completed three of three replies.  The vioif
 MSI-X queue counter advanced from zero to 31 with no reported receive,
 transmit or control-queue errors, followed by a clean ACPI S5 shutdown.  The
 virtio block and RNG queues were also exercised by the successful boot.
+
+### NetBSD/i386 protected-mode REP OUTS (2026-09-01)
+
+The NetBSD 11/i386 installer consistently terminated vmd at mountroot or while
+checking its root filesystem.  The lone `read_vmem` daemon message came from
+the string-I/O emulation path, not a virtio descriptor or guest physical
+address.  `read_vmem()` checked a zero-initialized local copy of the protected
+mode source-segment attributes before loading it, so every protected-mode OUTS
+access failed.  Even after that check, both `read_vmem()` and `write_vmem()`
+treated the segmented linear address as a physical address and skipped 32-bit
+paging.
+
+The ordinary protected-mode path now loads and validates the segment before
+forming its 32-bit linear address, then walks the active guest page tables for
+both OUTS reads and INS writes.  Failure diagnostics include the effective
+address, segment and error instead of the previous context-free message.
+
+The exact installer image now passes its formerly fatal filesystem-check path
+and reaches sysinst with one or two vCPUs.  The two-vCPU run reported both CPUs
+online, acquired a DHCP lease over virtio-net, completed three of three
+bridged host pings, and advanced the vioif MSI-X queue counter to 24 with zero
+device error counters.  It then completed a clean ACPI S5 shutdown.  Element
+crossing at page/segment boundaries, expand-down segment limits and guest
+exception injection remain the explicitly deferred REP INS/OUTS corner cases.
 
 ## Phase closeout (2026-09-01)
 

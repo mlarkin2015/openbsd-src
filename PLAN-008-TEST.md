@@ -55,6 +55,10 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   MSI-X queue interrupt counter without vioif errors, passes a bridged gateway
   ping and powers off cleanly.  This covers independent VirtIO 1.x split-ring
   mappings and queue reinitialization after a device reset.
+- The NetBSD 11/i386 installer reaches sysinst with one and two vCPUs after
+  correcting protected-mode REP OUTS segment setup and page translation.  A
+  two-vCPU run also passed DHCP, MSI-X network interrupts, bridged ICMP and a
+  clean S5 shutdown.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
