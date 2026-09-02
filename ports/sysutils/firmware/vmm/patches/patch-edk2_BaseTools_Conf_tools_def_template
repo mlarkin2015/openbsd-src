@@ -1,0 +1,26 @@
+OpenBSD enables return-address protection by default.  Firmware cannot use
+the operating-system retguard runtime.  LLVM 22's linker also needs explicit
+permission to combine read-only data and executable code as required by the
+EDK II linker script.
+
+Index: edk2/BaseTools/Conf/tools_def.template
+--- edk2/BaseTools/Conf/tools_def.template.orig
++++ edk2/BaseTools/Conf/tools_def.template
+@@ -1491,7 +1491,7 @@
+ DEFINE CLANGDWARF_RISCV64_TARGET      = -target riscv64-linux-gnu
+ 
+ DEFINE CLANGDWARF_WARNING_OVERRIDES   = -Wno-parentheses-equality -Wno-empty-body -Wno-varargs -Wno-unknown-warning-option -Wno-unaligned-access
+-DEFINE CLANGDWARF_ALL_CC_FLAGS        = DEF(GCC_ALL_CC_FLAGS) DEF(CLANGDWARF_WARNING_OVERRIDES) -fno-stack-protector -mms-bitfields -Wno-address -Wno-shift-negative-value -Wno-unknown-pragmas -Wno-incompatible-library-redeclaration -fno-asynchronous-unwind-tables -msoft-float -mno-implicit-float  -ftrap-function=undefined_behavior_has_been_optimized_away_by_clang -funsigned-char -fno-ms-extensions -Wno-null-dereference
++DEFINE CLANGDWARF_ALL_CC_FLAGS        = DEF(GCC_ALL_CC_FLAGS) DEF(CLANGDWARF_WARNING_OVERRIDES) -fno-stack-protector -fno-ret-protector -mms-bitfields -Wno-address -Wno-shift-negative-value -Wno-unknown-pragmas -Wno-incompatible-library-redeclaration -fno-asynchronous-unwind-tables -msoft-float -mno-implicit-float  -ftrap-function=undefined_behavior_has_been_optimized_away_by_clang -funsigned-char -fno-ms-extensions -Wno-null-dereference
+ 
+ DEFINE CLANGDWARF_AARCH64_CC_FLAGS    = DEF(GCC_AARCH64_CC_COMMON) DEF(CLANGDWARF_AARCH64_TARGET) -mcmodel=small DEF(CLANGDWARF_WARNING_OVERRIDES)
+ DEFINE CLANGDWARF_RISCV64_CC_COMMON   = DEF(GCC_RISCV_ALL_CC_FLAGS) DEF(GCC_RISCV_ALL_CC_FLAGS_WARNING_DISABLE) DEF(GCC_RISCV_OPENSBI_TYPES) -march=DEF(GCC_RISCV64_ARCH) -fno-builtin -fno-builtin-memcpy -fno-stack-protector -Wno-address -fno-asynchronous-unwind-tables -fno-unwind-tables -fpack-struct=8 -mcmodel=medany -mabi=lp64 -mno-relax
+@@ -1499,7 +1499,7 @@
+ 
+ # LLVM/CLANG doesn't support -n link option. So, it can't share the same IA32_X64_DLINK_COMMON flag.
+ # LLVM/CLANG doesn't support common page size. So, it can't share the same GccBase.lds script.
+-DEFINE CLANGDWARF_DLINK_WARNING_FLAGS       = -Wl,-z,notext
++DEFINE CLANGDWARF_DLINK_WARNING_FLAGS       = -Wl,-z,notext -Wl,--no-execute-only
+ DEFINE CLANGDWARF_IA32_X64_DLINK_COMMON     = -nostdlib -Wl,-q,--gc-sections DEF(CLANGDWARF_DLINK_WARNING_FLAGS)
+ DEFINE CLANGDWARF_DLINK2_FLAGS_COMMON       = -Wl,--script=$(EDK_TOOLS_PATH)/Scripts/GccBase.lds
+ DEFINE CLANGDWARF_IA32_X64_DLINK_FLAGS      = DEF(CLANGDWARF_IA32_X64_DLINK_COMMON) -Wl,--entry,$(IMAGE_ENTRY_POINT) -u $(IMAGE_ENTRY_POINT) -Wl,-Map,$(DEST_DIR_DEBUG)/$(BASE_NAME).map,--whole-archive

@@ -1,0 +1,15 @@
+Use vmd's PM1A control register for UEFI runtime shutdown.
+
+Index: edk2/OvmfPkg/Library/ResetSystemLib/DxeResetShutdown.c
+--- edk2/OvmfPkg/Library/ResetSystemLib/DxeResetShutdown.c.orig
++++ edk2/OvmfPkg/Library/ResetSystemLib/DxeResetShutdown.c
+@@ -29,6 +29,9 @@
+ 
+   HostBridgeDevId = PcdGet16 (PcdOvmfHostBridgePciDevId);
+   switch (HostBridgeDevId) {
++    case VMD_HOSTBRIDGE_DEVICE_ID:
++      mAcpiPmBaseAddress = VMD_PM1A_CNT_IO_ADDRESS - 4;
++      break;
+     case INTEL_82441_DEVICE_ID:
+       mAcpiPmBaseAddress = PIIX4_PMBA_VALUE;
+       break;
