@@ -131,6 +131,12 @@ Add and enhance device emulation in vmd(8) to provide the hardware surface that 
   bitmap after that bitmap has been cleared.  This is runtime-validated by
   NetBSD 11 with one and two vCPUs, including DHCP, MSI-X network interrupts,
   bridged ICMP traffic and clean shutdown.
+- Virtio-scsi data-in replies are bounded by both the allocation length in the
+  SCSI CDB and the guest's complete writable descriptor chain.  This prevents
+  inquiry replies from overrunning shorter guest buffers and scatters READ(6)
+  payloads across split buffers.  NetBSD 11 CD-ROM probing and byte-for-byte
+  whole-image reads at 2 KiB and 64 KiB request sizes are runtime-validated;
+  SYNCHRONIZE CACHE is accepted as a successful no-op for read-only media.
 
 **Enhancements**:
 1. **MSI-X for all VirtIO devices**:
