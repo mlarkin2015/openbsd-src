@@ -59,6 +59,11 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   correcting protected-mode REP OUTS segment setup and page translation.  A
   two-vCPU run also passed DHCP, MSI-X network interrupts, bridged ICMP and a
   clean S5 shutdown.
+- NetBSD 11/i386 probes and reads a virtio-scsi CD-ROM without corruption.
+  Full 341,522,432-byte ISO reads using both 2 KiB and 64 KiB request sizes
+  matched the host SHA-256
+  `ab4de566f077ab6e780b24bc399898e9616ed2b8acb2e75e26acb13eacb669f3`.
+  NetBSD CD-ROM operation was also independently confirmed.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure

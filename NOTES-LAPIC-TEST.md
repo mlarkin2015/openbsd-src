@@ -858,6 +858,30 @@ device error counters.  It then completed a clean ACPI S5 shutdown.  Element
 crossing at page/segment boundaries, expand-down segment limits and guest
 exception injection remain the explicitly deferred REP INS/OUTS corner cases.
 
+### NetBSD virtio-scsi CD-ROM data-in handling (2026-09-01)
+
+NetBSD CD boots initially panicked in `scsi_probe_device()` immediately after
+attaching `cd0`.  vmd constructed its inquiry payload using OpenBSD's 96-byte
+`scsi_inquiry_data` and wrote it without regard to NetBSD's 74-byte writable
+buffer, corrupting the guest kernel's stack canary.  All affected SCSI data-in
+replies now respect both the allocation length encoded by the CDB and the
+guest's writable descriptor chain.
+
+A second data-integrity test found that READ(6) populated only the first
+writable descriptor.  Reads through 32 KiB matched the host image, while a
+64 KiB request split across descriptors returned corrupt data.  The shared
+data-in helper now scatters across the complete chain and validates descriptor
+direction and chain length.  The read-only backend also accepts SYNCHRONIZE
+CACHE as a successful no-op.
+
+An installed NetBSD 11/i386 guest attached `cd0` and read the complete
+341,522,432-byte ISO using both 2 KiB and 64 KiB request sizes.  Both reads
+matched the host SHA-256
+`ab4de566f077ab6e780b24bc399898e9616ed2b8acb2e75e26acb13eacb669f3`.
+The user independently confirmed working NetBSD CD-ROM operation.  The
+`boot-com.iso` image itself lacks `/dev/console`; its later warning is
+independent of virtio-scsi.
+
 ## Phase closeout (2026-09-01)
 
 The LAPIC/IOAPIC, SMP, x2APIC/x2AVIC, MSI/MSI-X and virtio-net TX milestone
