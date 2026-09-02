@@ -67,6 +67,13 @@ CentOS 7/i386 and amd64 now boot normally after adding a FACS for its older
 ACPICA and accepting its xAPIC lowest-priority MSI-X messages.  The absent
 ACPI PM timer remains a separate clock/platform gap.
 
+NetBSD 11/amd64 and i386 now exercise the modern VirtIO split-ring paths.
+Virtio-scsi data-in replies are bounded by both the CDB allocation length and
+the complete writable descriptor chain, preventing short inquiry buffers from
+being overrun and allowing READ(6) payloads to span multiple descriptors.
+NetBSD CD-ROM probing and full-image reads at 2 KiB and 64 KiB request sizes
+are runtime-validated without corruption.
+
 ## Verified current state (original source audit, 2026-08-21)
 
 What exists and works today:

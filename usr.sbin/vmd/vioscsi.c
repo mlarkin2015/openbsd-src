@@ -238,6 +238,65 @@ vioscsi_next_ring_desc(struct virtio_vq_info *vq_info, struct vring_desc* desc,
 	return &desc[*idx];
 }
 
+/*
+ * Scatter a SCSI data-in payload without exceeding either the allocation
+ * length from the CDB or the guest's writable descriptor chain.
+ */
+static int
+vioscsi_write_data(struct virtio_vq_info *vq_info,
+    struct virtio_vq_acct *acct, const void *data, size_t data_len,
+    size_t alloc_len)
+{
+	struct vring_desc *desc = acct->resp_desc;
+	const uint8_t *buf = data;
+	size_t chunk_len, ndesc = 0, offset = 0;
+	size_t len = data_len;
+
+	if (len > alloc_len)
+		len = alloc_len;
+
+	if (len != data_len)
+		DPRINTF("%s: truncating reply from %zu to %zu bytes",
+		    __func__, data_len, len);
+
+	while (offset < len) {
+		if (++ndesc > vq_info->qs) {
+			log_warnx("%s: invalid data-in descriptor chain",
+			    __func__);
+			return (-1);
+		}
+		if ((desc->flags & VRING_DESC_F_WRITE) == 0) {
+			log_warnx("%s: data-in descriptor is not writable",
+			    __func__);
+			return (-1);
+		}
+
+		chunk_len = desc->len;
+		if (chunk_len > len - offset)
+			chunk_len = len - offset;
+		if (chunk_len != 0 &&
+		    write_mem(desc->addr, buf + offset, chunk_len)) {
+			log_warnx("%s: unable to write %zu bytes to "
+			    "gpa @ 0x%llx", __func__, chunk_len, desc->addr);
+			return (-1);
+		}
+		offset += chunk_len;
+		if (offset == len)
+			break;
+		if ((desc->flags & VRING_DESC_F_NEXT) == 0) {
+			log_warnx("%s: short data-in descriptor chain",
+			    __func__);
+			return (-1);
+		}
+
+		desc = vioscsi_next_ring_desc(vq_info, acct->desc, desc,
+		    &acct->resp_idx);
+		acct->resp_desc = desc;
+	}
+
+	return (0);
+}
+
 static void
 vioscsi_next_ring_item(struct virtio_vq_info *vq_info,
     struct vring_avail *avail, struct vring_used *used, struct vring_desc *desc,
@@ -622,10 +681,11 @@ vioscsi_handle_inquiry(struct virtio_dev *dev, struct virtio_vq_info *vq_info,
 {
 	int ret = 0;
 	struct virtio_scsi_res_hdr resp;
+	struct scsi_inquiry *inq;
 	struct scsi_inquiry_data *inq_data;
 
+	inq = (struct scsi_inquiry *)(req->cdb);
 #if DEBUG
-	struct scsi_inquiry *inq = (struct scsi_inquiry *)(req->cdb);
 	log_debug("%s: INQ - EVPD %d PAGE_CODE 0x%08x LEN %d", __func__,
 	    inq->flags & SI_EVPD, inq->pagecode, _2btol(inq->length));
 #endif /* DEBUG */
@@ -673,8 +733,8 @@ vioscsi_handle_inquiry(struct virtio_dev *dev, struct virtio_vq_info *vq_info,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, inq_data,
-		sizeof(struct scsi_inquiry_data))) {
+	if (vioscsi_write_data(vq_info, acct, inq_data,
+	    sizeof(struct scsi_inquiry_data), _2btol(inq->length))) {
 		log_warnx("%s: unable to write inquiry"
 		    " response to gpa @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
@@ -788,8 +848,8 @@ vioscsi_handle_mode_sense(struct virtio_dev *dev,
 		    "global_idx %d", __func__, acct->resp_desc->addr,
 		    mode_reply_len, acct->resp_idx, acct->req_idx, acct->idx);
 
-		if (write_mem(acct->resp_desc->addr, mode_reply,
-			mode_reply_len)) {
+		if (vioscsi_write_data(vq_info, acct, mode_reply,
+		    mode_reply_len, mode_sense->length)) {
 			log_warnx("%s: unable to write "
 			    "mode_reply to gpa @ 0x%llx",
 			    __func__, acct->resp_desc->addr);
@@ -927,8 +987,8 @@ vioscsi_handle_mode_sense_big(struct virtio_dev *dev,
 		    __func__, acct->resp_desc->addr, mode_reply_len,
 		    acct->resp_idx, acct->req_idx, acct->idx);
 
-		if (write_mem(acct->resp_desc->addr, mode_reply,
-			mode_reply_len)) {
+		if (vioscsi_write_data(vq_info, acct, mode_reply,
+		    mode_reply_len, _2btol(mode_sense_10->length))) {
 			log_warnx("%s: unable to write "
 			    "mode_reply to gpa @ 0x%llx",
 			    __func__, acct->resp_desc->addr);
@@ -1046,8 +1106,9 @@ vioscsi_handle_read_capacity(struct virtio_dev *dev,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, r_cap_data,
-		sizeof(struct scsi_read_cap_data))) {
+	if (vioscsi_write_data(vq_info, acct, r_cap_data,
+	    sizeof(struct scsi_read_cap_data),
+	    sizeof(struct scsi_read_cap_data))) {
 		log_warnx("%s: unable to write read_cap_data"
 		    " response to gpa @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
@@ -1127,8 +1188,9 @@ vioscsi_handle_read_capacity_16(struct virtio_dev *dev,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, r_cap_data_16,
-		sizeof(struct scsi_read_cap_data_16))) {
+	if (vioscsi_write_data(vq_info, acct, r_cap_data_16,
+	    sizeof(struct scsi_read_cap_data_16),
+	    _4btol(((struct scsi_read_capacity_16 *)req->cdb)->length))) {
 		log_warnx("%s: unable to write read_cap_data_16"
 		    " response to gpa @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
@@ -1227,8 +1289,8 @@ vioscsi_handle_report_luns(struct virtio_dev *dev,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, reply_rpl,
-		sizeof(struct vioscsi_report_luns_data))) {
+	if (vioscsi_write_data(vq_info, acct, reply_rpl,
+	    sizeof(struct vioscsi_report_luns_data), rpl_length)) {
 		log_warnx("%s: unable to write reply_rpl"
 		    " response to gpa @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
@@ -1361,7 +1423,8 @@ vioscsi_handle_read_6(struct virtio_dev *dev,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, read_buf, info->len)) {
+	if (vioscsi_write_data(vq_info, acct, read_buf, info->len,
+	    info->len)) {
 		log_warnx("%s: unable to write read_buf to gpa @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
 	} else {
@@ -1620,8 +1683,9 @@ vioscsi_handle_mechanism_status(struct virtio_dev *dev,
 	acct->resp_desc = vioscsi_next_ring_desc(vq_info, acct->desc,
 	    acct->resp_desc, &(acct->resp_idx));
 
-	if (write_mem(acct->resp_desc->addr, mech_status_header,
-		sizeof(struct scsi_mechanism_status_header))) {
+	if (vioscsi_write_data(vq_info, acct, mech_status_header,
+	    sizeof(struct scsi_mechanism_status_header),
+	    _2btol(((struct scsi_mechanism_status *)req->cdb)->length))) {
 		log_warnx("%s: unable to write "
 		    "mech_status_header response to "
 		    "gpa @ 0x%llx",
@@ -1768,7 +1832,8 @@ vioscsi_handle_read_toc(struct virtio_dev *dev,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, toc_data, sizeof(toc_data))) {
+	if (vioscsi_write_data(vq_info, acct, toc_data, toc_data_len,
+	    _2btol(toc->data_len))) {
 		log_warnx("%s: unable to write toc descriptor data @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
 	} else {
@@ -1903,7 +1968,8 @@ vioscsi_handle_gesn(struct virtio_dev *dev,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, gesn_reply, sizeof(gesn_reply))) {
+	if (vioscsi_write_data(vq_info, acct, gesn_reply,
+	    sizeof(gesn_reply), _2btol(gesn->length))) {
 		log_warnx("%s: unable to write gesn_reply"
 		    " response to gpa @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
@@ -2053,8 +2119,9 @@ vioscsi_handle_get_config(struct virtio_dev *dev,
 	    __func__, acct->resp_desc->addr, acct->resp_desc->len,
 	    acct->resp_idx, acct->req_idx, acct->idx);
 
-	if (write_mem(acct->resp_desc->addr, get_conf_reply,
-	    G_CONFIG_REPLY_SIZE)) {
+	if (vioscsi_write_data(vq_info, acct, get_conf_reply,
+	    G_CONFIG_REPLY_SIZE,
+	    _2btol(((struct scsi_get_configuration *)req->cdb)->length))) {
 		log_warnx("%s: unable to write get_conf_reply"
 		    " response to gpa @ 0x%llx",
 		    __func__, acct->resp_desc->addr);
@@ -2313,6 +2380,7 @@ vioscsi_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 		switch (req.cdb[0]) {
 		case TEST_UNIT_READY:
 		case START_STOP:
+		case SYNCHRONIZE_CACHE:
 			ret = vioscsi_handle_tur(dev, vq_info, &req, &acct);
 			break;
 		case PREVENT_ALLOW:
