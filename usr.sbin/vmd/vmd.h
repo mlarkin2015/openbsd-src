@@ -69,6 +69,7 @@
 #define VM_TTYNAME_MAX		16
 #define VM_MAX_DISKS_PER_VM	4
 #define VM_MAX_NICS_PER_VM	4
+#define SUN_PATH_LEN		(sizeof(((struct sockaddr_un *)NULL)->sun_path))
 
 #define VM_PCI_MMIO_BAR_SIZE	0x00010000
 #define VM_PCI_IO_BAR_BASE	0x1000
@@ -119,6 +120,7 @@
 enum imsg_type {
 	IMSG_VMDOP_START_VM_REQUEST = IMSG_PROC_MAX,
 	IMSG_VMDOP_START_VM_EFIVARS,
+	IMSG_VMDOP_START_VM_DISPLAY,
 	IMSG_VMDOP_START_VM_CDROM,
 	IMSG_VMDOP_START_VM_DISK,
 	IMSG_VMDOP_START_VM_IF,
@@ -242,6 +244,7 @@ struct vmop_create_params {
 #define VMOP_CREATE_CDROM	0x20
 #define VMOP_CREATE_INSTANCE	0x40
 #define VMOP_CREATE_FIRMWARE	0x80
+#define VMOP_CREATE_DISPLAY	0x100
 	/* same flags as vmc_flags; check for access to these resources */
 	unsigned int		 vmc_checkaccess;
 
@@ -262,6 +265,8 @@ struct vmop_create_params {
 	int			 vmc_kernel;
 	enum vm_firmware	 vmc_firmware;
 	char			 vmc_efivars[PATH_MAX];
+	int			 vmc_display;
+	char			 vmc_displaysock[SUN_PATH_LEN];
 	unsigned int		 vmc_bootdevice;
 #define VMBOOTDEV_AUTO		0
 #define VMBOOTDEV_DISK		1
@@ -341,6 +346,9 @@ struct vmd_vm {
 	int			 vm_kernel;
 	char			*vm_kernel_path; /* Used by vm.conf. */
 	int			 vm_efivars;
+	int			 vm_display;
+	dev_t			 vm_display_dev;
+	ino_t			 vm_display_ino;
 
 	/* Device and disk image file descriptors */
 	int			 vm_cdrom;
@@ -387,7 +395,6 @@ struct local_prefix {
 	struct in6_addr		 lp_mask6;
 };
 
-#define SUN_PATH_LEN		(sizeof(((struct sockaddr_un *)NULL)->sun_path))
 struct vmd_agentx {
 	int			 ax_enabled;
 	char			 ax_path[SUN_PATH_LEN];
@@ -605,6 +612,7 @@ int	 config_setreset(struct vmd *, unsigned int);
 int	 config_setvm(struct privsep *, struct vmd_vm *, uint32_t, uid_t);
 int	 config_getvm(struct privsep *, struct imsg *);
 int	 config_getefivars(struct privsep *, struct imsg *);
+int	 config_getdisplay(struct privsep *, struct imsg *);
 int	 config_getdisk(struct privsep *, struct imsg *);
 int	 config_getif(struct privsep *, struct imsg *);
 int	 config_getcdrom(struct privsep *, struct imsg *);

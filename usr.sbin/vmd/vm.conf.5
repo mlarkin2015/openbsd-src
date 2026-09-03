@@ -224,6 +224,28 @@ The format may be specified as either
 If left unspecified, the format defaults to
 .Cm raw
 if it cannot be derived automatically.
+.It Ic display Op Brq ...
+Enable a local graphical display endpoint.
+The following option may be specified in curly braces:
+.Bl -tag -width Ds
+.It Ic socket Ar path
+Use
+.Ar path
+for the display's Unix-domain socket.
+The path must be absolute and fit in
+.Va sockaddr_un.sun_path .
+If omitted, the default is
+.Pa /var/run/vmd/<name>.vnc .
+.El
+.Pp
+The socket is created with mode 0600 and is owned by the VM owner, or by
+root when the VM has no configured owner.
+The parent directory must be owned by root and must not be writable by group
+or other users.
+For safety,
+.Xr vmd 8
+will not replace any existing filesystem object at the socket path.
+An administrator must remove a stale socket left by an abnormal daemon exit.
 .It Ic efivars Ar path
 Use
 .Ar path
@@ -409,6 +431,9 @@ The user needs read access to the file.
 Allow user to configure the disk images.
 The user needs read and write access to image and instances are not
 allowed to reuse disks from the parent VM.
+.It Ic display
+Allow user to configure a graphical display endpoint.
+An instance that inherits a display receives its own default socket path.
 .It Ic firmware
 Allow user to select BIOS or UEFI firmware.
 .It Ic instance
@@ -516,6 +541,8 @@ Unix domain
 where
 .Xr vmd 8
 listens
+.It Pa /var/run/vmd
+default directory for per-VM display sockets
 .It Pa /etc/firmware/vmm-bios
 default BIOS image for booting
 .It Pa /etc/firmware/vmm-uefi-code
