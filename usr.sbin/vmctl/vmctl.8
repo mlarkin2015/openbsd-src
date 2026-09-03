@@ -206,6 +206,13 @@ firmware for this boot.
 The default is
 .Ar bios .
 Manually created UEFI VMs use an ephemeral variable store.
+The store is recreated from its template when the guest reboots.
+Firmware actions which communicate a request through a variable and then
+reset, such as the
+.Ox
+boot loader's
+.Ic machine fwsetup
+command, therefore require a configured VM with persistent variables.
 For configured VMs, use
 .Ic efivars
 in
