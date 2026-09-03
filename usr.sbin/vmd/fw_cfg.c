@@ -29,6 +29,7 @@
 #include "vmd.h"
 #include "vmm.h"
 #include "fw_cfg.h"
+#include "ramfb.h"
 #include "smbios.h"
 
 #define	FW_CFG_SIGNATURE	0x0000
@@ -67,7 +68,7 @@ struct fw_cfg_dma_access {
 #define FW_CFG_DMA_READ		0x0002
 #define FW_CFG_DMA_SKIP		0x0004
 #define FW_CFG_DMA_SELECT	0x0008
-#define FW_CFG_DMA_WRITE	0x0010	/* not implemented */
+#define FW_CFG_DMA_WRITE	0x0010
 	uint32_t	length;
 	uint64_t	address;
 };
@@ -83,6 +84,8 @@ static struct fw_cfg_state {
 	size_t offset;
 	size_t size;
 	uint8_t *data;
+	fw_cfg_write_cb write_cb;
+	void *write_arg;
 } fw_cfg_state;
 
 /* Guards fw_cfg_state and fw_cfg_dma_addr. */
@@ -165,6 +168,9 @@ fw_cfg_init(struct vmop_create_params *vmc)
 	    smbios_anchor_len);
 	free(smbios_tables);
 	free(smbios_anchor);
+
+	if (vmc->vmc_display)
+		ramfb_init();
 }
 
 static void
@@ -174,10 +180,13 @@ fw_cfg_reset_state(void)
 	fw_cfg_state.offset = 0;
 	fw_cfg_state.size = 0;
 	fw_cfg_state.data = NULL;
+	fw_cfg_state.write_cb = NULL;
+	fw_cfg_state.write_arg = NULL;
 }
 
 static void
-fw_cfg_set_state(void *data, size_t len)
+fw_cfg_set_state(const void *data, size_t len, fw_cfg_write_cb write_cb,
+    void *write_arg)
 {
 	if ((fw_cfg_state.data = malloc(len)) == NULL) {
 		log_warn("%s", __func__);
@@ -186,6 +195,8 @@ fw_cfg_set_state(void *data, size_t len)
 	memcpy(fw_cfg_state.data, data, len);
 	fw_cfg_state.size = len;
 	fw_cfg_state.offset = 0;
+	fw_cfg_state.write_cb = write_cb;
+	fw_cfg_state.write_arg = write_arg;
 }
 
 static void
@@ -197,17 +208,17 @@ fw_cfg_select(uint16_t selector)
 	fw_cfg_reset_state();
 	switch (selector) {
 	case FW_CFG_SIGNATURE:
-		fw_cfg_set_state("QEMU", 4);
+		fw_cfg_set_state("QEMU", 4, NULL, NULL);
 		break;
 	case FW_CFG_ID:
-		fw_cfg_set_state(&id, sizeof(id));
+		fw_cfg_set_state(&id, sizeof(id), NULL, NULL);
 		break;
 	case FW_CFG_NOGRAPHIC:
-		fw_cfg_set_state(&one, sizeof(one));
+		fw_cfg_set_state(&one, sizeof(one), NULL, NULL);
 		break;
 	case FW_CFG_NB_CPUS:
 	case FW_CFG_MAX_CPUS:
-		fw_cfg_set_state(&fw_cfg_ncpus, sizeof(fw_cfg_ncpus));
+		fw_cfg_set_state(&fw_cfg_ncpus, sizeof(fw_cfg_ncpus), NULL, NULL);
 		break;
 	case FW_CFG_FILE_DIR:
 		fw_cfg_file_dir();
@@ -224,6 +235,7 @@ static void
 fw_cfg_handle_dma(struct fw_cfg_dma_access *fw)
 {
 	uint32_t len = 0, control = fw->control;
+	int complete_write = 0;
 
 	fw->control = 0;
 	if (control & FW_CFG_DMA_SELECT) {
@@ -238,8 +250,19 @@ fw_cfg_handle_dma(struct fw_cfg_dma_access *fw)
 	if (len > fw->length)
 		len = fw->length;
 
-	if (control & FW_CFG_DMA_WRITE) {
+	if ((control & FW_CFG_DMA_READ) && (control & FW_CFG_DMA_WRITE)) {
 		fw->control |= FW_CFG_DMA_ERROR;
+	} else if (control & FW_CFG_DMA_WRITE) {
+		if (fw_cfg_state.write_cb == NULL || len != fw->length ||
+		    read_mem(fw->address,
+		    fw_cfg_state.data + fw_cfg_state.offset, len)) {
+			log_warnx("%s: invalid fw_cfg DMA write", __func__);
+			fw->control |= FW_CFG_DMA_ERROR;
+		} else {
+			fw_cfg_state.offset += len;
+			complete_write =
+			    fw_cfg_state.offset == fw_cfg_state.size;
+		}
 	} else if (control & FW_CFG_DMA_READ) {
 		if (write_mem(fw->address,
 		    fw_cfg_state.data + fw_cfg_state.offset, len)) {
@@ -253,8 +276,14 @@ fw_cfg_handle_dma(struct fw_cfg_dma_access *fw)
 			log_warnx("%s: write_mem error", __func__);
 			fw->control |= FW_CFG_DMA_ERROR;
 		}
+		fw_cfg_state.offset += len;
+	} else if (control & FW_CFG_DMA_SKIP) {
+		fw_cfg_state.offset += len;
 	}
-	fw_cfg_state.offset += len;
+
+	if (complete_write && fw_cfg_state.write_cb(fw_cfg_state.data,
+	    fw_cfg_state.size, fw_cfg_state.write_arg) == -1)
+		fw->control |= FW_CFG_DMA_ERROR;
 
 	if (fw_cfg_state.offset == fw_cfg_state.size)
 		fw_cfg_reset_state();
@@ -338,7 +367,7 @@ vcpu_exit_fw_cfg_dma(struct vm_run_params *vrp)
 			fw_cfg_handle_dma(&fw_dma);
 
 			/* just write control byte back */
-			data = be32toh(fw_dma.control);
+			data = htobe32(fw_dma.control);
 			if (write_mem(fw_cfg_dma_addr, &data, sizeof(data)))
 				break;
 
@@ -368,6 +397,8 @@ struct fw_cfg_file_entry {
 	TAILQ_ENTRY(fw_cfg_file_entry)	entry;
 	struct fw_cfg_file		file;
 	void				*data;
+	fw_cfg_write_cb			 write_cb;
+	void				*write_arg;
 };
 
 TAILQ_HEAD(, fw_cfg_file_entry) fw_cfg_files =
@@ -388,6 +419,13 @@ fw_cfg_lookup_file(const char *name)
 void
 fw_cfg_add_file(const char *name, const void *data, size_t len)
 {
+	fw_cfg_add_file_callback(name, data, len, NULL, NULL);
+}
+
+void
+fw_cfg_add_file_callback(const char *name, const void *data, size_t len,
+    fw_cfg_write_cb write_cb, void *write_arg)
+{
 	struct fw_cfg_file_entry *f;
 
 	if (fw_cfg_lookup_file(name))
@@ -406,6 +444,8 @@ fw_cfg_add_file(const char *name, const void *data, size_t len)
 	f->file.size = htobe32(len);
 	f->file.selector = htobe16(file_id++);
 	memcpy(f->data, data, len);
+	f->write_cb = write_cb;
+	f->write_arg = write_arg;
 
 	TAILQ_INSERT_TAIL(&fw_cfg_files, f, entry);
 }
@@ -443,7 +483,8 @@ fw_cfg_select_file(uint16_t id)
 	TAILQ_FOREACH(f, &fw_cfg_files, entry)
 		if (f->file.selector == id) {
 			size_t size = be32toh(f->file.size);
-			fw_cfg_set_state(f->data, size);
+			fw_cfg_set_state(f->data, size, f->write_cb,
+			    f->write_arg);
 			log_debug("%s: accessing file %s", __func__,
 			    f->file.name);
 			return 1;
@@ -479,6 +520,6 @@ fw_cfg_file_dir(void)
 
 	/* XXX should sort by name but SeaBIOS does not care */
 
-	fw_cfg_set_state(data, size);
+	fw_cfg_set_state(data, size, NULL, NULL);
 	free(data);
 }
