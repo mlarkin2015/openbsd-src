@@ -19,6 +19,9 @@
    already does semantic checks there).
 5. `firmware "ovmf"` parsing (§7.1) is prerequisite plumbing for PLAN-001 and
    should be implemented early, not in Phase 7.
+6. A graphical console must not default to an unauthenticated TCP listener.
+   Configure a per-VM Unix-domain display socket, mode 0600, and isolate RFB in
+   a worker which has neither `/dev/vmm` nor access to arbitrary guest memory.
 
 ## Goal
 
@@ -26,9 +29,12 @@ Add Windows-specific configuration options, validation, guest detection, and dri
 
 ## Current State
 
-- `vm.conf(5)` supports: memory, cpus, boot, disk, cdrom, network, local interface, vmmci, secure-boot
+- `vm.conf(5)` supports memory, cpus, boot, disk, cdrom, network, local
+  interface, owner, `firmware bios|uefi`, `efivars`, and vmmci
 - `vmctl(8)` manages VM lifecycle (start, stop, pause, resume, reboot, info)
 - `vmd(8)` parses config, manages VMs
+- UEFI firmware and persistent/ephemeral variable stores are implemented
+- No graphical display endpoint is implemented
 - No Windows-specific configuration options
 - No guest OS detection
 - No configuration validation for Windows compatibility
@@ -46,10 +52,10 @@ vm "windows11" {
     // Existing options...
     memory 8192
     cpus 4
-    disk "hd0" "/path/to/disk.vhdx"
+    disk "/path/to/disk.qcow2"
     
     // New options...
-    firmware "ovmf"              // Use OVMF instead of SeaBIOS
+    firmware uefi                // Use OVMF instead of SeaBIOS
     secure-boot on               // Enable Secure Boot (required for Win11)
     tpm on                       // Enable virtual TPM 2.0
     virtio                       // Prefer virtio devices (default)
@@ -136,6 +142,52 @@ vm "windows11" {
 - `usr.sbin/vmd/vmd.h` — add new fields to `struct vmop_create_params`
 - `usr.sbin/vmd/parse.y` — add grammar rules, keywords, token definitions
 - `usr.sbin/vmd/config.c` — validate new options, pass through to VM
+
+### 7.1A Display Endpoint Configuration
+
+The proposed display configuration is deliberately small:
+
+```
+vm "windows11" {
+    owner build
+    firmware uefi
+    display {
+        socket "/var/run/vmd/windows11.vnc"
+    }
+}
+```
+
+`display` enables the graphical console.  Its optional `socket` entry overrides
+the RFB Unix-domain socket path.  If omitted, vmd derives a unique path beneath
+`/var/run/vmd` from the VM/instance identity.  A caller can connect locally with
+`vncviewer /var/run/vmd/windows11.vnc`, or remotely without opening a host TCP
+port by forwarding a local TCP port to the Unix socket with SSH.
+
+The socket rules are part of the interface, not implementation details:
+
+- the path must be absolute and fit within `sockaddr_un.sun_path`;
+- the final socket has mode 0600;
+- if the VM stanza explicitly specifies `owner`, the socket UID is that owner;
+  if it does not, the UID is root;
+- a VM started manually by `vmctl start` always receives a root-owned display
+  socket, even if its lifecycle ownership internally records the vmctl caller;
+- vmd validates the parent directory and rejects a symlink or an existing
+  non-socket at the final path;
+- vmd must not blindly unlink the configured name.  It records the device and
+  inode of a socket it successfully bound and unlinks only that same object at
+  VM teardown;
+- two configured VMs/instances may not resolve to the same socket path.
+
+The privileged/configuration side creates and owns the listener before passing
+only the required fd to the display worker.  The worker serves normal RFB over
+`AF_UNIX`, handles one client initially, and re-pledges after receiving its fds.
+It has no `inet`, filesystem, `/dev/vmm`, disk-image or guest-wide-memory access.
+Input is returned to the VM process as bounded typed keyboard/pointer messages.
+
+Direct TCP support is deferred.  If added, the default bind is loopback-only and
+a tiny `stdio inet sendfd` listener passes established connections to the same
+RFB worker.  Non-loopback service requires an authenticated encrypted design;
+legacy VNC password authentication is not sufficient.
 
 ### 7.2 VM Configuration Validation
 
@@ -338,7 +390,7 @@ usr.sbin/vmd/virtio-drivers/
 ```
 vm "windows11" {
     # Required for Windows 11
-    firmware "ovmf"
+    firmware uefi
     secure-boot on
     tpm on
     
@@ -348,7 +400,7 @@ vm "windows11" {
     balloon on
     
     # Storage
-    disk "hd0" "/var/vm/windows11/disk.vhdx"
+    disk "/var/vm/windows11/disk.qcow2"
     
     # Network
     interface tap0 switch mybridge

@@ -17,8 +17,11 @@
 4. Windows end-to-end tests (§8.6) must be marked as requiring licensed media and
    skipped by default (`regress` runs on machines without ISOs).
 5. Add early unit-style tests for pure components as they land: fw_cfg file-dir
-   contents, SMBIOS table checksums, NVRAM store read/write/compact, TPM PCR
-   extend math — all testable without booting a VM.
+   contents, SMBIOS structure streams and bounds, NVRAM store
+   read/write/compact, TPM PCR extend math — all testable without booting a VM.
+6. Treat the display service as a hostile-input boundary.  Test Unix-socket
+   ownership/lifecycle and parser bounds independently of any licensed Windows
+   image, then retain Windows Setup as a manual visual/input integration test.
 
 ## Goal
 
@@ -132,6 +135,31 @@ vmctl stop -f test_ovmf
 - `regress/sbin/vmd/test_tpm_pcr` — TPM PCR test
 - `regress/sbin/vmd/test_balloon` — Balloon test
 - `regress/sbin/vmd/test_migration` — Migration test
+
+### 8.1A Display Service Tests
+
+Add host-only coverage before connecting the service to a guest:
+
+- parse a `display { socket path }` stanza and validate the generated default;
+- reject relative/overlong paths, duplicate paths, symlinks and pre-existing
+  non-socket nodes;
+- verify mode 0600 and the owner rule: explicitly configured VM owner, otherwise
+  root, with manually started/ephemeral VMs always root-owned;
+- replace the socket pathname after bind and verify teardown does not unlink the
+  replacement (device/inode identity check);
+- fuzz RFB version/security negotiation, pixel formats, encodings, rectangles,
+  key events and pointer events, including truncated and oversized messages;
+- bound framebuffer dimensions, allocation arithmetic, output buffering, input
+  message rate and slow-client behavior;
+- verify the display worker has no Internet, filesystem, `/dev/vmm`, disk-image
+  or guest-wide-memory access after initialization;
+- test one local TigerVNC client against the Unix socket and a manual SSH
+  TCP-to-Unix forwarding path.
+
+Framebuffer tests should use a synthetic staging surface and known damage
+rectangles.  Device tests then feed the same surface first from OVMF ramfb and
+later from virtio-gpu transfer/flush commands.  Keyboard/pointer IPC tests must
+reject unknown message types and out-of-range coordinates/scancodes.
 
 ### 8.2 ACPI Table Validation
 
@@ -327,64 +355,33 @@ vmctl stop -f test_tpm
 **Files to create:**
 - `regress/sbin/vmd/test_tpm_pcr` — TPM PCR test
 
-### 8.6 Integration Test: Windows Boot
+### 8.6 Integration Tests: Windows Setup and Installation
 
-**What**: End-to-end test: boot Windows 10/11 from ISO with all features enabled.
+These tests require separately supplied licensed media and are skipped by the
+normal regress target.
 
-**Test**:
-```sh
-#!/bin/sh
-# test_windows_boot — End-to-end Windows boot test
+**M0a — unmodified-media graphical smoke test**:
 
-. $TESTLIB
+1. Boot an unmodified Windows 10/11 x64 installer with UEFI firmware and a
+   graphical display socket.
+2. Connect TigerVNC directly to the Unix socket.
+3. Verify OVMF output and Windows Setup are visible without corruption.
+4. Verify keyboard input and both the PS/2 fallback and absolute pointer path.
+5. It is acceptable for Setup to report no installation disk.  This milestone
+   intentionally isolates UEFI, display and input from Windows virtio drivers.
 
-# Create VM config
-cat > /tmp/test_win11.conf <<EOF
-vm "win11_test" {
-    firmware "ovmf"
-    secure-boot on
-    tpm on
-    memory 4096
-    cpus 2
-    disk "hd0" "/tmp/win11_disk.vhdx"
-    cdrom "/tmp/en_windows_11.iso"
-}
-EOF
+**M0b — injected-driver installation test**:
 
-# Start VM
-vmctl start -c /tmp/test_win11.conf win11_test
-sleep 30
+1. Inject `vioscsi`/`viostor` into all relevant `boot.wim` indexes and selected
+   `install.wim` editions using the documented PowerShell/ADK procedure.
+2. Boot that rebuilt ISO, verify that Setup sees the virtio target disk, and
+   complete an installation to qcow2/raw storage.
+3. Reboot from the installed disk and confirm display, input, MSI-X, SMP,
+   networking (when NetKVM is present), S5 shutdown and warm reset.
 
-# Check that VM is running
-if vmctl info win11_test | grep -q "running"; then
-    echo "PASS: Windows VM is running"
-else
-    echo "FAIL: Windows VM is not running"
-    exit 1
-fi
-
-# Check that OVMF is used
-if vmctl info win11_test | grep -q "OVMF"; then
-    echo "PASS: OVMF firmware detected"
-else
-    echo "FAIL: OVMF firmware not detected"
-    exit 1
-fi
-
-# Check TPM
-if vmctl info win11_test | grep -q "tpm"; then
-    echo "PASS: TPM enabled"
-else
-    echo "FAIL: TPM not enabled"
-    exit 1
-fi
-
-# Teardown
-vmctl stop -f win11_test
-```
-
-**Files to create:**
-- `regress/sbin/vmd/test_windows_boot` — Windows boot test
+Secure Boot and TPM are later tests and are not prerequisites for either first
+bring-up milestone.  Record exact media hashes, driver-package versions and WIM
+indexes in each manual result so failures can be reproduced.
 
 ### 8.7 Performance Benchmarks
 

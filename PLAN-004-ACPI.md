@@ -10,11 +10,15 @@
 2. MADT already includes LAPIC and IOAPIC entries (`acpi.c`), contrary to
    "basic MADT with one LAPIC entry". Still needed: interrupt source overrides
    (ISA 0→2, 8→GSI8 active-low/level), LAPIC NMI, x2APIC entries when >255 CPUs.
-3. **Missing from the plan entirely — SMBIOS**: vmd generates no SMBIOS tables and
-   fw_cfg exposes none. OVMF reads SMBIOS via fw_cfg files
-   (`etc/smbios/smbios-tables`, `etc/smbios/smbios-entry-point-64`). Windows
-   licensing and Device Manager rely on it. Add `smbios.c` generating type 0,1,2,3,4
-   (per vCPU),16,17,19,20,32 tables. High priority.
+3. **SMBIOS — implemented**: `smbios.c` generates types 0, 1, 2, 3, 4, 16,
+   17, 19, 20, 32 and 127.  Type 4 represents the one virtual CPU package and
+   reports each vCPU as a separate core/thread, matching CPUID topology.  The
+   structures are published as `etc/smbios/smbios-tables`; OVMF builds its EFI
+   entry point from that stream.  A 3.x template is also published as
+   `etc/smbios/smbios-anchor` for SeaBIOS, which supplies the guest address and
+   checksum when it installs the table.  Type 1 uses a deterministic RFC 4122
+   version-5 UUID derived from VM name and instance.  An explicit configurable
+   UUID remains a possible management enhancement.
 4. HPET (§4.3): no HPET emulation exists; note that Windows timekeeping works with
    PIT+RTC+PM-timer if the FADT/HPET table is consistent — an HPET table without
    emulation is worse than none. Either implement both together or defer both.
