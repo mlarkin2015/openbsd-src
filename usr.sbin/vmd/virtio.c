@@ -83,7 +83,7 @@ SLIST_HEAD(virtio_dev_head, virtio_dev) virtio_devs;
 #define VMMCI_F_SYNCRTC		(1<<2)
 
 static void virtio_dev_init(struct vmd_vm *, struct virtio_dev *, uint8_t,
-    uint16_t, uint16_t, uint64_t);
+    uint16_t, uint16_t, uint16_t, uint64_t);
 static int virtio_dev_launch(struct vmd_vm *, struct virtio_dev *);
 static void virtio_dispatch_dev(int, short, void *);
 static int handle_dev_msg(struct viodev_msg *, struct virtio_dev *);
@@ -1192,12 +1192,12 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 	if (pci_add_device(&id, PCI_VENDOR_QUMRANET,
 	    PCI_PRODUCT_QUMRANET_VIO1_RNG, PCI_CLASS_SYSTEM,
 	    PCI_SUBCLASS_SYSTEM_MISC, PCI_VENDOR_OPENBSD,
-	    PCI_PRODUCT_VIRTIO_ENTROPY, 1, 1, NULL)) {
+	    PCI_PRODUCT_QUMRANET_VIO1_RNG, 1, 1, NULL)) {
 		log_warnx("can't add PCI virtio rng device");
 		return (1);
 	}
-	virtio_dev_init(vm, &viornd, id, VIORND_QUEUE_SIZE_DEFAULT,
-	    VIRTIO_RND_QUEUES, VIRTIO_F_VERSION_1);
+	virtio_dev_init(vm, &viornd, id, PCI_PRODUCT_VIRTIO_ENTROPY,
+	    VIORND_QUEUE_SIZE_DEFAULT, VIRTIO_RND_QUEUES, VIRTIO_F_VERSION_1);
 
 	bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_io_dispatch,
 	    &viornd);
@@ -1221,13 +1221,13 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			if (pci_add_device(&id, PCI_VENDOR_QUMRANET,
 				PCI_PRODUCT_QUMRANET_VIO1_NET, PCI_CLASS_SYSTEM,
 				PCI_SUBCLASS_SYSTEM_MISC, PCI_VENDOR_OPENBSD,
-				PCI_PRODUCT_VIRTIO_NETWORK, 1, 1, NULL)) {
+				PCI_PRODUCT_QUMRANET_VIO1_NET, 1, 1, NULL)) {
 				log_warnx("can't add PCI virtio net device");
 				free(dev);
 				return (1);
 			}
-			virtio_dev_init(vm, dev, id, VIONET_QUEUE_SIZE_DEFAULT,
-			    VIRTIO_NET_QUEUES,
+			virtio_dev_init(vm, dev, id, PCI_PRODUCT_VIRTIO_NETWORK,
+			    VIONET_QUEUE_SIZE_DEFAULT, VIRTIO_NET_QUEUES,
 			    (VIRTIO_NET_F_CSUM | VIRTIO_NET_F_MAC |
 			    VIRTIO_NET_F_HOST_TSO4 | VIRTIO_NET_F_HOST_TSO6 |
 			    VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_MQ |
@@ -1294,14 +1294,14 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			    PCI_PRODUCT_QUMRANET_VIO1_BLOCK,
 			    PCI_CLASS_MASS_STORAGE,
 			    PCI_SUBCLASS_MASS_STORAGE_SCSI, PCI_VENDOR_OPENBSD,
-			    PCI_PRODUCT_VIRTIO_BLOCK, 1, 1, NULL)) {
+			    PCI_PRODUCT_QUMRANET_VIO1_BLOCK, 1, 1, NULL)) {
 				log_warnx("can't add PCI virtio block "
 				    "device");
 				free(dev);
 				return (1);
 			}
-			virtio_dev_init(vm, dev, id, VIOBLK_QUEUE_SIZE_DEFAULT,
-			    VIRTIO_BLK_QUEUES,
+			virtio_dev_init(vm, dev, id, PCI_PRODUCT_VIRTIO_BLOCK,
+			    VIOBLK_QUEUE_SIZE_DEFAULT, VIRTIO_BLK_QUEUES,
 			    (VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SEG_MAX));
 
 			bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_pci_io,
@@ -1352,13 +1352,14 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 		if (pci_add_device(&id, PCI_VENDOR_QUMRANET,
 		    PCI_PRODUCT_QUMRANET_VIO1_SCSI, PCI_CLASS_MASS_STORAGE,
 		    PCI_SUBCLASS_MASS_STORAGE_SCSI, PCI_VENDOR_OPENBSD,
-		    PCI_PRODUCT_VIRTIO_SCSI, 1, 1, NULL)) {
+		    PCI_PRODUCT_QUMRANET_VIO1_SCSI, 1, 1, NULL)) {
 			log_warnx("can't add PCI vioscsi device");
 			free(dev);
 			return (1);
 		}
-		virtio_dev_init(vm, dev, id, VIOSCSI_QUEUE_SIZE_DEFAULT,
-		    VIRTIO_SCSI_QUEUES, VIRTIO_F_VERSION_1);
+		virtio_dev_init(vm, dev, id, PCI_PRODUCT_VIRTIO_SCSI,
+		    VIOSCSI_QUEUE_SIZE_DEFAULT, VIRTIO_SCSI_QUEUES,
+		    VIRTIO_F_VERSION_1);
 		bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_pci_io, dev);
 		if (bar_id == -1 || bar_id > 0xff) {
 			log_warnx("can't add bar for vioscsi device");
@@ -1399,7 +1400,7 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 		log_warnx("can't add PCI vmm control device");
 		return (1);
 	}
-	virtio_dev_init(vm, dev, id, 0, 0,
+	virtio_dev_init(vm, dev, id, PCI_PRODUCT_VIRTIO_VMMCI, 0, 0,
 	    VMMCI_F_TIMESYNC | VMMCI_F_ACK | VMMCI_F_SYNCRTC);
 	if (pci_add_bar(id, PCI_MAPREG_TYPE_IO, vmmci_io, dev) == -1) {
 		log_warnx("can't add bar for vmm control device");
@@ -1547,17 +1548,13 @@ virtio_start(struct vmd_vm *vm)
  */
 static void
 virtio_dev_init(struct vmd_vm *vm, struct virtio_dev *dev, uint8_t pci_id,
-    uint16_t queue_size, uint16_t num_queues, uint64_t features)
+    uint16_t device_id, uint16_t queue_size, uint16_t num_queues,
+    uint64_t features)
 {
 	size_t i;
-	uint16_t device_id;
 
 	if (num_queues > 0 && num_queues > VIRTIO_MAX_QUEUES)
 		fatalx("%s: num_queues too large", __func__);
-
-	device_id = pci_get_subsys_id(pci_id);
-	if (!device_id)
-		fatalx("%s: invalid pci device id %u", __func__, pci_id);
 
 	memset(dev, 0, sizeof(*dev));
 
@@ -1667,6 +1664,7 @@ virtio_pci_add_cap(uint8_t pci_id, uint8_t cfg_type, uint8_t bar_id,
 		cap.virtio.length = sizeof(uint8_t);
 		break;
 	case VIRTIO_PCI_CAP_NOTIFY_CFG:
+		cap.notify.cap.cap_len = sizeof(struct virtio_pci_notify_cap);
 		cap.virtio.offset = VIO1_NOTIFY_BAR_OFFSET;
 		cap.virtio.length = sizeof(uint16_t);
 		cap.notify.notify_off_multiplier = 0;

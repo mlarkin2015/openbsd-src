@@ -56,6 +56,11 @@
 #define VMM_NODE		"/dev/vmm"
 #define PSP_NODE		"/dev/psp"
 #define VM_DEFAULT_BIOS		"/etc/firmware/vmm-bios"
+#define VM_DEFAULT_UEFI_CODE	"/etc/firmware/vmm-uefi-code"
+#define VM_DEFAULT_UEFI_VARS	"/etc/firmware/vmm-uefi-vars"
+#define VM_UEFI_FIRMWARE_SIZE	MB(4)
+#define VM_UEFI_VARS_SIZE	KB(528)
+#define VM_UEFI_FLASH_BLOCK_SIZE	0x1000
 #define VM_DEFAULT_KERNEL	"/bsd"
 #define VM_DEFAULT_DEVICE	"hd0a"
 #define VM_BOOT_CONF		"/etc/boot.conf"
@@ -97,6 +102,8 @@
 #define VMD_CDROM_MISSING	1005
 #define VMD_CDROM_INVALID	1006
 #define VMD_PARENT_INVALID	1007
+#define VMD_UEFI_MISSING	1008
+#define VMD_EFIVARS_INVALID	1009
 
 #define IMSG_AGENTX_PEERID	(uint32_t)-2
 
@@ -111,6 +118,7 @@
 
 enum imsg_type {
 	IMSG_VMDOP_START_VM_REQUEST = IMSG_PROC_MAX,
+	IMSG_VMDOP_START_VM_EFIVARS,
 	IMSG_VMDOP_START_VM_CDROM,
 	IMSG_VMDOP_START_VM_DISK,
 	IMSG_VMDOP_START_VM_IF,
@@ -214,6 +222,11 @@ enum vm_disk_fmt {
 	VMDF_QCOW2,
 };
 
+enum vm_firmware {
+	VMFW_BIOS = 0,
+	VMFW_UEFI,
+};
+
 struct vmop_create_params {
 	/* vm identifying information */
 	uint32_t		 vmc_id;
@@ -228,6 +241,7 @@ struct vmop_create_params {
 #define VMOP_CREATE_DISK	0x10
 #define VMOP_CREATE_CDROM	0x20
 #define VMOP_CREATE_INSTANCE	0x40
+#define VMOP_CREATE_FIRMWARE	0x80
 	/* same flags as vmc_flags; check for access to these resources */
 	unsigned int		 vmc_checkaccess;
 
@@ -246,6 +260,8 @@ struct vmop_create_params {
 
 	/* Boot device and firmware */
 	int			 vmc_kernel;
+	enum vm_firmware	 vmc_firmware;
+	char			 vmc_efivars[PATH_MAX];
 	unsigned int		 vmc_bootdevice;
 #define VMBOOTDEV_AUTO		0
 #define VMBOOTDEV_DISK		1
@@ -304,6 +320,7 @@ TAILQ_HEAD(switchlist, vmd_switch);
 struct vmd_vm {
 	struct vmop_create_params vm_params;
 	size_t			 vm_ncpus_config;
+	enum vm_firmware	 vm_firmware_config;
 
 	/* Owner and identifier information */
 	pid_t			 vm_pid;
@@ -323,6 +340,7 @@ struct vmd_vm {
 
 	int			 vm_kernel;
 	char			*vm_kernel_path; /* Used by vm.conf. */
+	int			 vm_efivars;
 
 	/* Device and disk image file descriptors */
 	int			 vm_cdrom;
@@ -530,6 +548,7 @@ int	 vmm_pipe(struct vmd_vm *, int, void (*)(int, short, void *));
 /* {mach}_vm.c (md interface) */
 void	 create_memory_map(struct vmd_vm *);
 int	 load_firmware(struct vmd_vm *, struct vcpu_reg_state *);
+int	 sync_uefi_vars(struct vmd_vm *);
 int	 init_emulated_hw(struct vmd_vm *, int, int[][VM_MAX_BASE_PER_DISK],
     int *);
 int	 vcpu_reset(uint32_t, uint32_t, struct vcpu_reg_state *);
@@ -585,6 +604,7 @@ int	 config_getconfig(struct vmd *, struct imsg *);
 int	 config_setreset(struct vmd *, unsigned int);
 int	 config_setvm(struct privsep *, struct vmd_vm *, uint32_t, uid_t);
 int	 config_getvm(struct privsep *, struct imsg *);
+int	 config_getefivars(struct privsep *, struct imsg *);
 int	 config_getdisk(struct privsep *, struct imsg *);
 int	 config_getif(struct privsep *, struct imsg *);
 int	 config_getcdrom(struct privsep *, struct imsg *);

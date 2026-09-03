@@ -84,31 +84,56 @@ vmd.
 - The packaged RELEASE image exposes an interactive COM1 console: a diskless
   smoke test reaches the expected no-bootable-device prompt, accepts keyboard
   input, and opens the OVMF Boot Manager menu.
+- vmd publishes its RSDP through fw_cfg and OVMF installs vmd's linked XSDT,
+  FADT, MADT, DSDT, and FACS rather than QEMU-specific ACPI tables.
+- An EFI-capable OpenBSD install image boots through autoconfiguration and
+  reaches the installer prompt from a virtio block disk.
+- OVMF boot variables written to a configured `efivars` file survive VM
+  shutdown and a subsequent start.  VMs without the setting receive a fresh,
+  ephemeral variable store.
+- OVMF's EFI Shell `reset -s` enters vmd's ACPI S5 path and terminates the VM
+  without leaving a spinning vmd process.
+- OVMF's EFI Shell `reset -w` uses the conventional i8042 reset command and
+  completes a full vmd guest-reboot cycle.  vmd also recognizes the PIIX reset
+  control port used by OVMF's cold-reset fallback.
+- OVMF may describe a virtio block boot option as `UEFI Misc Device`; this is
+  generic firmware naming and does not mean that vmd exposed the disk with an
+  incorrect PCI class.
+- The configuration and complete vmd regression suites pass with the UEFI
+  integration installed.
 
-The firmware-only smoke test does not establish guest boot support yet.
-Generic OVMF currently sees no ACPI tables because vmd's fw_cfg directory does
-not publish them in the format OVMF consumes.
+## Runtime integration milestone
 
-## Remaining runtime integration
+1. `firmware bios|uefi` is implemented in `vm.conf`; `vmctl start -f` provides
+   a one-boot selection.  BIOS remains the compatibility default.
+2. vmd loads the split CODE/VARS images into the existing 4 MB firmware
+   window.  The CODE extent is directly mapped as reserved firmware memory;
+   the VARS extent is an MMIO-backed CFI flash device with byte-program and
+   block-erase operations.
+3. `efivars path` is implemented for configured VMs.  A missing file is
+   created privately from `vmm-uefi-vars`; an existing file is size-checked,
+   locked, and used directly as the flash backing store.  Manual VMs and
+   configured VMs without `efivars` use an anonymous ephemeral copy.
+4. OVMF's vmd platform path consumes vmd's fw_cfg RSDP and installs the linked
+   ACPI tables in place.
+5. Guest writes cannot overwrite vmd's internal PCI interrupt route after
+   OVMF programs the guest-visible PCI Interrupt Line register.
+6. The MMIO decoder supports the additional byte, immediate, arithmetic,
+   zero-extension, and MOVS forms exercised by OVMF's flash and PCI paths.
 
-1. Add `firmware bios|uefi` to `vm.conf` and the equivalent explicit vmctl
-   selection.  Keep BIOS as the compatibility default.
-2. Teach vmd to load the combined image for ephemeral operation and the split
-   CODE/VARS images for persistent operation.  Firmware code must be
-   guest-read-only; the variable flash must implement flash write/erase
-   semantics rather than ordinary writable RAM.
-3. Add `efivars path` to per-VM configuration.  Create a private copy from
-   `vmm-uefi-vars` when the file does not yet exist, validate its size/header,
-   and persist changes safely.  Manual VMs and configured VMs without this
-   option get an in-memory copy that is discarded at shutdown.
-4. Publish vmd's existing ACPI tables through fw_cfg in OVMF's table-loader
-   format, or add an equally well-defined vmd-specific handoff.  Do not let
-   OVMF invent QEMU PIIX/Q35 tables for the vmd platform.
-5. Boot an EFI-capable OpenBSD or Linux disk, then exercise installation,
-   reboot, shutdown, SMP, MSI-X devices, and persistent boot variables.
-6. Add regression coverage for firmware selection, invalid variable stores,
-   ephemeral versus persistent variables, flash bounds, and ACPI handoff.
-7. Only after the non-SMM path is stable, evaluate Secure Boot, authenticated
+## Next validation and follow-up
+
+1. Exercise EFI SMP, MSI-X, and networking with an installed OpenBSD guest,
+   followed by Linux and Windows installation media.  Confirm OpenBSD's
+   `machine fw` flow as a guest-level check of the already-tested EFI reset
+   service.
+2. Add focused runtime coverage for malformed variable stores, ephemeral
+   versus persistent variables, CFI flash bounds, and ACPI handoff.
+3. Add a power-failure-safe persistence protocol if EFI variable durability
+   across host crashes is required.  Flash updates reach the backing file
+   immediately and are fsynced on orderly VM exit, but there is no journal or
+   atomic recovery layer.
+4. Only after the non-SMM path is stable, evaluate Secure Boot, authenticated
    variable updates, key enrollment, and TPM-backed measured boot.
 
 ## Deferred items and constraints
@@ -117,6 +142,7 @@ not publish them in the format OVMF consumes.
 - vmm does not emulate SMM/SMRAM, so an SMM-required OVMF build is unsupported.
 - SMBIOS is not currently generated by vmd.  It is useful for Windows but is
   not required to prove the initial UEFI boot path.
-- The present vmd firmware loader limit already accommodates the 4 MB combined
-  image.  Split pflash support will require explicit memory-map and access
-  handling rather than treating both files as one ordinary BIOS blob.
+- Firmware CODE is mapped as reserved guest memory rather than a separately
+  protected ROM mapping.  OVMF's VARS region does have CFI flash programming
+  and erase semantics, but crash-consistent variable-store recovery remains a
+  future hardening item.

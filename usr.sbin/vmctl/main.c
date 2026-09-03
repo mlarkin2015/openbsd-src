@@ -77,7 +77,7 @@ struct ctl_command ctl_commands[] = {
 	{ "reset",	CMD_RESET,	ctl_reset,	"[all | switches | vms]" },
 	{ "show",	CMD_STATUS,	ctl_status,	"[id]" },
 	{ "start",	CMD_START,	ctl_start,
-	    "[-cL] [-B device] [-b path] [-d disk] [-i count]\n"
+	    "[-cL] [-B device] [-b path] [-d disk] [-f firmware] [-i count]\n"
 	    "\t\t[-m size] [-n switch] [-p count] [-r path] [-t name] "
 	    "id | name",	1},
 	{ "status",	CMD_STATUS,	ctl_status,	"[-r] [id]" },
@@ -217,7 +217,8 @@ vmmaction(struct parse_result *res)
 		ret = vm_start(res->id, res->name, res->size, res->ncpus,
 		    res->nifs,
 		    res->nets, res->ndisks, res->disks, res->disktypes,
-		    res->path, res->isopath, res->instance, res->bootdevice);
+		    res->path, res->isopath, res->instance, res->bootdevice,
+		    res->firmware, res->firmware_set);
 		if (ret) {
 			errno = ret;
 			err(1, "start VM operation failed");
@@ -828,7 +829,7 @@ ctl_start(struct parse_result *res, int argc, char *argv[])
 	if (pledge("stdio rpath exec unix getpw unveil sendfd", NULL) == -1)
 		err(1, "pledge");
 
-	while ((ch = getopt(argc, argv, "b:B:cd:i:Lm:n:p:r:t:")) != -1) {
+	while ((ch = getopt(argc, argv, "b:B:cd:f:i:Lm:n:p:r:t:")) != -1) {
 		switch (ch) {
 		case 'b':
 			if (res->path)
@@ -891,6 +892,17 @@ ctl_start(struct parse_result *res, int argc, char *argv[])
 				err(1, "invalid disk path: %s", s);
 			if (parse_disk(res, path, type) != 0)
 				errx(1, "invalid disk: %s", optarg);
+			break;
+		case 'f':
+			if (res->firmware_set)
+				errx(1, "firmware specified multiple times");
+			if (strcmp(optarg, "bios") == 0)
+				res->firmware = VMFW_BIOS;
+			else if (strcmp(optarg, "uefi") == 0)
+				res->firmware = VMFW_UEFI;
+			else
+				errx(1, "unknown firmware: %s", optarg);
+			res->firmware_set = 1;
 			break;
 		case 'i':
 			if (res->nifs != -1)
