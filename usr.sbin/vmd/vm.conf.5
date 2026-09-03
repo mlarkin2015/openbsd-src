@@ -226,6 +226,11 @@ If left unspecified, the format defaults to
 if it cannot be derived automatically.
 .It Ic display Op Brq ...
 Enable a local graphical display endpoint.
+This option currently requires
+.Cm firmware uefi
+because the graphical scanout is provided by the OVMF framebuffer.
+The endpoint speaks the RFB protocol used by VNC clients over a local
+Unix-domain socket; it does not listen on TCP.
 The following option may be specified in curly braces:
 .Bl -tag -width Ds
 .It Ic socket Ar path
@@ -246,6 +251,10 @@ For safety,
 .Xr vmd 8
 will not replace any existing filesystem object at the socket path.
 An administrator must remove a stale socket left by an abnormal daemon exit.
+For example, TigerVNC can attach locally with:
+.Bd -literal -offset indent
+vncviewer /var/run/vmd/<name>.vnc
+.Ed
 .It Ic efivars Ar path
 Use
 .Ar path

@@ -303,7 +303,7 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 	enum vm_disk_fmt	 type;
 	unsigned int		 i, j;
 	int			 fd = -1, cdromfd = -1, efivarsfd = -1;
-	int			 displayfd = -1;
+	int			 displayfd = -1, displaymemfd = -1;
 	int			 kernfd = -1;
 	int			*tapfds = NULL;
 	int			 aflags, oflags, ret = -1;
@@ -605,6 +605,11 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 			    vmc->vmc_displaysock);
 			goto fail;
 		}
+		if (display_surface_open(&vm->vm_display_mem) == -1) {
+			ret = errno;
+			log_warn("can't create display surface");
+			goto fail;
+		}
 	}
 
 	/*
@@ -638,6 +643,11 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 		ret = errno;
 		goto fail;
 	}
+	if (vmc->vmc_display &&
+	    (displaymemfd = dup(vm->vm_display_mem)) == -1) {
+		ret = errno;
+		goto fail;
+	}
 	/* XXX check proc_compose_imsg return values */
 	proc_compose_imsg(ps, PROC_VMM, IMSG_VMDOP_START_VM_REQUEST,
 	    vm->vm_vmid, kernfd, vmc, sizeof(*vmc));
@@ -650,6 +660,10 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 		proc_compose_imsg(ps, PROC_VMM, IMSG_VMDOP_START_VM_DISPLAY,
 		    vm->vm_vmid, displayfd, NULL, 0);
 		displayfd = -1;
+		proc_compose_imsg(ps, PROC_VMM,
+		    IMSG_VMDOP_START_VM_DISPLAY_MEM, vm->vm_vmid,
+		    displaymemfd, NULL, 0);
+		displaymemfd = -1;
 	}
 
 	if (strlen(vmc->vmc_cdrom))
@@ -701,6 +715,8 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 		close(efivarsfd);
 	if (displayfd != -1)
 		close(displayfd);
+	if (displaymemfd != -1)
+		close(displaymemfd);
 	if (cdromfd != -1)
 		close(cdromfd);
 	for (i = 0; i < vmc->vmc_ndisks; i++)
@@ -817,6 +833,45 @@ config_getdisplay(struct privsep *ps, struct imsg *imsg)
 	}
 
 	vm->vm_display = fd;
+	return (0);
+
+ fail:
+	if (fd != -1)
+		close(fd);
+	errno = EINVAL;
+	return (-1);
+}
+
+int
+config_getdisplaymem(struct privsep *ps, struct imsg *imsg)
+{
+	struct vmd_vm	*vm;
+	struct stat	 st;
+	int		 fd, flags;
+	uint32_t	 peer_id;
+
+	peer_id = imsg_get_id(imsg);
+	errno = 0;
+	if ((vm = vm_getbyvmid(peer_id)) == NULL) {
+		errno = ENOENT;
+		return (-1);
+	}
+
+	fd = imsg_get_fd(imsg);
+	if (fd == -1 || !vm->vm_params.vmc_display ||
+	    vm->vm_display_mem != -1 || fstat(fd, &st) == -1 ||
+	    !S_ISREG(st.st_mode) ||
+	    st.st_size != (off_t)display_surface_size()) {
+		log_warnx("invalid display surface fd");
+		goto fail;
+	}
+	if ((flags = fcntl(fd, F_GETFD)) == -1 ||
+	    fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC) == -1) {
+		log_warn("cannot preserve display surface fd");
+		goto fail;
+	}
+
+	vm->vm_display_mem = fd;
 	return (0);
 
  fail:

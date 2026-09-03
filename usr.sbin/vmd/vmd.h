@@ -86,6 +86,7 @@
 /* Launch mode identifiers for when a vm fork+exec's. */
 #define VMD_LAUNCH_VM		1
 #define VMD_LAUNCH_DEV		2
+#define VMD_LAUNCH_DISPLAY	3
 
 #define VMD_DEVTYPE_NET		'n'
 #define VMD_DEVTYPE_DISK	'd'
@@ -160,6 +161,8 @@ enum imsg_type {
 	IMSG_DEVOP_HOSTMAC,
 	IMSG_DEVOP_MSG,
 	IMSG_DEVOP_VIONET_MSG,
+	/* Internal display worker setup; keep after established ABI values. */
+	IMSG_VMDOP_START_VM_DISPLAY_MEM,
 };
 
 struct vmop_result {
@@ -347,6 +350,7 @@ struct vmd_vm {
 	char			*vm_kernel_path; /* Used by vm.conf. */
 	int			 vm_efivars;
 	int			 vm_display;
+	int			 vm_display_mem;
 	dev_t			 vm_display_dev;
 	ino_t			 vm_display_ino;
 
@@ -613,6 +617,7 @@ int	 config_setvm(struct privsep *, struct vmd_vm *, uint32_t, uid_t);
 int	 config_getvm(struct privsep *, struct imsg *);
 int	 config_getefivars(struct privsep *, struct imsg *);
 int	 config_getdisplay(struct privsep *, struct imsg *);
+int	 config_getdisplaymem(struct privsep *, struct imsg *);
 int	 config_getdisk(struct privsep *, struct imsg *);
 int	 config_getif(struct privsep *, struct imsg *);
 int	 config_getcdrom(struct privsep *, struct imsg *);

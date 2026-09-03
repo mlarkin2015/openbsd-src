@@ -19,12 +19,16 @@
 
 #include <endian.h>
 #include <errno.h>
+#include <event.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "fw_cfg.h"
+#include "display.h"
 #include "ramfb.h"
+#include "vmd.h"
 
 struct ramfb_wire_config {
 	uint64_t address;
@@ -37,10 +41,18 @@ struct ramfb_wire_config {
 
 _Static_assert(sizeof(struct ramfb_wire_config) == 28,
     "invalid QEMU ramfb configuration size");
+_Static_assert(RAMFB_FOURCC_XRGB8888 == DISPLAY_FORMAT_XRGB8888,
+    "ramfb and display formats disagree");
 
 static pthread_mutex_t ramfb_mtx = PTHREAD_MUTEX_INITIALIZER;
 static struct ramfb_config ramfb_cfg;
 static int ramfb_configured;
+static struct event ramfb_timer;
+static int ramfb_running;
+static uint8_t *ramfb_pixels;
+static size_t ramfb_pixels_len;
+
+static void	ramfb_capture(int, short, void *);
 
 int
 ramfb_parse_config(const void *data, size_t len, struct ramfb_config *cfg)
@@ -105,6 +117,9 @@ ramfb_init(void)
 	pthread_mutex_unlock(&ramfb_mtx);
 	fw_cfg_add_file_callback("etc/ramfb", &wire, sizeof(wire),
 	    ramfb_config_write, NULL);
+	evtimer_set(&ramfb_timer, ramfb_capture, NULL);
+	ramfb_running = 1;
+	ramfb_capture(-1, 0, NULL);
 }
 
 int
@@ -118,4 +133,41 @@ ramfb_get_config(struct ramfb_config *cfg)
 		*cfg = ramfb_cfg;
 	pthread_mutex_unlock(&ramfb_mtx);
 	return (configured);
+}
+
+static void
+ramfb_capture(int fd, short event, void *arg)
+{
+	struct display_surface *surface = display_get_surface();
+	struct ramfb_config cfg;
+	struct timeval tv = { 0, 33333 };
+	size_t len;
+	void *p;
+
+	if (!ramfb_running)
+		return;
+	if (surface != NULL && ramfb_get_config(&cfg)) {
+		len = (size_t)cfg.stride * cfg.height;
+		if (len > ramfb_pixels_len) {
+			p = realloc(ramfb_pixels, len);
+			if (p != NULL) {
+				ramfb_pixels = p;
+				ramfb_pixels_len = len;
+			}
+		}
+		if (len <= ramfb_pixels_len &&
+		    read_mem(cfg.address, ramfb_pixels, len) == 0)
+			(void)display_surface_update(surface, ramfb_pixels,
+			    cfg.width, cfg.height, cfg.stride, cfg.fourcc);
+	}
+	evtimer_add(&ramfb_timer, &tv);
+}
+
+void
+ramfb_stop(void)
+{
+	if (!ramfb_running)
+		return;
+	ramfb_running = 0;
+	evtimer_del(&ramfb_timer);
 }
