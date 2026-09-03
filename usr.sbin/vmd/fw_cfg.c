@@ -16,6 +16,7 @@
  */
 #include <sys/types.h>
 #include <machine/biosvar.h>	/* bios_memmap_t */
+#include <dev/pci/pcidevs.h>
 #include <dev/pv/virtioreg.h>
 #include <dev/vmm/vmm.h>
 
@@ -130,16 +131,19 @@ fw_cfg_init(struct vmop_create_params *vmc)
 
 	switch (vmc->vmc_bootdevice) {
 	case VMBOOTDEV_DISK:
-		bootidx = pci_find_first_device(PCI_PRODUCT_VIRTIO_BLOCK);
+		bootidx = pci_find_first_device(
+		    PCI_PRODUCT_QUMRANET_VIO1_BLOCK);
 		bootfmt = "/pci@i0cf8/*@%d\nHALT";
 		break;
 	case VMBOOTDEV_CDROM:
-		bootidx = pci_find_first_device(PCI_PRODUCT_VIRTIO_SCSI);
+		bootidx = pci_find_first_device(
+		    PCI_PRODUCT_QUMRANET_VIO1_SCSI);
 		bootfmt = "/pci@i0cf8/*@%d/*@0/*@0,40000100\nHALT";
 		break;
 	case VMBOOTDEV_NET:
 		/* XXX not yet */
-		bootidx = pci_find_first_device(PCI_PRODUCT_VIRTIO_NETWORK);
+		bootidx = pci_find_first_device(
+		    PCI_PRODUCT_QUMRANET_VIO1_NET);
 		bootfmt = "HALT";
 		break;
 	}

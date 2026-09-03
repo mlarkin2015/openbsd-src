@@ -397,6 +397,10 @@ vm_main(int fd, int fd_vmm)
 		log_warnx("failed to receive boot fd");
 		_exit(EINVAL);
 	}
+	if (vm.vm_params.vmc_firmware == VMFW_UEFI && vm.vm_efivars == -1) {
+		log_warnx("failed to receive UEFI variable-store fd");
+		_exit(EINVAL);
+	}
 
 	if (vm.vm_params.vmc_sev && env->vmd_psp_fd < 0) {
 		log_warnx("%s not available", PSP_NODE);
@@ -547,6 +551,9 @@ start_vm(struct vmd_vm *vm, int fd)
 	 */
 	ret = run_vm(vm, &vrs);
 
+	if (sync_uefi_vars(vm) != 0)
+		log_warn("could not save UEFI variable store");
+
 	/* Shutdown SEV. */
 	if (sev_shutdown(vm))
 		log_warnx("%s: could not shutdown SEV", __func__);
@@ -674,6 +681,8 @@ vm_shutdown(unsigned int cmd)
 		fatalx("invalid vm ctl command: %d", cmd);
 	}
 	imsgbuf_flush(&current_vm->vm_iev.ibuf);
+	if (sync_uefi_vars(current_vm) != 0)
+		log_warn("could not save UEFI variable store");
 
 	if (sev_shutdown(current_vm))
 		log_warnx("%s: could not shutdown SEV", __func__);

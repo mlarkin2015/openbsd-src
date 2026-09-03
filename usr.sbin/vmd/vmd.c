@@ -129,7 +129,7 @@ vmd_dispatch_control(int fd, struct privsep_proc *p, struct imsg *imsg)
 
 				/* If not running, are our overrides valid? */
 				if (vmc.vmc_flags & ~(VMOP_CREATE_KERNEL |
-				    VMOP_CREATE_CPU)) {
+				    VMOP_CREATE_CPU | VMOP_CREATE_FIRMWARE)) {
 					cmd = IMSG_VMDOP_START_VM_RESPONSE;
 					goto start_failed;
 				}
@@ -142,6 +142,16 @@ vmd_dispatch_control(int fd, struct privsep_proc *p, struct imsg *imsg)
 						goto start_failed;
 					}
 					vm->vm_params.vmc_ncpus = vmc.vmc_ncpus;
+				}
+				if (vmc.vmc_flags & VMOP_CREATE_FIRMWARE) {
+					if (vmc.vmc_firmware != VMFW_BIOS &&
+					    vmc.vmc_firmware != VMFW_UEFI) {
+						res = EINVAL;
+						cmd = IMSG_VMDOP_START_VM_RESPONSE;
+						goto start_failed;
+					}
+					vm->vm_params.vmc_firmware =
+					    vmc.vmc_firmware;
 				}
 
 				close_fd(vm->vm_kernel);
@@ -156,8 +166,11 @@ vmd_dispatch_control(int fd, struct privsep_proc *p, struct imsg *imsg)
 		res = config_setvm(ps, vm, peer_id,
 		    vm->vm_params.vmc_owner.uid);
 		if (res) {
-			if (vm->vm_from_config)
+			if (vm->vm_from_config) {
 				vm->vm_params.vmc_ncpus = vm->vm_ncpus_config;
+				vm->vm_params.vmc_firmware =
+				    vm->vm_firmware_config;
+			}
 			cmd = IMSG_VMDOP_START_VM_RESPONSE;
 		}
 		break;
@@ -806,6 +819,7 @@ vmd_configure(void)
 	 * stdio - for malloc and basic I/O including events.
 	 * rpath - for reload to open and read the configuration files.
 	 * wpath - for opening disk images and tap devices.
+	 * cpath - for creating a configured UEFI variable store.
 	 * tty - for openpty and TIOCUCNTL.
 	 * proc - run kill to terminate its children safely.
 	 * sendfd - for disks, interfaces and other fds.
@@ -815,7 +829,7 @@ vmd_configure(void)
 	 * flock - locking disk files
 	 */
 	/* DSDT DEBUG: pledge disabled
-	if (pledge("stdio rpath wpath proc tty recvfd sendfd getpw"
+	if (pledge("stdio rpath wpath cpath proc tty recvfd sendfd getpw"
 	    " chown fattr flock", NULL) == -1)
 		fatal("pledge");
 	*/
@@ -1060,8 +1074,9 @@ vm_stop(struct vmd_vm *vm, int keeptty, const char *caller)
 	    vm->vm_vmid, keeptty ? ", keeping tty open" : "");
 
 	vm->vm_state &= ~(VM_STATE_RUNNING | VM_STATE_SHUTDOWN);
-	/* Command-line CPU counts override one boot, not vm.conf. */
+	/* Command-line CPU and firmware settings override one boot. */
 	vm->vm_params.vmc_ncpus = vm->vm_ncpus_config;
+	vm->vm_params.vmc_firmware = vm->vm_firmware_config;
 
 	if (vm->vm_iev.ibuf.fd != -1) {
 		event_del(&vm->vm_iev.ev);
@@ -1090,6 +1105,10 @@ vm_stop(struct vmd_vm *vm, int keeptty, const char *caller)
 	if (vm->vm_kernel != -1) {
 		close(vm->vm_kernel);
 		vm->vm_kernel = -1;
+	}
+	if (vm->vm_efivars != -1) {
+		close(vm->vm_efivars);
+		vm->vm_efivars = -1;
 	}
 	if (vm->vm_cdrom != -1) {
 		close(vm->vm_cdrom);
@@ -1215,6 +1234,14 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	} else if (vmc->vmc_nnics > VM_MAX_NICS_PER_VM) {
 		log_warnx("invalid number of interfaces");
 		goto fail;
+	} else if (vmc->vmc_firmware != VMFW_BIOS &&
+	    vmc->vmc_firmware != VMFW_UEFI) {
+		log_warnx("invalid firmware type");
+		goto fail;
+	} else if (vmc->vmc_efivars[0] != '\0' &&
+	    vmc->vmc_firmware != VMFW_UEFI) {
+		log_warnx("efivars requires UEFI firmware");
+		goto fail;
 	} else if (vmc->vmc_kernel == -1 && vmc->vmc_ndisks == 0
 	    && strlen(vmc->vmc_cdrom) == 0) {
 		log_warnx("no kernel or disk/cdrom specified");
@@ -1242,9 +1269,11 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	memcpy(&vm->vm_params, vmc, sizeof(vm->vm_params));
 	vmc = &vm->vm_params;
 	vm->vm_ncpus_config = vmc->vmc_ncpus;
+	vm->vm_firmware_config = vmc->vmc_firmware;
 	vm->vm_pid = -1;
 	vm->vm_tty = -1;
 	vm->vm_kernel = -1;
+	vm->vm_efivars = -1;
 	vm->vm_state &= ~VM_STATE_PAUSED;
 
 	if (vmc->vmc_kernel > -1)
@@ -1426,6 +1455,20 @@ vm_instance(struct privsep *ps, struct vmd_vm **vm_parent,
 			return (EPERM);
 		}
 		vmc->vmc_checkaccess |= VMOP_CREATE_KERNEL;
+	}
+
+	/* Firmware is inherited, but each instance gets its own ephemeral VARS. */
+	if ((vmc->vmc_flags & VMOP_CREATE_FIRMWARE) == 0)
+		vmc->vmc_firmware = vmc_parent->vmc_firmware;
+	else if (vm_checkinsflag(vmc_parent, VMOP_CREATE_FIRMWARE, uid) != 0 &&
+	    vmc->vmc_firmware != vmc_parent->vmc_firmware) {
+		log_warnx("vm \"%s\" no permission to set firmware", name);
+		return (EPERM);
+	}
+	if (vmc->vmc_efivars[0] != '\0' &&
+	    vmc->vmc_firmware != VMFW_UEFI) {
+		log_warnx("vm \"%s\" efivars requires UEFI firmware", name);
+		return (EINVAL);
 	}
 
 	/* cdrom */

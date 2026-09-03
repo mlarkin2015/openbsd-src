@@ -28,6 +28,7 @@
 #include "../../sys/arch/amd64/include/vmmvar.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -53,15 +54,46 @@ typedef uint8_t (*io_fn_t)(struct vm_run_params *);
 
 #define LOWMEM_KB	576
 #define MAX_PORTS	65536
+#define I8042_CMD_PORT	0x64
+#define I8042_RESET_CMD	0xfe
+#define PIIX_RESET_PORT	0xcf9
+#define PIIX_RESET_FULL	0x06
 
 extern char* __progname;
 
 io_fn_t	ioports_map[MAX_PORTS];
 
+#define CFI_CMD_WRITE_BYTE	0x10
+#define CFI_CMD_BLOCK_ERASE	0x20
+#define CFI_CMD_CLEAR_STATUS	0x50
+#define CFI_CMD_READ_STATUS	0x70
+#define CFI_CMD_ERASE_CONFIRM	0xd0
+#define CFI_CMD_READ_ARRAY	0xff
+
+struct uefi_flash {
+	pthread_mutex_t	 uf_mtx;
+	uint8_t		*uf_data;
+	off_t		 uf_size;
+	int		 uf_fd;
+	uint8_t		 uf_cmd;
+	off_t		 uf_cmd_off;
+};
+
+static struct uefi_flash uefi_flash = {
+	.uf_mtx = PTHREAD_MUTEX_INITIALIZER,
+	.uf_fd = -1,
+	.uf_cmd = CFI_CMD_READ_ARRAY
+};
+
 static int	loadfile_bios(gzFile, off_t, struct vcpu_reg_state *);
+static int	loadfile_uefi(gzFile, int, off_t,
+    struct vcpu_reg_state *);
+static int	uefi_flash_init(int);
+static int	uefi_flash_mmio(uint32_t, int, uint64_t, uint64_t *);
 static int	vcpu_exit_eptviolation(struct vm_run_params *);
 static int	vcpu_exit_avic(struct vm_run_params *);
 static int	vcpu_exit_x2apic(struct vm_run_params *);
+static int	vcpu_exit_reset(struct vm_run_params *);
 static void	vcpu_exit_inout(struct vm_run_params *);
 static int	read_vmem(struct vm_run_params *, uint8_t, uint64_t, void *,
     size_t);
@@ -227,10 +259,21 @@ create_memory_map(struct vmd_vm *vm)
 	 * BIOS area.
 	 */
 	if (mem_bytes <= MB(4)) {
-		vmc->vmc_memranges[2].vmr_gpa = PCI_MMIO_BAR_END;
-		vmc->vmc_memranges[2].vmr_size = MB(4);
-		vmc->vmc_memranges[2].vmr_type = VM_MEM_RESERVED;
-		vmc->vmc_nmemranges = 3;
+		vmc->vmc_memranges[2].vmr_gpa = PCI_MMIO_BAR_END + 1;
+		if (vmc->vmc_firmware == VMFW_UEFI) {
+			vmc->vmc_memranges[2].vmr_size = VM_UEFI_VARS_SIZE;
+			vmc->vmc_memranges[2].vmr_type = VM_MEM_MMIO;
+			vmc->vmc_memranges[3].vmr_gpa =
+			    vmc->vmc_memranges[2].vmr_gpa + VM_UEFI_VARS_SIZE;
+			vmc->vmc_memranges[3].vmr_size =
+			    VM_UEFI_FIRMWARE_SIZE - VM_UEFI_VARS_SIZE;
+			vmc->vmc_memranges[3].vmr_type = VM_MEM_RESERVED;
+			vmc->vmc_nmemranges = 4;
+		} else {
+			vmc->vmc_memranges[2].vmr_size = MB(4);
+			vmc->vmc_memranges[2].vmr_type = VM_MEM_RESERVED;
+			vmc->vmc_nmemranges = 3;
+		}
 		return;
 	}
 
@@ -258,19 +301,33 @@ create_memory_map(struct vmd_vm *vm)
 	    PCI_MMIO_BAR_BASE + 1;
 	vmc->vmc_memranges[3].vmr_type = VM_MEM_MMIO;
 
-	/* Fifth region: 2nd copy of BIOS above MMIO ending at 4GB */
+	/* Fifth region: firmware above MMIO ending at 4GB. */
 	vmc->vmc_memranges[4].vmr_gpa = PCI_MMIO_BAR_END + 1;
-	vmc->vmc_memranges[4].vmr_size = MB(4);
-	vmc->vmc_memranges[4].vmr_type = VM_MEM_RESERVED;
+	if (vmc->vmc_firmware == VMFW_UEFI) {
+		/* OVMF VARS behaves as flash; CODE remains directly mapped ROM. */
+		vmc->vmc_memranges[4].vmr_size = VM_UEFI_VARS_SIZE;
+		vmc->vmc_memranges[4].vmr_type = VM_MEM_MMIO;
+		vmc->vmc_memranges[5].vmr_gpa =
+		    vmc->vmc_memranges[4].vmr_gpa + VM_UEFI_VARS_SIZE;
+		vmc->vmc_memranges[5].vmr_size =
+		    VM_UEFI_FIRMWARE_SIZE - VM_UEFI_VARS_SIZE;
+		vmc->vmc_memranges[5].vmr_type = VM_MEM_RESERVED;
+	} else {
+		vmc->vmc_memranges[4].vmr_size = MB(4);
+		vmc->vmc_memranges[4].vmr_type = VM_MEM_RESERVED;
+	}
 
 	/* Sixth region: any remainder above 4GB */
 	if (above_4g > 0) {
-		vmc->vmc_memranges[5].vmr_gpa = GB(4);
-		vmc->vmc_memranges[5].vmr_size = above_4g;
-		vmc->vmc_memranges[5].vmr_type = VM_MEM_RAM;
-		vmc->vmc_nmemranges = 6;
+		size_t idx = vmc->vmc_firmware == VMFW_UEFI ? 6 : 5;
+
+		vmc->vmc_memranges[idx].vmr_gpa = GB(4);
+		vmc->vmc_memranges[idx].vmr_size = above_4g;
+		vmc->vmc_memranges[idx].vmr_type = VM_MEM_RAM;
+		vmc->vmc_nmemranges = idx + 1;
 	} else
-		vmc->vmc_nmemranges = 5;
+		vmc->vmc_nmemranges =
+		    vmc->vmc_firmware == VMFW_UEFI ? 6 : 5;
 }
 
 int
@@ -290,6 +347,15 @@ load_firmware(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	if ((fp = gzdopen(vm->vm_kernel, "r")) == NULL)
 		fatalx("failed to open kernel - exiting");
 
+	if (vm->vm_params.vmc_firmware == VMFW_UEFI) {
+		if (!gzdirect(fp) || fstat(vm->vm_kernel, &sb) == -1)
+			ret = -1;
+		else
+			ret = loadfile_uefi(fp, vm->vm_efivars, sb.st_size, vrs);
+		gzclose(fp);
+		return (ret);
+	}
+
 	/* Load kernel image */
 	ret = loadfile_elf(fp, vm, vrs, vm->vm_params.vmc_bootdevice);
 
@@ -304,6 +370,148 @@ load_firmware(struct vmd_vm *vm, struct vcpu_reg_state *vrs)
 	gzclose(fp);
 
 	return (ret);
+}
+
+static int
+loadfile_uefi(gzFile fp, int varsfd, off_t code_size,
+    struct vcpu_reg_state *vrs)
+{
+	struct stat	 vsb;
+
+	if (varsfd == -1 || fstat(varsfd, &vsb) == -1 ||
+	    !S_ISREG(vsb.st_mode) || vsb.st_size != VM_UEFI_VARS_SIZE ||
+	    code_size <= 0 || code_size + vsb.st_size !=
+	    VM_UEFI_FIRMWARE_SIZE ||
+	    (code_size & PAGE_MASK) != 0 || (vsb.st_size & PAGE_MASK) != 0) {
+		log_warnx("invalid split UEFI firmware images");
+		return (-1);
+	}
+
+	if (loadfile_bios(fp, code_size, vrs) != 0)
+		return (-1);
+
+	log_debug("%s: loaded UEFI CODE image", __func__);
+	return (0);
+}
+
+static int
+uefi_flash_init(int fd)
+{
+	struct stat sb;
+	ssize_t n;
+
+	if (fd == -1 || fstat(fd, &sb) == -1 || !S_ISREG(sb.st_mode) ||
+	    sb.st_size != VM_UEFI_VARS_SIZE)
+		return (EINVAL);
+	if ((uefi_flash.uf_data = malloc(sb.st_size)) == NULL)
+		return (ENOMEM);
+	n = pread(fd, uefi_flash.uf_data, sb.st_size, 0);
+	if (n != sb.st_size) {
+		if (n >= 0)
+			errno = EIO;
+		free(uefi_flash.uf_data);
+		uefi_flash.uf_data = NULL;
+		return (errno);
+	}
+	uefi_flash.uf_fd = fd;
+	uefi_flash.uf_size = sb.st_size;
+	uefi_flash.uf_cmd = CFI_CMD_READ_ARRAY;
+	uefi_flash.uf_cmd_off = 0;
+
+	return (mmio_dev_add(GB(4) - VM_UEFI_FIRMWARE_SIZE,
+	    GB(4) - VM_UEFI_FIRMWARE_SIZE + sb.st_size - 1,
+	    uefi_flash_mmio));
+}
+
+static int
+uefi_flash_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
+{
+	uint8_t erased[VM_UEFI_FLASH_BLOCK_SIZE];
+	uint8_t value;
+	off_t block, off;
+	size_t len;
+	ssize_t n;
+	int error = 0;
+
+	(void)vcpu_id;
+	off = addr - (GB(4) - VM_UEFI_FIRMWARE_SIZE);
+	if (off < 0 || off >= uefi_flash.uf_size)
+		return (EINVAL);
+
+	pthread_mutex_lock(&uefi_flash.uf_mtx);
+	if (dir == MMIO_DIR_READ) {
+		if (uefi_flash.uf_cmd == CFI_CMD_CLEAR_STATUS ||
+		    uefi_flash.uf_cmd == CFI_CMD_READ_STATUS) {
+			*data = 0;
+			uefi_flash.uf_cmd = CFI_CMD_READ_ARRAY;
+		} else {
+			*data = UINT64_MAX;
+			len = MIN(sizeof(*data),
+			    (size_t)(uefi_flash.uf_size - off));
+			memcpy(data, uefi_flash.uf_data + off, len);
+		}
+		goto out;
+	}
+	if (dir != MMIO_DIR_WRITE) {
+		error = EINVAL;
+		goto out;
+	}
+
+	value = (uint8_t)*data;
+	if (uefi_flash.uf_cmd == CFI_CMD_WRITE_BYTE) {
+		n = pwrite(uefi_flash.uf_fd, &value, sizeof(value), off);
+		if (n != sizeof(value)) {
+			error = n == -1 ? errno : EIO;
+			goto reset;
+		}
+		uefi_flash.uf_data[off] = value;
+		goto reset;
+	}
+	if (uefi_flash.uf_cmd == CFI_CMD_BLOCK_ERASE) {
+		if (value != CFI_CMD_ERASE_CONFIRM ||
+		    off != uefi_flash.uf_cmd_off) {
+			error = EINVAL;
+			goto reset;
+		}
+		block = off & ~(off_t)(VM_UEFI_FLASH_BLOCK_SIZE - 1);
+		memset(erased, 0xff, sizeof(erased));
+		n = pwrite(uefi_flash.uf_fd, erased, sizeof(erased), block);
+		if (n != sizeof(erased)) {
+			error = n == -1 ? errno : EIO;
+			goto reset;
+		}
+		memset(uefi_flash.uf_data + block, 0xff, sizeof(erased));
+		goto reset;
+	}
+
+	uefi_flash.uf_cmd = value;
+	uefi_flash.uf_cmd_off = off;
+	goto out;
+
+reset:
+	uefi_flash.uf_cmd = CFI_CMD_READ_ARRAY;
+out:
+	pthread_mutex_unlock(&uefi_flash.uf_mtx);
+	return (error);
+}
+
+int
+sync_uefi_vars(struct vmd_vm *vm)
+{
+	struct stat	 sb;
+
+	if (vm->vm_params.vmc_firmware != VMFW_UEFI ||
+	    vm->vm_params.vmc_efivars[0] == '\0')
+		return (0);
+	if (vm->vm_efivars == -1 || fstat(vm->vm_efivars, &sb) == -1 ||
+	    !S_ISREG(sb.st_mode) || sb.st_size != VM_UEFI_VARS_SIZE)
+		return (-1);
+
+	if (fsync(vm->vm_efivars) == -1)
+		return (-1);
+
+	log_debug("%s: saved UEFI variable store", __func__);
+	return (0);
 }
 
 
@@ -445,6 +653,9 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	pci_init();
 
 	mmio_init();
+	if (vmc->vmc_firmware == VMFW_UEFI &&
+	    uefi_flash_init(current_vm->vm_efivars) != 0)
+		fatal("%s: cannot initialize UEFI variable flash", __func__);
 	if (mmio_dev_add(PCI_MMIO_BAR_BASE, PCI_MMIO_BAR_END,
 	    pci_handle_mmio) != 0)
 		fatalx("%s: cannot register PCI MMIO window", __func__);
@@ -496,6 +707,30 @@ unpause_vm_md(struct vmd_vm *vm)
 	mc146818_start();
 	ns8250_start();
 	virtio_start(vm);
+}
+
+/*
+ * Recognize the conventional PC reset ports used by firmware and operating
+ * systems.  The caller turns a matching request into the same EAGAIN restart
+ * path used for a guest triple fault.
+ */
+static int
+vcpu_exit_reset(struct vm_run_params *vrp)
+{
+	struct vm_exit_inout *vei = &vrp->vrp_exit->vei;
+	uint8_t data;
+
+	if (vei->vei_dir != VEI_DIR_OUT || vei->vei_string || vei->vei_size != 1)
+		return (0);
+
+	data = vei->vei_data;
+	if (vei->vei_port == I8042_CMD_PORT && data == I8042_RESET_CMD)
+		return (1);
+	if (vei->vei_port == PIIX_RESET_PORT &&
+	    (data & PIIX_RESET_FULL) == PIIX_RESET_FULL)
+		return (1);
+
+	return (0);
 }
 
 /*
@@ -730,6 +965,8 @@ vcpu_exit(struct vm_run_params *vrp)
 		break;
 	case VMX_EXIT_IO:
 	case SVM_VMEXIT_IOIO:
+		if (vcpu_exit_reset(vrp))
+			return (EAGAIN);
 		vcpu_exit_inout(vrp);
 		break;
 	case VMX_EXIT_HLT:
@@ -1109,7 +1346,13 @@ hvaddr_mem(paddr_t gpa, size_t len)
 void
 vcpu_assert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 {
-	i8259_assert_irq(irq);
+	if (irq < 0 || irq >= I82093AA_PIN_COUNT) {
+		log_warnx("%s: invalid irq %d", __func__, irq);
+		return;
+	}
+
+	if (irq < I8259_PIN_COUNT)
+		i8259_assert_irq(irq);
 	i82093aa_assert_pin(irq);
 
 	if (intr_pending(vcpu_id)) {
@@ -1136,7 +1379,13 @@ vcpu_assert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 void
 vcpu_deassert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 {
-	i8259_deassert_irq(irq);
+	if (irq < 0 || irq >= I82093AA_PIN_COUNT) {
+		log_warnx("%s: invalid irq %d", __func__, irq);
+		return;
+	}
+
+	if (irq < I8259_PIN_COUNT)
+		i8259_deassert_irq(irq);
 	i82093aa_deassert_pin(irq);
 
 	if (!intr_pending(vcpu_id)) {

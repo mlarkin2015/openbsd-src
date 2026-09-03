@@ -119,8 +119,8 @@ typedef struct {
 
 
 %token	INCLUDE ERROR
-%token	ADD AGENTX ALLOW BOOT CDROM CONTEXT CPUS DEVICE DISABLE DISK DOWN ENABLE
-%token	FORMAT GROUP
+%token	ADD AGENTX ALLOW BOOT CDROM CONTEXT CPUS DEVICE DISABLE DISK DOWN EFIVARS
+%token	ENABLE FIRMWARE FORMAT GROUP
 %token	INET6 INSTANCE INTERFACE LLADDR LOCAL LOCKED MEMORY NET NIFS OWNER
 %token	PATH PREFIX RDOMAIN SIZE SOCKET SWITCH UP VM VMID STAGGERED START
 %token  PARALLEL DELAY SEV SEVES
@@ -363,6 +363,13 @@ vm		: VM string vm_instance		{
 			struct vmd_vm	*vm;
 			int		 ret;
 
+			if (vmc.vmc_efivars[0] != '\0' &&
+			    vmc.vmc_firmware != VMFW_UEFI &&
+			    (vmc.vmc_flags & VMOP_CREATE_INSTANCE) == 0) {
+				yyerror("efivars requires firmware uefi");
+				YYERROR;
+			}
+
 			/* configured interfaces vs. number of interfaces */
 			if (vmc_nnics > vmc.vmc_nnics)
 				vmc.vmc_nnics = vmc_nnics;
@@ -486,6 +493,44 @@ vm_opts		: disable			{
 		| BOOT DEVICE bootdevice	{
 			vmc.vmc_bootdevice = $3;
 		}
+		| FIRMWARE string		{
+			if (vmc.vmc_flags & VMOP_CREATE_FIRMWARE) {
+				yyerror("firmware specified more than once");
+				free($2);
+				YYERROR;
+			}
+			if (strcmp($2, "bios") == 0)
+				vmc.vmc_firmware = VMFW_BIOS;
+			else if (strcmp($2, "uefi") == 0)
+				vmc.vmc_firmware = VMFW_UEFI;
+			else {
+				yyerror("unknown firmware: %s", $2);
+				free($2);
+				YYERROR;
+			}
+			free($2);
+			vmc.vmc_flags |= VMOP_CREATE_FIRMWARE;
+		}
+		| EFIVARS string		{
+			if (vmc.vmc_efivars[0] != '\0') {
+				yyerror("efivars specified more than once");
+				free($2);
+				YYERROR;
+			}
+			if ($2[0] != '/') {
+				yyerror("efivars path is not absolute");
+				free($2);
+				YYERROR;
+			}
+			if (strlcpy(vmc.vmc_efivars, $2,
+			    sizeof(vmc.vmc_efivars)) >=
+			    sizeof(vmc.vmc_efivars)) {
+				yyerror("efivars path too long");
+				free($2);
+				YYERROR;
+			}
+			free($2);
+		}
 		| CDROM string			{
 			if (vmc.vmc_cdrom[0] != '\0') {
 				yyerror("cdrom specified more than once");
@@ -575,6 +620,7 @@ instance_flags	: BOOT		{ vmc.vmc_insflags |= VMOP_CREATE_KERNEL; }
 		| CPUS		{ vmc.vmc_insflags |= VMOP_CREATE_CPU; }
 		| INTERFACE	{ vmc.vmc_insflags |= VMOP_CREATE_NETWORK; }
 		| DISK		{ vmc.vmc_insflags |= VMOP_CREATE_DISK; }
+		| FIRMWARE	{ vmc.vmc_insflags |= VMOP_CREATE_FIRMWARE; }
 		| CDROM		{ vmc.vmc_insflags |= VMOP_CREATE_CDROM; }
 		| INSTANCE	{ vmc.vmc_insflags |= VMOP_CREATE_INSTANCE; }
 		| OWNER owner_id {
@@ -846,7 +892,9 @@ lookup(char *s)
 		{ "disable",		DISABLE },
 		{ "disk",		DISK },
 		{ "down",		DOWN },
+		{ "efivars",		EFIVARS },
 		{ "enable",		ENABLE },
+		{ "firmware",		FIRMWARE },
 		{ "format",		FORMAT },
 		{ "group",		GROUP },
 		{ "id",			VMID },

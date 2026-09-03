@@ -74,10 +74,14 @@ static enum decode_result next_value(struct x86_decode_state *, size_t,
 static int is_valid_state(struct x86_decode_state *, const char *);
 static void invalid_mmio_gpa(struct x86_insn *, struct vm_exit *, uint64_t);
 
+static int emulate_add(struct x86_insn *, struct vm_exit *, uint32_t);
+static void emulate_add_flags(struct vm_exit *, uint64_t, uint64_t, uint64_t,
+    int);
 static int emulate_and(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_cmp(struct x86_insn *, struct vm_exit *, uint32_t);
 static void emulate_logic_flags(struct vm_exit *, uint64_t, int);
 static int emulate_mov(struct x86_insn *, struct vm_exit *, uint32_t);
+static int emulate_movs(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_movzx(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_pop(struct x86_insn *, struct vm_exit *, uint32_t);
 static int emulate_push(struct x86_insn *, struct vm_exit *, uint32_t);
@@ -88,11 +92,16 @@ static int emulate_test(struct x86_insn *, struct vm_exit *, uint32_t);
 
 /* Lookup table for 1-byte opcodes, in opcode alphabetical order. */
 const enum x86_opcode_type x86_1byte_opcode_tbl[256] = {
+	/* ADD r/m to register */
+	[0x03] = OP_ADD,
 	/* AND r/m to register */
 	[0x23] = OP_AND,
 	/* SUB r/m from register */
 	[0x2B] = OP_SUB,
 	/* CMP r/m against register */
+	[0x80] = OP_CMP,
+	[0x81] = OP_CMP,
+	[0x83] = OP_CMP,
 	[0x3B] = OP_CMP,
 
 	/* MOV */
@@ -105,6 +114,7 @@ const enum x86_opcode_type x86_1byte_opcode_tbl[256] = {
 	[0xA1] = OP_MOV,
 	[0xA2] = OP_MOV,
 	[0xA3] = OP_MOV,
+	[0xC6] = OP_MOV,
 	[0xC7] = OP_MOV,
 
 	/* POP r/m (group 1A, /0) */
@@ -117,19 +127,24 @@ const enum x86_opcode_type x86_1byte_opcode_tbl[256] = {
 	[0xF7] = OP_TEST,
 
 	/* MOVS */
-	[0xA4] = OP_UNSUPPORTED,
-	[0xA5] = OP_UNSUPPORTED,
+	[0xA4] = OP_MOVS,
+	[0xA5] = OP_MOVS,
 
 	[ESCAPE] = OP_TWO_BYTE,
 };
 
 /* Lookup table for 1-byte operand encodings, in opcode alphabetical order. */
 const enum x86_operand_enc x86_1byte_operand_enc_tbl[256] = {
+	/* ADD r/m to register */
+	[0x03] = OP_ENC_RM,
 	/* AND r/m to register */
 	[0x23] = OP_ENC_RM,
 	/* SUB r/m from register */
 	[0x2B] = OP_ENC_RM,
 	/* CMP r/m against register */
+	[0x80] = OP_ENC_MI,
+	[0x81] = OP_ENC_MI,
+	[0x83] = OP_ENC_MI,
 	[0x3B] = OP_ENC_RM,
 
 	/* MOV */
@@ -142,6 +157,7 @@ const enum x86_operand_enc x86_1byte_operand_enc_tbl[256] = {
 	[0xA1] = OP_ENC_FD,
 	[0xA2] = OP_ENC_TD,
 	[0xA3] = OP_ENC_TD,
+	[0xC6] = OP_ENC_MI,
 	[0xC7] = OP_ENC_MI,
 
 	/* POP r/m (group 1A, /0) */
@@ -173,8 +189,7 @@ const enum x86_operand_enc x86_2byte_operand_enc_table[256] = {
 static int
 mmio_valid_addr(uint64_t gpa)
 {
-	return ((gpa >= PCI_MMIO_BAR_BASE) &&
-	    (gpa <= PCI_MMIO_BAR_END));
+	return (mmio_find_dev(gpa) != NULL);
 }
 
 static void
@@ -372,11 +387,13 @@ static const char *
 str_opcode(struct x86_opcode *opcode)
 {
 	switch (opcode->op_type) {
+	case OP_ADD: return "ADD";
 	case OP_AND: return "AND";
 	case OP_CMP: return "CMP";
 	case OP_IN: return "IN";
 	case OP_INS: return "INS";
 	case OP_MOV: return "MOV";
+	case OP_MOVS: return "MOVS";
 	case OP_MOVZX: return "MOVZX";
 	case OP_OUT: return "OUT";
 	case OP_OUTS: return "OUTS";
@@ -584,6 +601,9 @@ decode_modrm(struct x86_decode_state *state, struct x86_insn *insn)
 		log_warnx("%s: instruction does not need memory assist",
 		    __func__);
 		res = DECODE_ERROR;
+		break;
+	case OP_ENC_ZO:
+		res = DECODE_DONE;
 		break;
 	default:
 		/* Peek to see if we're done decode. */
@@ -984,6 +1004,24 @@ decode_imm(struct x86_decode_state *state, struct x86_insn *insn)
 			    __func__);
 			return (DECODE_ERROR);
 		}
+	} else if (insn->insn_opcode.op_type == OP_CMP) {
+		if (!insn->insn_modrm_valid ||
+		    MODRM_REGOP(insn->insn_modrm) != 7) {
+			log_warnx("%s: unsupported CMP group operation /%u",
+			    __func__, MODRM_REGOP(insn->insn_modrm));
+			return (DECODE_ERROR);
+		}
+		switch (insn->insn_opcode.op_bytes[0]) {
+		case 0x80:
+		case 0x83:
+			num_bytes = 1;
+			break;
+		case 0x81:
+			num_bytes = get_operand_size(insn) == 2 ? 2 : 4;
+			break;
+		default:
+			return (DECODE_ERROR);
+		}
 	} else if (insn->insn_opcode.op_type == OP_TEST) {
 		if (insn->insn_opcode.op_bytes[0] != 0xf7 ||
 		    !insn->insn_modrm_valid ||
@@ -1173,6 +1211,19 @@ err:
 static int
 get_operand_size(struct x86_insn *insn)
 {
+	uint8_t opcode;
+
+	opcode = insn->insn_opcode.op_bytes[
+	    insn->insn_opcode.op_bytes_len - 1];
+	if (insn->insn_opcode.op_type == OP_MOV &&
+	    (opcode == 0x88 || opcode == 0x8a || opcode == 0xa0 ||
+	    opcode == 0xa2 || opcode == 0xc6))
+		return (1);
+	if (insn->insn_opcode.op_type == OP_CMP && opcode == 0x80)
+		return (1);
+	if (insn->insn_opcode.op_type == OP_MOVS && opcode == 0xa4)
+		return (1);
+
 	if (insn->insn_cpu_mode == VMM_CPU_MODE_LONG) {
 		if (insn->insn_prefix.pfx_rex & REX_W)
 			return 8;
@@ -1202,6 +1253,77 @@ emulate_logic_flags(struct vm_exit *exit, uint64_t result, int opsz)
 		rflags |= PSL_N;
 	if (__builtin_parity((unsigned int)(result & 0xff)) == 0)
 		rflags |= PSL_PF;
+	exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS] = rflags;
+}
+
+static int
+emulate_add(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
+{
+	uint64_t data, gpa, lhs, mask, result, rhs;
+	mmio_dev_fn_t mmio_fn;
+	int opsz, ret;
+
+	if (insn->insn_opcode.op_encoding != OP_ENC_RM)
+		return (EINVAL);
+	ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_READ);
+	if (ret != 0)
+		return (ret);
+	if (!mmio_valid_addr(gpa))
+		invalid_mmio_gpa(insn, exit, gpa);
+	if ((mmio_fn = mmio_find_dev(gpa)) == NULL)
+		return (ENODEV);
+	data = 0;
+	if ((ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data)) != 0)
+		return (ret);
+
+	opsz = get_operand_size(insn);
+	switch (opsz) {
+	case 2:
+		mask = 0xffff;
+		break;
+	case 4:
+		mask = 0xffffffff;
+		break;
+	case 8:
+		mask = UINT64_MAX;
+		break;
+	default:
+		return (EINVAL);
+	}
+	lhs = exit->vrs.vrs_gprs[insn->insn_reg] & mask;
+	rhs = data & mask;
+	result = (lhs + rhs) & mask;
+	if (opsz == 2)
+		exit->vrs.vrs_gprs[insn->insn_reg] =
+		    (exit->vrs.vrs_gprs[insn->insn_reg] & ~mask) | result;
+	else
+		exit->vrs.vrs_gprs[insn->insn_reg] = result;
+	emulate_add_flags(exit, lhs, rhs, result, opsz);
+	return (0);
+}
+
+/* Intel SDM Vol. 2: ADD sets OF, SF, ZF, AF, PF and CF. */
+static void
+emulate_add_flags(struct vm_exit *exit, uint64_t lhs, uint64_t rhs,
+    uint64_t result, int opsz)
+{
+	uint64_t rflags, sign;
+
+	rflags = exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS];
+	rflags &= ~(PSL_C | PSL_PF | PSL_AF | PSL_Z | PSL_N | PSL_V);
+	sign = 1ULL << (opsz * 8 - 1);
+	if (result < lhs)
+		rflags |= PSL_C;
+	if (__builtin_parity((unsigned int)(result & 0xff)) == 0)
+		rflags |= PSL_PF;
+	if ((lhs ^ rhs ^ result) & 0x10)
+		rflags |= PSL_AF;
+	if (result == 0)
+		rflags |= PSL_Z;
+	if (result & sign)
+		rflags |= PSL_N;
+	if (~(lhs ^ rhs) & (lhs ^ result) & sign)
+		rflags |= PSL_V;
 	exit->vrs.vrs_gprs[VCPU_REGS_RFLAGS] = rflags;
 }
 
@@ -1335,14 +1457,20 @@ static int
 emulate_cmp(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
 	uint64_t data, gpa, lhs, mask, result, rhs;
+	uint8_t opcode;
 	mmio_dev_fn_t mmio_fn;
 	int opsz, ret;
 
-	if (insn->insn_opcode.op_encoding != OP_ENC_RM) {
+	if (insn->insn_opcode.op_encoding != OP_ENC_RM &&
+	    insn->insn_opcode.op_encoding != OP_ENC_MI) {
 		log_warnx("%s: unsupported encoding %s", __func__,
 		    str_operand_enc(&insn->insn_opcode));
 		return (EINVAL);
 	}
+	if (insn->insn_opcode.op_encoding == OP_ENC_MI &&
+	    (!insn->insn_modrm_valid ||
+	    MODRM_REGOP(insn->insn_modrm) != 7))
+		return (EINVAL);
 
 	ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_READ);
 	if (ret != 0) {
@@ -1368,6 +1496,9 @@ emulate_cmp(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 
 	opsz = get_operand_size(insn);
 	switch (opsz) {
+	case 1:
+		mask = 0xff;
+		break;
 	case 2:
 		mask = 0xffff;
 		break;
@@ -1381,8 +1512,19 @@ emulate_cmp(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		fatalx("invalid CMP operand size %d", opsz);
 	}
 
-	lhs = exit->vrs.vrs_gprs[insn->insn_reg] & mask;
-	rhs = data & mask;
+	if (insn->insn_opcode.op_encoding == OP_ENC_MI) {
+		lhs = data & mask;
+		opcode = insn->insn_opcode.op_bytes[0];
+		if (opcode == 0x83)
+			rhs = (int8_t)insn->insn_immediate & mask;
+		else if (opcode == 0x81 && opsz == 8)
+			rhs = (int32_t)insn->insn_immediate & mask;
+		else
+			rhs = insn->insn_immediate & mask;
+	} else {
+		lhs = exit->vrs.vrs_gprs[insn->insn_reg] & mask;
+		rhs = data & mask;
+	}
 	result = (lhs - rhs) & mask;
 	emulate_sub_flags(exit, lhs, rhs, result, opsz);
 	return (0);
@@ -1625,7 +1767,7 @@ emulate_sub_flags(struct vm_exit *exit, uint64_t lhs, uint64_t rhs,
 static int
 emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
-	int ret, opsz;
+	int reg, regshift = 0, ret, opsz;
 	uint64_t gpa, data, mask, value_mask;
 	mmio_dev_fn_t mmio_fn;
 
@@ -1656,6 +1798,17 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		data = 0;
 		opsz = get_operand_size(insn);
 		switch (opsz) {
+		case 1:
+			reg = insn->insn_reg;
+			if (insn->insn_modrm_valid &&
+			    insn->insn_prefix.pfx_rex == REX_NONE &&
+			    MODRM_REGOP(insn->insn_modrm) >= 4) {
+				reg = MODRM_REGOP(insn->insn_modrm) - 4;
+				regshift = 8;
+			}
+			mask = ~(0xffULL << regshift);
+			value_mask = 0xff;
+			break;
 		case 2:
 			mask = 0xFFFFFFFFFFFF0000;
 			value_mask = 0xFFFF;
@@ -1679,8 +1832,10 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 
 		ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
 		if (!ret) {
-			exit->vrs.vrs_gprs[insn->insn_reg] &= mask;
-			exit->vrs.vrs_gprs[insn->insn_reg] |= data & value_mask;
+			reg = opsz == 1 ? reg : insn->insn_reg;
+			exit->vrs.vrs_gprs[reg] &= mask;
+			exit->vrs.vrs_gprs[reg] |=
+			    (data & value_mask) << regshift;
 			DPRINTF("%s: set %s=0x%llx", __func__,
 			    str_reg(insn->insn_reg),
 			    exit->vrs.vrs_gprs[insn->insn_reg]);
@@ -1706,7 +1861,15 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		    insn->insn_gva, gpa);
 		mmio_fn = mmio_find_dev(gpa);
 		if (mmio_fn) {
-			data = exit->vrs.vrs_gprs[insn->insn_reg];
+			opsz = get_operand_size(insn);
+			reg = insn->insn_reg;
+			if (opsz == 1 && insn->insn_modrm_valid &&
+			    insn->insn_prefix.pfx_rex == REX_NONE &&
+			    MODRM_REGOP(insn->insn_modrm) >= 4) {
+				reg = MODRM_REGOP(insn->insn_modrm) - 4;
+				regshift = 8;
+			}
+			data = exit->vrs.vrs_gprs[reg] >> regshift;
 			DPRINTF("%s: write 0x%llx to mmio addr 0x%llx",
 			    __func__, data, gpa);
 			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
@@ -1757,11 +1920,107 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 	return (0);
 }
 
+#define MMIO_STRING_BATCH	4096
+#define EMULATE_RESTART		(-2)
+
+static int
+emulate_movs(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
+{
+	struct vcpu_reg_state *vrs = &exit->vrs;
+	struct vcpu_segment_info *srcseg, *dstseg;
+	mmio_dev_fn_t srcfn, dstfn;
+	uint64_t count, data, dstgpa, dstidx, mask, srcgpa, srcidx;
+	size_t batch, i;
+	int addrsize, delta, opsz, ret, sreg = VCPU_REGS_DS;
+
+	if (insn->insn_opcode.op_encoding != OP_ENC_ZO)
+		return (EINVAL);
+	if (insn->insn_prefix.pfx_group2 == LEG_2_CS)
+		sreg = VCPU_REGS_CS;
+	else if (insn->insn_prefix.pfx_group2 == LEG_2_SS)
+		sreg = VCPU_REGS_SS;
+	else if (insn->insn_prefix.pfx_group2 == LEG_2_ES)
+		sreg = VCPU_REGS_ES;
+	else if (insn->insn_prefix.pfx_group2 == LEG_2_FS)
+		sreg = VCPU_REGS_FS;
+	else if (insn->insn_prefix.pfx_group2 == LEG_2_GS)
+		sreg = VCPU_REGS_GS;
+	srcseg = &vrs->vrs_sregs[sreg];
+	dstseg = &vrs->vrs_sregs[VCPU_REGS_ES];
+
+	if (insn->insn_cpu_mode == VMM_CPU_MODE_LONG)
+		addrsize = insn->insn_prefix.pfx_group4 == LEG_4_ADDRSZ ? 4 : 8;
+	else if (insn->insn_cpu_mode == VMM_CPU_MODE_PROT32)
+		addrsize = insn->insn_prefix.pfx_group4 == LEG_4_ADDRSZ ? 2 : 4;
+	else
+		addrsize = insn->insn_prefix.pfx_group4 == LEG_4_ADDRSZ ? 4 : 2;
+	mask = addrsize == 8 ? UINT64_MAX : (1ULL << (addrsize * 8)) - 1;
+	opsz = get_operand_size(insn);
+	delta = vrs->vrs_gprs[VCPU_REGS_RFLAGS] & EFLAGS_DF ? -opsz : opsz;
+	srcidx = vrs->vrs_gprs[VCPU_REGS_RSI] & mask;
+	dstidx = vrs->vrs_gprs[VCPU_REGS_RDI] & mask;
+	count = (insn->insn_prefix.pfx_group1 == LEG_1_REP ||
+	    insn->insn_prefix.pfx_group1 == LEG_1_REPNE) ?
+	    vrs->vrs_gprs[VCPU_REGS_RCX] & mask : 1;
+	if (count == 0)
+		return (0);
+	batch = MMIO_STRING_BATCH / opsz;
+	if (batch > count)
+		batch = count;
+
+	for (i = 0; i < batch; i++) {
+		ret = translate_gva(exit, srcseg->vsi_base + srcidx,
+		    &srcgpa, PROT_READ);
+		if (ret != 0)
+			return (ret);
+		ret = translate_gva(exit, dstseg->vsi_base + dstidx,
+		    &dstgpa, PROT_WRITE);
+		if (ret != 0)
+			return (ret);
+		srcfn = mmio_find_dev(srcgpa);
+		dstfn = mmio_find_dev(dstgpa);
+		if (srcfn == NULL && dstfn == NULL)
+			return (ENODEV);
+		data = 0;
+		if (srcfn != NULL)
+			ret = srcfn(vcpu_id, MMIO_DIR_READ, srcgpa, &data);
+		else
+			ret = read_mem(srcgpa, &data, opsz);
+		if (ret != 0)
+			return (ret);
+		if (dstfn != NULL)
+			ret = dstfn(vcpu_id, MMIO_DIR_WRITE, dstgpa, &data);
+		else
+			ret = write_mem(dstgpa, &data, opsz);
+		if (ret != 0)
+			return (ret);
+		srcidx = (srcidx + delta) & mask;
+		dstidx = (dstidx + delta) & mask;
+		if (insn->insn_prefix.pfx_group1 == LEG_1_REP ||
+		    insn->insn_prefix.pfx_group1 == LEG_1_REPNE)
+			count--;
+	}
+	vrs->vrs_gprs[VCPU_REGS_RSI] =
+	    (vrs->vrs_gprs[VCPU_REGS_RSI] & ~mask) | srcidx;
+	vrs->vrs_gprs[VCPU_REGS_RDI] =
+	    (vrs->vrs_gprs[VCPU_REGS_RDI] & ~mask) | dstidx;
+	if (insn->insn_prefix.pfx_group1 == LEG_1_REP ||
+	    insn->insn_prefix.pfx_group1 == LEG_1_REPNE) {
+		vrs->vrs_gprs[VCPU_REGS_RCX] =
+		    (vrs->vrs_gprs[VCPU_REGS_RCX] & ~mask) | count;
+		if (count != 0)
+			return (EMULATE_RESTART);
+	}
+	return (0);
+}
+
 static int
 emulate_movzx(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 {
 	uint8_t byte, len, src = 1, dst = 2;
-	uint64_t value = 0;
+	uint64_t gpa, mask, value = 0;
+	mmio_dev_fn_t mmio_fn;
+	int ret;
 
 	/* Only RM is valid for MOVZX. */
 	if (insn->insn_opcode.op_encoding != OP_ENC_RM) {
@@ -1780,43 +2039,33 @@ emulate_movzx(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 	switch (byte) {
 	case 0xB6:
 		src = 1;
-		if (insn->insn_cpu_mode == VMM_CPU_MODE_PROT
-		    || insn->insn_cpu_mode == VMM_CPU_MODE_REAL)
-			dst = 2;
-		else if (insn->insn_prefix.pfx_rex == REX_NONE)
-			dst = 4;
-		else // XXX validate CPU mode
-			dst = 8;
+		dst = get_operand_size(insn);
 		break;
 	case 0xB7:
 		src = 2;
-		if (insn->insn_prefix.pfx_rex == REX_NONE)
-			dst = 4;
-		else // XXX validate CPU mode
-			dst = 8;
+		dst = get_operand_size(insn);
 		break;
 	default:
 		log_warnx("invalid byte in MOVZX opcode: %x", byte);
 		return (-1);
 	}
 
-	if (dst == 4)
-		exit->vrs.vrs_gprs[insn->insn_reg] &= 0xFFFFFFFF00000000;
+	ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_READ);
+	if (ret != 0)
+		return (ret);
+	if (!mmio_valid_addr(gpa))
+		invalid_mmio_gpa(insn, exit, gpa);
+	if ((mmio_fn = mmio_find_dev(gpa)) == NULL)
+		return (ENODEV);
+	if ((ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &value)) != 0)
+		return (ret);
+	mask = src == 1 ? 0xff : 0xffff;
+	value &= mask;
+	if (dst == 2)
+		exit->vrs.vrs_gprs[insn->insn_reg] =
+		    (exit->vrs.vrs_gprs[insn->insn_reg] & ~0xffffULL) | value;
 	else
-		exit->vrs.vrs_gprs[insn->insn_reg] = 0x0UL;
-
-	/* XXX No device emulation yet. Fill with 0xFFs. */
-	switch (src) {
-	case 1: value = 0xFF; break;
-	case 2: value = 0xFFFF; break;
-	case 4: value = 0xFFFFFFFF; break;
-	case 8: value = 0xFFFFFFFFFFFFFFFF; break;
-	default:
-		log_warnx("invalid source size: %d", src);
-		return (-1);
-	}
-
-	exit->vrs.vrs_gprs[insn->insn_reg] |= value;
+		exit->vrs.vrs_gprs[insn->insn_reg] = value;
 
 	return (0);
 }
@@ -1836,6 +2085,10 @@ insn_emulate(struct vm_exit *exit, struct x86_insn *insn, uint32_t vcpu_id)
 	int res;
 
 	switch (insn->insn_opcode.op_type) {
+	case OP_ADD:
+		res = emulate_add(insn, exit, vcpu_id);
+		break;
+
 	case OP_AND:
 		res = emulate_and(insn, exit, vcpu_id);
 		break;
@@ -1846,6 +2099,9 @@ insn_emulate(struct vm_exit *exit, struct x86_insn *insn, uint32_t vcpu_id)
 
 	case OP_MOV:
 		res = emulate_mov(insn, exit, vcpu_id);
+		break;
+	case OP_MOVS:
+		res = emulate_movs(insn, exit, vcpu_id);
 		break;
 
 	case OP_MOVZX:
@@ -1874,6 +2130,8 @@ insn_emulate(struct vm_exit *exit, struct x86_insn *insn, uint32_t vcpu_id)
 		res = ENOTSUP;
 	}
 
+	if (res == EMULATE_RESTART)
+		return (0);
 	if (res == 0)
 		exit->vrs.vrs_gprs[VCPU_REGS_RIP] += insn->insn_bytes_len;
 

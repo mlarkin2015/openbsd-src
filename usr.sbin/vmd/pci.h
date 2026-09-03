@@ -101,6 +101,8 @@ struct pci_dev {
 
 	uint8_t pd_bar_ct;
 	uint8_t pd_cap_ct;
+	uint8_t pd_irq_route;
+	uint8_t pd_has_irq;
 	pci_cs_fn_t pd_csfunc;
 
 	uint8_t pd_bartype[PCI_MAX_BARS];
@@ -138,7 +140,6 @@ int pci_add_msix_capability(uint8_t, uint16_t);
 void pci_assert_irq(uint8_t, uint16_t);
 void pci_deassert_irq(uint8_t);
 uint8_t pci_get_dev_irq(uint8_t);
-uint16_t pci_get_subsys_id(uint8_t);
 
 #ifdef __amd64__
 void pci_handle_address_reg(struct vm_run_params *);
