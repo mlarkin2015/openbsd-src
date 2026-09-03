@@ -140,6 +140,10 @@ vmctl stop -f test_ovmf
 
 Add host-only coverage before connecting the service to a guest:
 
+The configuration and socket-lifecycle coverage below is implemented in
+`regress/usr.sbin/vmd/config` and `regress/usr.sbin/vmd/display`.  RFB, staging
+surface, worker isolation and end-to-end client tests remain.
+
 - parse a `display { socket path }` stanza and validate the generated default;
 - reject relative/overlong paths, duplicate paths, symlinks and pre-existing
   non-socket nodes;

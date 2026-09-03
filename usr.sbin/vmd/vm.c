@@ -401,6 +401,10 @@ vm_main(int fd, int fd_vmm)
 		log_warnx("failed to receive UEFI variable-store fd");
 		_exit(EINVAL);
 	}
+	if (vm.vm_params.vmc_display && vm.vm_display == -1) {
+		log_warnx("failed to receive display socket fd");
+		_exit(EINVAL);
+	}
 
 	if (vm.vm_params.vmc_sev && env->vmd_psp_fd < 0) {
 		log_warnx("%s not available", PSP_NODE);

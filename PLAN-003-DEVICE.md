@@ -247,8 +247,8 @@ large parser and privilege surface.
 
 ## Implementation Order
 
-1. Define display configuration, Unix-socket lifecycle, staging surface and
-   least-privilege process/IPC contract.
+1. Define display configuration and the Unix-socket lifecycle (complete), then
+   add the staging surface and least-privilege process/IPC contract.
 2. Implement i8042 keyboard and a PS/2 relative-pointer fallback.
 3. Export OVMF ramfb/GOP through the RFB worker.
 4. Boot an unmodified Windows ISO to a visible, interactive Setup screen.

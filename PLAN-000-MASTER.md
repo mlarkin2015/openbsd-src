@@ -185,8 +185,10 @@ Everything else depends on these. Order within the phase:
    16,17,19,20,32 and the end marker are exposed via fw_cfg.  Type 4 describes
    the single virtual package with one core/thread per vCPU, matching the CPUID
    topology.  The Type 1 UUID is deterministic for the VM name and instance.
-4. **Display service foundation**: configuration, safe Unix-socket lifecycle,
-   least-privilege worker, bounded staging surface and RFB parser.
+4. **Display service foundation — in progress**: `display { socket ... }`,
+   collision checks, mode-0600 ownership, privileged listener creation, fd
+   handoff and inode-safe teardown are implemented.  The least-privilege
+   worker, bounded staging surface and RFB parser remain.
 5. **Firmware display**: expose OVMF ramfb/GOP output through the staging surface
    and RFB worker.  Polling/damage comparison is acceptable for this first path.
 6. **Input**: i8042 PS/2 keyboard (ports 0x60/0x64, IRQ 1) first, followed by a

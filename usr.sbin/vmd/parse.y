@@ -49,6 +49,7 @@
 #include <grp.h>
 
 #include "vmd.h"
+#include "display.h"
 
 TAILQ_HEAD(files, file)		 files = TAILQ_HEAD_INITIALIZER(files);
 static struct file {
@@ -119,7 +120,7 @@ typedef struct {
 
 
 %token	INCLUDE ERROR
-%token	ADD AGENTX ALLOW BOOT CDROM CONTEXT CPUS DEVICE DISABLE DISK DOWN EFIVARS
+%token	ADD AGENTX ALLOW BOOT CDROM CONTEXT CPUS DEVICE DISABLE DISK DISPLAY DOWN EFIVARS
 %token	ENABLE FIRMWARE FORMAT GROUP
 %token	INET6 INSTANCE INTERFACE LLADDR LOCAL LOCKED MEMORY NET NIFS OWNER
 %token	PATH PREFIX RDOMAIN SIZE SOCKET SWITCH UP VM VMID STAGGERED START
@@ -531,6 +532,7 @@ vm_opts		: disable			{
 			}
 			free($2);
 		}
+		| display
 		| CDROM string			{
 			if (vmc.vmc_cdrom[0] != '\0') {
 				yyerror("cdrom specified more than once");
@@ -607,6 +609,42 @@ vm_opts		: disable			{
 		| instance
 		;
 
+display		: DISPLAY			{
+			if (vmc.vmc_flags & VMOP_CREATE_DISPLAY) {
+				yyerror("display specified more than once");
+				YYERROR;
+			}
+			vmc.vmc_display = 1;
+			vmc.vmc_flags |= VMOP_CREATE_DISPLAY;
+		} display_opts_o
+		;
+
+display_opts_o	: /* empty */
+		| '{' optnl display_opts_l '}'
+		;
+
+display_opts_l	: display_opts_l display_opts nl
+		| display_opts optnl
+		;
+
+display_opts	: SOCKET string			{
+			if (vmc.vmc_displaysock[0] != '\0') {
+				yyerror("display socket specified more than once");
+				free($2);
+				YYERROR;
+			}
+			if (display_path_validate($2) == -1) {
+				yyerror("invalid display socket path: %s",
+				    strerror(errno));
+				free($2);
+				YYERROR;
+			}
+			(void)strlcpy(vmc.vmc_displaysock, $2,
+			    sizeof(vmc.vmc_displaysock));
+			free($2);
+		}
+		;
+
 instance	: ALLOW INSTANCE '{' optnl instance_l '}'
 		| ALLOW INSTANCE instance_flags
 		;
@@ -620,6 +658,7 @@ instance_flags	: BOOT		{ vmc.vmc_insflags |= VMOP_CREATE_KERNEL; }
 		| CPUS		{ vmc.vmc_insflags |= VMOP_CREATE_CPU; }
 		| INTERFACE	{ vmc.vmc_insflags |= VMOP_CREATE_NETWORK; }
 		| DISK		{ vmc.vmc_insflags |= VMOP_CREATE_DISK; }
+		| DISPLAY	{ vmc.vmc_insflags |= VMOP_CREATE_DISPLAY; }
 		| FIRMWARE	{ vmc.vmc_insflags |= VMOP_CREATE_FIRMWARE; }
 		| CDROM		{ vmc.vmc_insflags |= VMOP_CREATE_CDROM; }
 		| INSTANCE	{ vmc.vmc_insflags |= VMOP_CREATE_INSTANCE; }
@@ -891,6 +930,7 @@ lookup(char *s)
 		{ "device",		DEVICE },
 		{ "disable",		DISABLE },
 		{ "disk",		DISK },
+		{ "display",		DISPLAY },
 		{ "down",		DOWN },
 		{ "efivars",		EFIVARS },
 		{ "enable",		ENABLE },

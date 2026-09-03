@@ -139,6 +139,13 @@ vmm_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 			cmd = IMSG_VMDOP_START_VM_RESPONSE;
 		}
 		break;
+	case IMSG_VMDOP_START_VM_DISPLAY:
+		res = config_getdisplay(ps, imsg);
+		if (res == -1) {
+			res = errno;
+			cmd = IMSG_VMDOP_START_VM_RESPONSE;
+		}
+		break;
 	case IMSG_VMDOP_START_VM_CDROM:
 		res = config_getcdrom(ps, imsg);
 		if (res == -1) {
@@ -678,6 +685,8 @@ vmm_start_vm(struct imsg *imsg, uint32_t *id, pid_t *pid)
 			vm->vm_kernel = -1;
 		if (close_fd(vm->vm_efivars) == 0)
 			vm->vm_efivars = -1;
+		if (close_fd(vm->vm_display) == 0)
+			vm->vm_display = -1;
 		if (close_fd(vm->vm_cdrom) == 0)
 			vm->vm_cdrom = -1;
 		if (close_fd(vm->vm_tty) == 0)

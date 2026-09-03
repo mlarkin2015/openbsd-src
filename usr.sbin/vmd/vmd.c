@@ -42,6 +42,7 @@
 
 #include "proc.h"
 #include "vmd.h"
+#include "display.h"
 
 __dead void usage(void);
 
@@ -820,6 +821,7 @@ vmd_configure(void)
 	 * rpath - for reload to open and read the configuration files.
 	 * wpath - for opening disk images and tap devices.
 	 * cpath - for creating a configured UEFI variable store.
+	 * unix - for creating local display listeners.
 	 * tty - for openpty and TIOCUCNTL.
 	 * proc - run kill to terminate its children safely.
 	 * sendfd - for disks, interfaces and other fds.
@@ -829,7 +831,7 @@ vmd_configure(void)
 	 * flock - locking disk files
 	 */
 	/* DSDT DEBUG: pledge disabled
-	if (pledge("stdio rpath wpath cpath proc tty recvfd sendfd getpw"
+	if (pledge("stdio rpath wpath cpath proc tty unix recvfd sendfd getpw"
 	    " chown fattr flock", NULL) == -1)
 		fatal("pledge");
 	*/
@@ -1110,6 +1112,11 @@ vm_stop(struct vmd_vm *vm, int keeptty, const char *caller)
 		close(vm->vm_efivars);
 		vm->vm_efivars = -1;
 	}
+	display_socket_close(vm->vm_params.vmc_displaysock,
+	    &vm->vm_display, vm->vm_display_dev, vm->vm_display_ino,
+	    privsep_process == PROC_PARENT);
+	vm->vm_display_dev = 0;
+	vm->vm_display_ino = 0;
 	if (vm->vm_cdrom != -1) {
 		close(vm->vm_cdrom);
 		vm->vm_cdrom = -1;
@@ -1175,7 +1182,7 @@ int
 vm_register(struct privsep *ps, struct vmop_create_params *vmc,
     struct vmd_vm **ret_vm, uint32_t id, uid_t uid)
 {
-	struct vmd_vm		*vm = NULL, *vm_parent = NULL;
+	struct vmd_vm		*vm = NULL, *vm_parent = NULL, *vm_iter;
 	struct vmop_owner	*vmo = NULL;
 	uint32_t		 nid, rng;
 	unsigned int		 i, j;
@@ -1242,6 +1249,10 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	    vmc->vmc_firmware != VMFW_UEFI) {
 		log_warnx("efivars requires UEFI firmware");
 		goto fail;
+	} else if ((vmc->vmc_display != 0 && vmc->vmc_display != 1) ||
+	    (!vmc->vmc_display && vmc->vmc_displaysock[0] != '\0')) {
+		log_warnx("invalid display configuration");
+		goto fail;
 	} else if (vmc->vmc_kernel == -1 && vmc->vmc_ndisks == 0
 	    && strlen(vmc->vmc_cdrom) == 0) {
 		log_warnx("no kernel or disk/cdrom specified");
@@ -1262,6 +1273,30 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 			}
 		}
 	}
+	if (vmc->vmc_display) {
+		if (vmc->vmc_displaysock[0] == '\0' &&
+		    display_path_default(vmc, vmc->vmc_displaysock,
+		    sizeof(vmc->vmc_displaysock)) == -1) {
+			log_warnx("display socket path for vm \"%s\" is too long",
+			    vmc->vmc_name);
+			goto fail;
+		}
+		if (display_path_validate(vmc->vmc_displaysock) == -1) {
+			log_warnx("invalid display socket path %s",
+			    vmc->vmc_displaysock);
+			goto fail;
+		}
+		TAILQ_FOREACH(vm_iter, env->vmd_vms, vm_entry) {
+			if (vm_iter->vm_params.vmc_display &&
+			    strcmp(vmc->vmc_displaysock,
+			    vm_iter->vm_params.vmc_displaysock) == 0) {
+				log_warnx("display socket %s is already in use",
+				    vmc->vmc_displaysock);
+				errno = EADDRINUSE;
+				goto fail;
+			}
+		}
+	}
 
 	if ((vm = calloc(1, sizeof(*vm))) == NULL)
 		goto fail;
@@ -1274,6 +1309,7 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	vm->vm_tty = -1;
 	vm->vm_kernel = -1;
 	vm->vm_efivars = -1;
+	vm->vm_display = -1;
 	vm->vm_state &= ~VM_STATE_PAUSED;
 
 	if (vmc->vmc_kernel > -1)
@@ -1469,6 +1505,18 @@ vm_instance(struct privsep *ps, struct vmd_vm **vm_parent,
 	    vmc->vmc_firmware != VMFW_UEFI) {
 		log_warnx("vm \"%s\" efivars requires UEFI firmware", name);
 		return (EINVAL);
+	}
+
+	/* A display is inherited, but each instance gets a distinct socket. */
+	if ((vmc->vmc_flags & VMOP_CREATE_DISPLAY) != 0) {
+		if (vm_checkinsflag(vmc_parent, VMOP_CREATE_DISPLAY, uid) != 0) {
+			log_warnx("vm \"%s\" no permission to set display", name);
+			return (EPERM);
+		}
+	} else if (vmc_parent->vmc_display) {
+		vmc->vmc_display = 1;
+		vmc->vmc_flags |= VMOP_CREATE_DISPLAY;
+		vmc->vmc_displaysock[0] = '\0';
 	}
 
 	/* cdrom */
