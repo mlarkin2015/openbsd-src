@@ -630,6 +630,21 @@ pci_init(void)
 	}
 }
 
+/*
+ * Add the non-interrupting PIIX3 ISA bridge after the interrupting devices.
+ * Keeping it last preserves the existing PCI slot-to-ACPI interrupt routes.
+ * OVMF uses this bridge to publish its PS/2 keyboard child handle.
+ */
+int
+pci_add_isa_bridge(void)
+{
+	uint8_t id;
+
+	return (pci_add_device(&id, PCI_VENDOR_INTEL,
+	    PCI_PRODUCT_INTEL_82371SB_ISA, PCI_CLASS_BRIDGE,
+	    PCI_SUBCLASS_BRIDGE_ISA, PCI_VENDOR_INTEL, 0, 0, 0, NULL));
+}
+
 #ifdef __amd64__
 int
 pci_handle_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)

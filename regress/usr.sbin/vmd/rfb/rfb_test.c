@@ -7,6 +7,7 @@
 
 #include <endian.h>
 #include <errno.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,14 @@
 } while (0)
 
 struct vmd *env;
+
+/* The RFB unit test reads the typed input channel directly. */
+void
+i8042_key_event(uint32_t keysym, int down)
+{
+	(void)keysym;
+	(void)down;
+}
 
 void
 log_procinit(const char *fmt, ...)
@@ -133,6 +142,7 @@ static void
 test_protocol(struct display_surface *surface)
 {
 	struct display_input input;
+	struct pollfd pfd;
 	uint8_t msg[10], reply[16], pixels[16];
 	uint16_t width, height, value16;
 	uint32_t value32;
@@ -156,6 +166,19 @@ test_protocol(struct display_surface *surface)
 	read_full(client, pixels, sizeof(pixels));
 	CHECK(memcmp(pixels, surface->pixels, sizeof(pixels)) == 0);
 
+	/* An unchanged incremental request must remain pending. */
+	memset(msg, 0, sizeof(msg));
+	msg[0] = 3;
+	msg[1] = 1;
+	value16 = htobe16(2);
+	memcpy(&msg[6], &value16, sizeof(value16));
+	memcpy(&msg[8], &value16, sizeof(value16));
+	write_full(client, msg, sizeof(msg));
+	pfd.fd = client;
+	pfd.events = POLLIN;
+	CHECK(poll(&pfd, 1, 100) == 0);
+
+	/* Input must still be handled while that update is pending. */
 	memset(msg, 0, 8);
 	msg[0] = 4;
 	msg[1] = 1;
@@ -165,6 +188,14 @@ test_protocol(struct display_surface *surface)
 	read_full(control, &input, sizeof(input));
 	CHECK(input.type == DISPLAY_INPUT_KEY && input.down == 1);
 	CHECK(input.value == 'A');
+
+	pixels[0] ^= 0xff;
+	CHECK(display_surface_update(surface, pixels, 2, 2, 8,
+	    DISPLAY_FORMAT_XRGB8888) == 0);
+	read_full(client, reply, sizeof(reply));
+	CHECK(reply[0] == 0 && reply[3] == 1);
+	read_full(client, pixels, sizeof(pixels));
+	CHECK(memcmp(pixels, surface->pixels, sizeof(pixels)) == 0);
 
 	memset(msg, 0, 6);
 	msg[0] = 5;

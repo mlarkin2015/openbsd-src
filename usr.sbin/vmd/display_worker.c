@@ -36,6 +36,7 @@
 #include "vmd.h"
 #include "display.h"
 #ifdef __amd64__
+#include "i8042.h"
 #include "ramfb.h"
 #endif
 
@@ -45,6 +46,7 @@
 #define DISPLAY_STATUS_FD	6
 #define RFB_ENCODING_RAW	0
 #define RFB_MAX_ENCODINGS	64
+#define RFB_UPDATE_POLL_MS	33
 
 struct rfb_pixel_format {
 	uint8_t bits_per_pixel;
@@ -68,7 +70,7 @@ static struct event display_control_ev;
 extern struct vmd *env;
 
 static void	display_input_drain(int, short, void *);
-static int	rfb_wait(int, short, int);
+static int	rfb_wait(int, short, int, int);
 static int	rfb_read(int, int, void *, size_t);
 static int	rfb_write(int, int, const void *, size_t);
 static int	rfb_handshake(int, int, const struct display_surface *,
@@ -90,9 +92,16 @@ static void
 display_input_drain(int fd, short event, void *arg)
 {
 	struct display_input input;
+	ssize_t n;
 
-	while (recv(fd, &input, sizeof(input), MSG_DONTWAIT) > 0)
-		;
+	while ((n = recv(fd, &input, sizeof(input), MSG_DONTWAIT)) > 0) {
+		if (n != sizeof(input))
+			continue;
+#ifdef __amd64__
+		if (input.type == DISPLAY_INPUT_KEY)
+			i8042_key_event(input.value, input.down);
+#endif
+	}
 }
 
 int
@@ -209,7 +218,7 @@ display_stop(void)
 }
 
 static int
-rfb_wait(int fd, short events, int control)
+rfb_wait(int fd, short events, int control, int timeout)
 {
 	struct pollfd pfd[2];
 	int n;
@@ -219,9 +228,11 @@ rfb_wait(int fd, short events, int control)
 	pfd[1].fd = control;
 	pfd[1].events = POLLIN;
 	for (;;) {
-		n = poll(pfd, 2, -1);
+		n = poll(pfd, 2, timeout);
 		if (n == -1 && errno == EINTR)
 			continue;
+		if (n == 0)
+			return (1);
 		if (n == -1 || (pfd[1].revents &
 		    (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
 			return (-1);
@@ -237,7 +248,7 @@ rfb_read(int fd, int control, void *buf, size_t len)
 	ssize_t n;
 
 	while (len != 0) {
-		if (rfb_wait(fd, POLLIN, control) == -1)
+		if (rfb_wait(fd, POLLIN, control, -1) == -1)
 			return (-1);
 		n = read(fd, p, len);
 		if (n == -1 && (errno == EAGAIN || errno == EINTR))
@@ -257,7 +268,7 @@ rfb_write(int fd, int control, const void *buf, size_t len)
 	ssize_t n;
 
 	while (len != 0) {
-		if (rfb_wait(fd, POLLOUT, control) == -1)
+		if (rfb_wait(fd, POLLOUT, control, -1) == -1)
 			return (-1);
 		n = write(fd, p, len);
 		if (n == -1 && (errno == EAGAIN || errno == EINTR))
@@ -398,14 +409,38 @@ rfb_client(int fd, int control, const struct display_surface *surface,
 	struct display_frame frame, next;
 	struct display_input input;
 	struct rfb_pixel_format format;
-	uint8_t type, buf[9];
+	uint8_t type, buf[9], update_pending = 0;
 	uint16_t count, x, y, width, height;
+	uint16_t update_x = 0, update_y = 0;
+	uint16_t update_width = 0, update_height = 0;
 	uint32_t i, value;
+	int ret;
 
 	if (rfb_handshake(fd, control, surface, pixels, pixels_len,
 	    &frame) == -1)
 		return (-1);
 	for (;;) {
+		if (update_pending) {
+			if (__atomic_load_n(&surface->generation,
+			    __ATOMIC_ACQUIRE) != frame.generation) {
+				if (display_surface_snapshot(surface, pixels,
+				    pixels_len, &next) == -1 ||
+				    next.width != frame.width ||
+				    next.height != frame.height ||
+				    rfb_send_update(fd, control, surface, pixels,
+				    pixels_len, &frame, update_x, update_y,
+				    update_width, update_height) == -1)
+					return (-1);
+				update_pending = 0;
+				continue;
+			}
+			ret = rfb_wait(fd, POLLIN, control,
+			    RFB_UPDATE_POLL_MS);
+			if (ret == -1)
+				return (-1);
+			if (ret == 1)
+				continue;
+		}
 		if (rfb_read(fd, control, &type, 1) == -1)
 			return (-1);
 		switch (type) {
@@ -449,9 +484,18 @@ rfb_client(int fd, int control, const struct display_surface *surface,
 			    &next) == -1 || next.width != frame.width ||
 			    next.height != frame.height)
 				return (-1);
-			if (rfb_send_update(fd, control, surface, pixels,
-			    pixels_len, &frame, x, y, width, height) == -1)
-				return (-1);
+			if (buf[0] == 0 || next.generation != frame.generation) {
+				if (rfb_send_update(fd, control, surface, pixels,
+				    pixels_len, &frame, x, y, width,
+				    height) == -1)
+					return (-1);
+			} else {
+				update_x = x;
+				update_y = y;
+				update_width = width;
+				update_height = height;
+				update_pending = 1;
+			}
 			break;
 		case 4: /* KeyEvent */
 			if (rfb_read(fd, control, buf, 7) == -1)

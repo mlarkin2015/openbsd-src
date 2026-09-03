@@ -130,6 +130,7 @@ struct pci {
 
 int pci_find_first_device(uint16_t);
 void pci_init(void);
+int pci_add_isa_bridge(void);
 int pci_add_device(uint8_t *, uint16_t, uint16_t, uint8_t, uint8_t, uint16_t,
     uint16_t, uint8_t, uint8_t, pci_cs_fn_t);
 int pci_add_capability(uint8_t, struct pci_cap *);
