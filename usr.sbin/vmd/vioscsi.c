@@ -478,6 +478,69 @@ vioscsi_handle_tur(struct virtio_dev *dev, struct virtio_vq_info *vq_info,
 	return (ret);
 }
 
+/*
+ * Virtio-scsi carries autosense data in the command response, so there is no
+ * deferred sense condition to report after a successful command.  Some SCSI
+ * initiators, including OVMF's ScsiDiskDxe, nevertheless issue REQUEST SENSE
+ * after a successful TEST UNIT READY.  Return fixed-format NO SENSE data.
+ */
+static int
+vioscsi_handle_request_sense(struct virtio_dev *dev,
+    struct virtio_vq_info *vq_info, struct virtio_scsi_req_hdr *req,
+    struct virtio_vq_acct *acct)
+{
+	struct scsi_sense *sense_req;
+	struct scsi_sense_data sense_data;
+	struct virtio_scsi_res_hdr resp;
+	size_t alloc_len;
+
+	sense_req = (struct scsi_sense *)req->cdb;
+	alloc_len = sense_req->length;
+
+	memset(&resp, 0, sizeof(resp));
+	vioscsi_prepare_resp(&resp, VIRTIO_SCSI_S_OK, SCSI_OK, 0, 0, 0);
+	memset(&sense_data, 0, sizeof(sense_data));
+	sense_data.error_code = SSD_ERRCODE_CURRENT;
+	sense_data.flags = SKEY_NO_SENSE;
+	sense_data.extra_len = sizeof(sense_data) - 8;
+	if (alloc_len > sizeof(sense_data))
+		resp.residual = alloc_len - sizeof(sense_data);
+
+	/* The virtio-scsi response immediately follows the request. */
+	acct->resp_desc = vioscsi_next_ring_desc(vq_info, acct->desc,
+	    acct->req_desc, &acct->resp_idx);
+	if ((acct->resp_desc->flags & VRING_DESC_F_WRITE) == 0 ||
+	    acct->resp_desc->len < sizeof(resp)) {
+		log_warnx("%s: invalid response descriptor", __func__);
+		return (0);
+	}
+	if (write_mem(acct->resp_desc->addr, &resp, sizeof(resp))) {
+		log_warnx("%s: unable to write response @ 0x%llx", __func__,
+		    acct->resp_desc->addr);
+		return (0);
+	}
+
+	if (alloc_len != 0) {
+		if ((acct->resp_desc->flags & VRING_DESC_F_NEXT) == 0) {
+			log_warnx("%s: missing data-in descriptor", __func__);
+			return (0);
+		}
+		acct->resp_desc = vioscsi_next_ring_desc(vq_info, acct->desc,
+		    acct->resp_desc, &acct->resp_idx);
+		if (vioscsi_write_data(vq_info, acct, &sense_data,
+		    sizeof(sense_data), alloc_len)) {
+			log_warnx("%s: unable to write sense data @ 0x%llx",
+			    __func__, acct->resp_desc->addr);
+			return (0);
+		}
+	}
+
+	dev->isr = 1;
+	vioscsi_next_ring_item(vq_info, acct->avail, acct->used,
+	    acct->req_desc, acct->req_idx);
+	return (1);
+}
+
 static void
 dev_dispatch_vm(int fd, short event, void *arg)
 {
@@ -2382,6 +2445,10 @@ vioscsi_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 		case START_STOP:
 		case SYNCHRONIZE_CACHE:
 			ret = vioscsi_handle_tur(dev, vq_info, &req, &acct);
+			break;
+		case REQUEST_SENSE:
+			ret = vioscsi_handle_request_sense(dev, vq_info, &req,
+			    &acct);
 			break;
 		case PREVENT_ALLOW:
 			ret = vioscsi_handle_prevent_allow(dev, vq_info, &req,

@@ -67,6 +67,8 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   matched the host SHA-256
   `ab4de566f077ab6e780b24bc399898e9616ed2b8acb2e75e26acb13eacb669f3`.
   NetBSD CD-ROM operation was also independently confirmed.
+- OVMF enumerates the virtio-scsi optical device after REQUEST SENSE support;
+  repeat the full EFI optical-boot test with a non-truncated OpenBSD ISO.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
@@ -140,9 +142,12 @@ vmctl stop -f test_ovmf
 
 Add host-only coverage before connecting the service to a guest:
 
-The configuration and socket-lifecycle coverage below is implemented in
-`regress/usr.sbin/vmd/config` and `regress/usr.sbin/vmd/display`.  RFB, staging
-surface, worker isolation and end-to-end client tests remain.
+Configuration, socket lifecycle and staging-surface coverage is implemented in
+`regress/usr.sbin/vmd/config` and `regress/usr.sbin/vmd/display`.  The
+`regress/usr.sbin/vmd/ramfb` tests validate the OVMF descriptor, while
+`regress/usr.sbin/vmd/rfb` performs an end-to-end 3.8 handshake, raw update,
+typed key/pointer IPC and oversized-encoding rejection.  Broader fuzzing and
+slow-client coverage remain.
 
 - parse a `display { socket path }` stanza and validate the generated default;
 - reject relative/overlong paths, duplicate paths, symlinks and pre-existing

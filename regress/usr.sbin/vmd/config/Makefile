@@ -7,7 +7,7 @@ VMD_PASS=boot-keyword cpus memory-round memory-just-enough cdrom-keyword \
 VMD_FAIL=kernel-keyword too-few-ram zero-cpus too-many-cpus too-many-ifs \
 	 too-many-disks switch-no-interface switch-no-add bad-format missing-format \
 	 bad-firmware efivars-with-bios display-relative display-duplicate \
-	 display-socket-duplicate display-too-long
+	 display-socket-duplicate display-too-long display-with-bios
 
 .for n in ${VMD_PASS}
 REGRESS_TARGETS +=	run-pass-$n

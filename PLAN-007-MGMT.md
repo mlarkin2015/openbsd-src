@@ -163,6 +163,10 @@ the RFB Unix-domain socket path.  If omitted, vmd derives a unique path beneath
 `vncviewer /var/run/vmd/windows11.vnc`, or remotely without opening a host TCP
 port by forwarding a local TCP port to the Unix socket with SSH.
 
+The current scanout producer is OVMF ramfb, so `display` is accepted only with
+`firmware uefi`.  This can be extended to BIOS guests later if an emulated VGA
+or another firmware-independent scanout producer is added.
+
 The socket rules are part of the interface, not implementation details:
 
 - the path must be absolute and fit within `sockaddr_un.sun_path`;
@@ -182,9 +186,12 @@ The privileged/configuration side creates and owns the listener before passing
 only the required fd to the display worker.  The worker serves normal RFB over
 `AF_UNIX`, handles one client initially, and re-pledges after receiving its fds.
 It has no `inet`, filesystem, `/dev/vmm`, disk-image or guest-wide-memory access.
-Input will be returned to the VM process as bounded typed keyboard/pointer
-messages when the worker is added.  The configuration, listener creation, fd
-handoff and teardown portions are implemented; RFB service is the next layer.
+The worker is implemented as a fork/exec child pledged to `stdio unix`.  Its
+only non-stdio descriptors are the inherited listener and typed control socket;
+its bounded staging surface is mapped read-only and its fd is then closed.
+It implements standard RFB 3.3/3.7/3.8 with raw rectangle encoding.  Key and
+pointer events are returned to the VM process as bounded typed messages; they
+are intentionally discarded until the i8042/pointing-device consumers land.
 
 Direct TCP support is deferred.  If added, the default bind is loopback-only and
 a tiny `stdio inet sendfd` listener passes established connections to the same

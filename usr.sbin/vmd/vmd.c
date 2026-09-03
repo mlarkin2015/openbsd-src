@@ -599,7 +599,7 @@ main(int argc, char **argv)
 	env->vmd_sock_fd6 = -1;
 	env->vmd_vmm_fd = -1;
 
-	while ((ch = getopt(argc, argv, "D:P:V:X:df:i:j:nt:vp:")) != -1) {
+	while ((ch = getopt(argc, argv, "D:GP:V:X:df:i:j:nt:vp:")) != -1) {
 		switch (ch) {
 		case 'D':
 			if (cmdline_symset(optarg) < 0)
@@ -640,6 +640,9 @@ main(int argc, char **argv)
 			vm_fd = strtonum(optarg, 0, 128, &errp);
 			if (errp)
 				fatalx("invalid device fd");
+			break;
+		case 'G':
+			vm_launch = VMD_LAUNCH_DISPLAY;
 			break;
 		case 't':
 			dev_type = *optarg;
@@ -723,6 +726,9 @@ main(int argc, char **argv)
 			/* NOTREACHED */
 		}
 		fatalx("unsupported device type '%c'", dev_type);
+	} else if (vm_launch == VMD_LAUNCH_DISPLAY) {
+		display_main(3, 4, 5, title);
+		/* NOTREACHED */
 	}
 
 	/* Open /dev/vmm early. */
@@ -1117,6 +1123,10 @@ vm_stop(struct vmd_vm *vm, int keeptty, const char *caller)
 	    privsep_process == PROC_PARENT);
 	vm->vm_display_dev = 0;
 	vm->vm_display_ino = 0;
+	if (vm->vm_display_mem != -1) {
+		close(vm->vm_display_mem);
+		vm->vm_display_mem = -1;
+	}
 	if (vm->vm_cdrom != -1) {
 		close(vm->vm_cdrom);
 		vm->vm_cdrom = -1;
@@ -1249,6 +1259,9 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	    vmc->vmc_firmware != VMFW_UEFI) {
 		log_warnx("efivars requires UEFI firmware");
 		goto fail;
+	} else if (vmc->vmc_display && vmc->vmc_firmware != VMFW_UEFI) {
+		log_warnx("display requires UEFI firmware");
+		goto fail;
 	} else if ((vmc->vmc_display != 0 && vmc->vmc_display != 1) ||
 	    (!vmc->vmc_display && vmc->vmc_displaysock[0] != '\0')) {
 		log_warnx("invalid display configuration");
@@ -1310,6 +1323,7 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	vm->vm_kernel = -1;
 	vm->vm_efivars = -1;
 	vm->vm_display = -1;
+	vm->vm_display_mem = -1;
 	vm->vm_state &= ~VM_STATE_PAUSED;
 
 	if (vmc->vmc_kernel > -1)

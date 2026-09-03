@@ -40,6 +40,7 @@
 #include <util.h>
 
 #include "atomicio.h"
+#include "display.h"
 #include "pci.h"
 #include "virtio.h"
 #include "vmd.h"
@@ -405,6 +406,10 @@ vm_main(int fd, int fd_vmm)
 		log_warnx("failed to receive display socket fd");
 		_exit(EINVAL);
 	}
+	if (vm.vm_params.vmc_display && vm.vm_display_mem == -1) {
+		log_warnx("failed to receive display surface fd");
+		_exit(EINVAL);
+	}
 
 	if (vm.vm_params.vmc_sev && env->vmd_psp_fd < 0) {
 		log_warnx("%s not available", PSP_NODE);
@@ -534,6 +539,10 @@ start_vm(struct vmd_vm *vm, int fd)
 	event_init();
 	if (vmm_pipe(vm, fd, vm_dispatch_vmm) == -1)
 		fatal("setup vm pipe");
+	if (display_start(vm) == -1) {
+		log_warn("could not start display worker");
+		return (errno);
+	}
 
 	/*
 	 * Initialize our emulated hardware.
@@ -542,6 +551,7 @@ start_vm(struct vmd_vm *vm, int fd)
 		nicfds[i] = vm->vm_ifs[i].vif_fd;
 	ret = init_emulated_hw(vm, vm->vm_cdrom, vm->vm_disks, nicfds);
 	if (ret) {
+		display_stop();
 		virtio_shutdown(vm);
 		return (ret);
 	}
@@ -554,6 +564,7 @@ start_vm(struct vmd_vm *vm, int fd)
 	 * Execute the vcpu run loop(s) for this VM.
 	 */
 	ret = run_vm(vm, &vrs);
+	display_stop();
 
 	if (sync_uefi_vars(vm) != 0)
 		log_warn("could not save UEFI variable store");
