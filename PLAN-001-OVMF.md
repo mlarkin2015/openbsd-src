@@ -89,11 +89,11 @@ vmd.
 - An EFI-capable OpenBSD install image boots through autoconfiguration and
   reaches the installer prompt from a virtio block disk.
 - OVMF's virtio-scsi stack enumerates vmd's optical device as
-  `UEFI OpenBSD VMM CD-ROM`; vioscsi now handles the successful-command
-  `REQUEST SENSE` issued by EDK2's ScsiDiskDxe.  A complete optical boot test
-  remains pending because the first `install80.iso` sample was truncated:
-  its volume descriptor declares 830,011,392 bytes while the file contains
-  only 308,879,360 bytes, placing its El Torito catalog beyond EOF.
+  `UEFI OpenBSD VMM CD-ROM`; vioscsi handles the successful-command
+  `REQUEST SENSE` issued by EDK2's ScsiDiskDxe.  A complete 830,011,392-byte
+  OpenBSD 8.0 ISO boots through vioscsi to the install/upgrade/autoinstall/shell
+  prompt.  OVMF also configures the 1024x768 ramfb before the installer selects
+  its serial-console path.
 - OVMF boot variables written to a configured `efivars` file survive VM
   shutdown and a subsequent start.  VMs without the setting receive a fresh,
   ephemeral variable store.
