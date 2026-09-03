@@ -67,8 +67,9 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   matched the host SHA-256
   `ab4de566f077ab6e780b24bc399898e9616ed2b8acb2e75e26acb13eacb669f3`.
   NetBSD CD-ROM operation was also independently confirmed.
-- OVMF enumerates the virtio-scsi optical device after REQUEST SENSE support;
-  repeat the full EFI optical-boot test with a non-truncated OpenBSD ISO.
+- OVMF enumerates the virtio-scsi optical device after REQUEST SENSE support.
+  A complete 830,011,392-byte OpenBSD 8.0 ISO boots through vioscsi to the
+  installer prompt; no unsupported-SCSI or guest-memory access errors occur.
 - No Windows-specific tests
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
