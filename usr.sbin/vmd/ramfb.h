@@ -36,6 +36,7 @@ struct ramfb_config {
 };
 
 void	ramfb_init(void);
+void	ramfb_stop(void);
 int	ramfb_parse_config(const void *, size_t, struct ramfb_config *);
 int	ramfb_get_config(struct ramfb_config *);
 

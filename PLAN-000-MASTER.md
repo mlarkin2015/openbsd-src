@@ -136,10 +136,15 @@ process and will not expose a TCP listener by default:
 3. The proposed per-VM configuration is:
 
    ```
+   firmware uefi
    display {
        socket "/var/run/vmd/windows11.vnc"
    }
    ```
+
+   The current ramfb producer is specific to OVMF, so `display` requires
+   `firmware uefi`.  A future BIOS-capable VGA or display device can relax this
+   restriction once it provides a real scanout.
 
    If `socket` is omitted, vmd derives a collision-free name beneath
    `/var/run/vmd`.  The socket is mode 0600.  Its owner is the owner explicitly
@@ -185,12 +190,18 @@ Everything else depends on these. Order within the phase:
    16,17,19,20,32 and the end marker are exposed via fw_cfg.  Type 4 describes
    the single virtual package with one core/thread per vCPU, matching the CPUID
    topology.  The Type 1 UUID is deterministic for the VM name and instance.
-4. **Display service foundation — in progress**: `display { socket ... }`,
+4. **Display service foundation — complete**: `display { socket ... }`,
    collision checks, mode-0600 ownership, privileged listener creation, fd
-   handoff and inode-safe teardown are implemented.  The least-privilege
-   worker, bounded staging surface and RFB parser remain.
-5. **Firmware display**: expose OVMF ramfb/GOP output through the staging surface
-   and RFB worker.  Polling/damage comparison is acceptable for this first path.
+   handoff and inode-safe teardown are implemented.  The single-client RFB
+   worker is isolated by fork/exec and pledge and receives only its listener,
+   a read-only bounded staging surface and typed input channel.  Raw RFB
+   rectangles, strict native pixel-format negotiation and bounded key/pointer
+   messages have regression coverage.
+5. **Firmware display — complete**: OVMF's QemuRamfbDxe writes the standard
+   big-endian `etc/ramfb` descriptor through fw_cfg DMA.  The VM process polls
+   that bounded guest range into the staging surface.  A live 1024x768 OVMF
+   boot produced nonblank pixels through the RFB Unix socket; forced VM stop
+   also tears down the worker and socket.
 6. **Input**: i8042 PS/2 keyboard (ports 0x60/0x64, IRQ 1) first, followed by a
    virtio-input absolute tablet; retain relative PS/2 mouse only as a fallback.
 7. **Visible Windows Setup milestone**: boot an unmodified Windows installer and

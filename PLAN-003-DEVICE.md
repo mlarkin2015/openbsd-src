@@ -106,6 +106,8 @@ not blockers for the injected-WIM path.
   payloads across split buffers.  NetBSD 11 CD-ROM probing and byte-for-byte
   whole-image reads at 2 KiB and 64 KiB request sizes are runtime-validated;
   SYNCHRONIZE CACHE is accepted as a successful no-op for read-only media.
+  REQUEST SENSE returns fixed-format NO SENSE data after a successful command,
+  allowing OVMF's ScsiDiskDxe to enumerate the optical device.
 
 **Enhancements**:
 1. **MSI-X for all VirtIO devices**:
@@ -157,8 +159,10 @@ The Windows virtio-win `viogpu` driver is a display-only/2D path; 3D/VirGL and
 host renderer integration are explicitly deferred.
 
 **Files to create:**
-- `usr.sbin/vmd/display.c` / `display.h` — staging surface and typed IPC
-- `usr.sbin/vmd/rfb.c` / `rfb.h` — restricted Unix-socket RFB worker
+- `usr.sbin/vmd/display.c` / `display.h` — socket lifecycle, staging surface and
+  typed IPC
+- `usr.sbin/vmd/display_worker.c` — restricted Unix-socket RFB worker
+- `usr.sbin/vmd/ramfb.c` / `ramfb.h` — OVMF fw_cfg producer and capture
 - `usr.sbin/vmd/i8042.c` / `i8042.h` — keyboard and PS/2 fallback
 - `usr.sbin/vmd/vioinput.c` / `vioinput.h` — absolute tablet
 - `usr.sbin/vmd/viogpu.c` / `viogpu.h` — later 2D scanout producer
@@ -247,10 +251,11 @@ large parser and privilege surface.
 
 ## Implementation Order
 
-1. Define display configuration and the Unix-socket lifecycle (complete), then
-   add the staging surface and least-privilege process/IPC contract.
-2. Implement i8042 keyboard and a PS/2 relative-pointer fallback.
-3. Export OVMF ramfb/GOP through the RFB worker.
+1. Define display configuration, Unix-socket lifecycle, bounded staging
+   surface and least-privilege process/IPC contract (complete).
+2. Export OVMF ramfb/GOP through the RFB worker (complete; raw RFB encoding,
+   1024x768 live smoke test).
+3. Implement i8042 keyboard and a PS/2 relative-pointer fallback.
 4. Boot an unmodified Windows ISO to a visible, interactive Setup screen.
 5. Implement virtio-input absolute tablet.
 6. Inject storage/input drivers into Windows WIMs and reach disk selection.

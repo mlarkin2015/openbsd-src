@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "fw_cfg.h"
+#include "display.h"
 #include "ramfb.h"
 
 #define CHECK(expr) do { \
@@ -34,6 +35,25 @@ void
 fw_cfg_add_file_callback(const char *name, const void *data, size_t len,
     fw_cfg_write_cb cb, void *arg)
 {
+}
+
+struct display_surface *
+display_get_surface(void)
+{
+	return (NULL);
+}
+
+int
+read_mem(paddr_t address, void *data, size_t len)
+{
+	return (EINVAL);
+}
+
+int
+display_surface_update(struct display_surface *surface, const void *pixels,
+    uint32_t width, uint32_t height, uint32_t stride, uint32_t format)
+{
+	return (EINVAL);
 }
 
 static struct wire_config

@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/mman.h>
 
 #include <dev/vmm/vmm.h>
 
@@ -170,6 +171,39 @@ test_unsafe_parent(const char *dir)
 	CHECK(chmod(dir, 0700) == 0);
 }
 
+static void
+test_surface(void)
+{
+	struct display_surface *surface;
+	struct display_frame frame;
+	struct stat st;
+	uint8_t source[24], copy[16];
+	int fd, i;
+
+	for (i = 0; i < (int)sizeof(source); i++)
+		source[i] = i;
+	CHECK(display_surface_open(&fd) == 0);
+	CHECK(fstat(fd, &st) == 0);
+	CHECK(st.st_size == (off_t)display_surface_size());
+	CHECK(display_surface_map(fd, PROT_READ | PROT_WRITE, &surface) == 0);
+	display_surface_init(surface);
+	errno = 0;
+	CHECK(display_surface_snapshot(surface, copy, sizeof(copy), &frame) ==
+	    -1);
+	CHECK(errno == ENOSPC);
+	CHECK(display_surface_update(surface, source, 2, 2, 12,
+	    DISPLAY_FORMAT_XRGB8888) == 0);
+	CHECK(display_surface_snapshot(surface, copy, sizeof(copy), &frame) == 0);
+	CHECK(frame.width == 2 && frame.height == 2 && frame.stride == 8);
+	CHECK(memcmp(copy, source, 8) == 0);
+	CHECK(memcmp(copy + 8, source + 12, 8) == 0);
+	CHECK(display_surface_update(surface, source, 2, 2, 7,
+	    DISPLAY_FORMAT_XRGB8888) == -1);
+	CHECK(display_surface_update(surface, source, 2, 2, 12, 0) == -1);
+	CHECK(munmap(surface, display_surface_size()) == 0);
+	close(fd);
+}
+
 int
 main(void)
 {
@@ -181,6 +215,7 @@ main(void)
 	test_existing_paths(dir);
 	test_identity_cleanup(dir);
 	test_unsafe_parent(dir);
+	test_surface();
 	CHECK(rmdir(dir) == 0);
 	return (0);
 }

@@ -3,7 +3,8 @@
 .if ${MACHINE} == "amd64" || ${MACHINE} == "arm64" || ${MACHINE} == "riscv64"
 
 PROG=		vmd
-SRCS=		vmd.c control.c log.c priv.c proc.c config.c display.c vmm.c vm.c
+SRCS=		vmd.c control.c log.c priv.c proc.c config.c display.c
+SRCS+=		display_worker.c vmm.c vm.c
 SRCS+=		pci.c virtio.c dhcp.c packet.c parse.y atomicio.c
 SRCS+=		vioscsi.c vioraw.c vioqcow2.c vm_agentx.c vioblk.c
 SRCS+=		vionet.c

@@ -370,6 +370,12 @@ vm		: VM string vm_instance		{
 				yyerror("efivars requires firmware uefi");
 				YYERROR;
 			}
+			if (vmc.vmc_display &&
+			    vmc.vmc_firmware != VMFW_UEFI &&
+			    (vmc.vmc_flags & VMOP_CREATE_INSTANCE) == 0) {
+				yyerror("display requires firmware uefi");
+				YYERROR;
+			}
 
 			/* configured interfaces vs. number of interfaces */
 			if (vmc_nnics > vmc.vmc_nnics)

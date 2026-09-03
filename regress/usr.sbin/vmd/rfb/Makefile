@@ -2,16 +2,16 @@
 
 .PATH: ${.CURDIR}/../../../../usr.sbin/vmd
 
-PROG=		ramfb_test
-SRCS=		ramfb_test.c ramfb.c
+PROG=		rfb_test
+SRCS=		rfb_test.c display_worker.c display.c
 NOMAN=		yes
 CFLAGS+=	-I${.CURDIR}/../../../../usr.sbin/vmd
-CFLAGS+=	-Wall -Werror
+CFLAGS+=	-DDISPLAY_RFB_TEST -Wall -Werror
 LDADD+=		-levent
 DPADD+=		${LIBEVENT}
 
-REGRESS_TARGETS=	run-regress-ramfb
-run-regress-ramfb: ramfb_test
-	./ramfb_test
+REGRESS_TARGETS=	run-regress-rfb
+run-regress-rfb: rfb_test
+	./rfb_test
 
 .include <bsd.regress.mk>

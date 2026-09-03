@@ -88,6 +88,12 @@ vmd.
   FADT, MADT, DSDT, and FACS rather than QEMU-specific ACPI tables.
 - An EFI-capable OpenBSD install image boots through autoconfiguration and
   reaches the installer prompt from a virtio block disk.
+- OVMF's virtio-scsi stack enumerates vmd's optical device as
+  `UEFI OpenBSD VMM CD-ROM`; vioscsi now handles the successful-command
+  `REQUEST SENSE` issued by EDK2's ScsiDiskDxe.  A complete optical boot test
+  remains pending because the first `install80.iso` sample was truncated:
+  its volume descriptor declares 830,011,392 bytes while the file contains
+  only 308,879,360 bytes, placing its El Torito catalog beyond EOF.
 - OVMF boot variables written to a configured `efivars` file survive VM
   shutdown and a subsequent start.  VMs without the setting receive a fresh,
   ephemeral variable store.
