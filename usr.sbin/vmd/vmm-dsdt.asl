@@ -94,10 +94,12 @@ DefinitionBlock ("", "DSDT", 2, "VMD   ", "VMD DSDT", 1)
 		{
 			Name (_HID, EisaId ("PNP0303"))
 			Name (_CID, EisaId ("PNP030B"))
-			Method (_STA, 0, NotSerialized)
+			Name (_CRS, ResourceTemplate ()
 			{
-				Return (Zero)
-			}
+				IO (Decode16, 0x0060, 0x0060, 1, 1)
+				IO (Decode16, 0x0064, 0x0064, 1, 1)
+				IRQNoFlags () { 1 }
+			})
 		}
 
 		Device (PS2M)

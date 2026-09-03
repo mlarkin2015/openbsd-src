@@ -37,6 +37,7 @@
 #include "acpi.h"
 #include "atomicio.h"
 #include "fw_cfg.h"
+#include "i8042.h"
 #include "i8253.h"
 #include "i8259.h"
 #include "i82093aa.h"
@@ -54,8 +55,6 @@ typedef uint8_t (*io_fn_t)(struct vm_run_params *);
 
 #define LOWMEM_KB	576
 #define MAX_PORTS	65536
-#define I8042_CMD_PORT	0x64
-#define I8042_RESET_CMD	0xfe
 #define PIIX_RESET_PORT	0xcf9
 #define PIIX_RESET_FULL	0x06
 
@@ -614,6 +613,11 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	/* Reset the IO port map */
 	memset(&ioports_map, 0, sizeof(io_fn_t) * MAX_PORTS);
 
+	/* Init i8042 keyboard controller. */
+	i8042_init(vm->vm_vmmid);
+	ioports_map[I8042_DATA_PORT] = vcpu_exit_i8042;
+	ioports_map[I8042_COMMAND_PORT] = vcpu_exit_i8042;
+
 	/* Init i8253 PIT */
 	i8253_init(vm->vm_vmmid);
 	ioports_map[TIMER_CTRL] = vcpu_exit_i8253;
@@ -677,6 +681,8 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	/* Initialize virtio devices */
 	if (virtio_init(current_vm, child_cdrom, child_disks, child_taps))
 		return (1);
+	if (pci_add_isa_bridge())
+		return (1);
 
 	/*
 	 * Init QEMU fw_cfg interface. Must be done last for pci hardware
@@ -724,7 +730,7 @@ vcpu_exit_reset(struct vm_run_params *vrp)
 		return (0);
 
 	data = vei->vei_data;
-	if (vei->vei_port == I8042_CMD_PORT && data == I8042_RESET_CMD)
+	if (i8042_reset_request(vrp))
 		return (1);
 	if (vei->vei_port == PIIX_RESET_PORT &&
 	    (data & PIIX_RESET_FULL) == PIIX_RESET_FULL)
