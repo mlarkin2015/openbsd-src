@@ -76,11 +76,13 @@ struct x86_prefix {
 
 enum x86_opcode_type {
 	OP_UNKNOWN = 0,		/* Default value when undecoded. */
+	OP_ADD,
 	OP_AND,
 	OP_CMP,
 	OP_IN,
 	OP_INS,
 	OP_MOV,
+	OP_MOVS,
 	OP_MOVZX,
 	OP_OUT,
 	OP_OUTS,

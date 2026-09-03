@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: June 9 2025 $
+.Dd $Mdocdate: September 2 2026 $
 .Dt VMCTL 8
 .Os
 .Sh NAME
@@ -144,6 +144,7 @@ command.
 .Op Fl B Ar device
 .Op Fl b Ar path
 .Op Fl d Ar disk
+.Op Fl f Ar firmware
 .Op Fl i Ar count
 .Op Fl m Ar size
 .Op Fl n Ar switch
@@ -173,21 +174,22 @@ Boot from disk.
 Perform a PXE boot using the first network interface.
 .El
 .Pp
-Currently
+The
 .Ar net
-is only supported when booting a kernel using the
+option is only supported when booting a kernel using the
 .Fl b
-flag while
-.Ar disk
-and
-.Ar cdrom
-only work with VMs booted using BIOS.
+flag.
 .It Fl b Ar path
 Boot the VM with the specified
 .Ox
-kernel or custom BIOS image.
-If not specified, the default is to boot using the BIOS image in
-.Pa /etc/firmware/vmm-bios .
+kernel or custom firmware image.
+With
+.Fl f Ar uefi ,
+a custom image must be an OVMF CODE image matching the installed
+variable-store template.
+If not specified, the image selected by
+.Fl f
+is used.
 If the VM is an existing VM, use the provided image for only the next boot.
 .It Fl c
 Automatically connect to the VM console.
@@ -195,6 +197,20 @@ Automatically connect to the VM console.
 Use a disk image at the specified
 .Ar disk
 path (may be specified multiple times to add multiple disk images).
+.It Fl f Ar firmware
+Select
+.Ar bios
+or
+.Ar uefi
+firmware for this boot.
+The default is
+.Ar bios .
+Manually created UEFI VMs use an ephemeral variable store.
+For configured VMs, use
+.Ic efivars
+in
+.Xr vm.conf 5
+to persist UEFI variables.
 .It Fl i Ar count
 Number of network interfaces to add to the VM.
 .It Fl L
@@ -379,9 +395,15 @@ pass in proto { udp tcp } from 100.64.0.0/10 to any port domain \e
       rdr-to $dns_server port domain
 .Ed
 .Sh FILES
-.Bl -tag -width "/etc/var/run/vmd.sockXX" -compact
+.Bl -tag -width "/etc/firmware/vmm-uefi-vars" -compact
 .It Pa /etc/vm.conf
 Default configuration file.
+.It Pa /etc/firmware/vmm-bios
+Default BIOS image.
+.It Pa /etc/firmware/vmm-uefi-code
+Default UEFI executable image.
+.It Pa /etc/firmware/vmm-uefi-vars
+Default UEFI variable-store template.
 .It Pa /var/run/vmd.sock
 .Ux Ns -domain
 socket used for communication with

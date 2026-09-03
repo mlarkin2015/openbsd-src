@@ -180,8 +180,8 @@ pci_set_bar_fn(uint8_t id, uint8_t bar_ct, void *barfn, void *cookie)
 uint8_t
 pci_get_dev_irq(uint8_t id)
 {
-	if (pci.pci_devices[id].pd_int)
-		return pci.pci_devices[id].pd_irq;
+	if (pci.pci_devices[id].pd_has_irq)
+		return pci.pci_devices[id].pd_irq_route;
 	else
 		return 0xFF;
 }
@@ -243,13 +243,16 @@ pci_add_device(uint8_t *id, uint16_t vid, uint16_t pid, uint8_t class,
 	pci.pci_devices[*id].pd_csfunc = csfunc;
 
 	if (irq_needed) {
-		pci.pci_devices[*id].pd_irq =
+		pci.pci_devices[*id].pd_irq_route =
 		    pci_pic_irqs[pci.pci_next_pic_irq];
+		pci.pci_devices[*id].pd_irq =
+		    pci.pci_devices[*id].pd_irq_route;
 		pci.pci_devices[*id].pd_int = 1;
+		pci.pci_devices[*id].pd_has_irq = 1;
 		pci.pci_next_pic_irq++;
 		DPRINTF("assigned irq %d to pci dev %d",
-		    pci.pci_devices[*id].pd_irq, *id);
-		intr_toggle_el(current_vm, pci.pci_devices[*id].pd_irq, 1);
+		    pci.pci_devices[*id].pd_irq_route, *id);
+		intr_toggle_el(current_vm, pci.pci_devices[*id].pd_irq_route, 1);
 	}
 
 	pci.pci_dev_ct++;
@@ -472,8 +475,8 @@ pci_assert_irq(uint8_t id, uint16_t msix_vector)
 
 	if (deliver)
 		pci_msi_deliver(address, data);
-	else if (legacy && dev->pd_int)
-		vcpu_assert_irq(current_vm->vm_vmmid, 0, dev->pd_irq);
+	else if (legacy && dev->pd_has_irq)
+		vcpu_assert_irq(current_vm->vm_vmmid, 0, dev->pd_irq_route);
 }
 
 void
@@ -490,8 +493,8 @@ pci_deassert_irq(uint8_t id)
 	legacy = !pci_msix_enabled(dev) && !pci_msi_enabled(dev);
 	pthread_mutex_unlock(&dev->pd_mtx);
 
-	if (legacy && dev->pd_int)
-		vcpu_deassert_irq(current_vm->vm_vmmid, 0, dev->pd_irq);
+	if (legacy && dev->pd_has_irq)
+		vcpu_deassert_irq(current_vm->vm_vmmid, 0, dev->pd_irq_route);
 }
 
 static void
@@ -778,7 +781,7 @@ pci_handle_io(struct vm_run_params *vrp)
 				fn = pci.pci_devices[i].pd_barfunc[j];
 				reg = reg - b_lo;
 				cookie = pci.pci_devices[i].pd_bar_cookie[j];
-				irq = pci.pci_devices[i].pd_irq;
+				irq = pci.pci_devices[i].pd_irq_route;
 				goto found;
 			}
 		}
@@ -887,31 +890,18 @@ pci_handle_data_reg(struct vm_run_params *vrp)
 #endif /* __amd64__ */
 
 /*
- * Find the first PCI device based on PCI Subsystem ID
- * (e.g. PCI_PRODUCT_VIRTIO_BLOCK).
+ * Find the first PCI device based on PCI device ID.
  *
  * Returns the PCI device id of the first matching device, if found.
  * Otherwise, returns -1.
  */
 int
-pci_find_first_device(uint16_t subsys_id)
+pci_find_first_device(uint16_t device_id)
 {
 	int i;
 
 	for (i = 0; i < pci.pci_dev_ct; i++)
-		if (pci.pci_devices[i].pd_subsys_id == subsys_id)
+		if (pci.pci_devices[i].pd_did == device_id)
 			return (i);
 	return (-1);
-}
-
-/*
- * Retrieve the subsystem identifier for a PCI device if found, otherwise 0.
- */
-uint16_t
-pci_get_subsys_id(uint8_t pci_id)
-{
-	if (pci_id >= pci.pci_dev_ct)
-		return (0);
-	else
-		return (pci.pci_devices[pci_id].pd_subsys_id);
 }

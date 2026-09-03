@@ -107,13 +107,17 @@ Multiple
 options increase the verbosity.
 .El
 .Sh FILES
-.Bl -tag -width "/etc/firmware/vmm-biosXX" -compact
+.Bl -tag -width "/etc/firmware/vmm-uefi-vars" -compact
 .It Pa /etc/firmware/vmm-bios
 Default BIOS boot image.
 The BIOS is an external firmware file that is distributed separately
 due to an incompatible license.
 A prepackaged version of the firmware can be installed using
 .Xr fw_update 8 .
+.It Pa /etc/firmware/vmm-uefi-code
+Default UEFI executable image.
+.It Pa /etc/firmware/vmm-uefi-vars
+Default UEFI variable-store template.
 .It Pa /etc/vm.conf
 Default configuration file.
 This is optional.

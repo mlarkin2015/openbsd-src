@@ -59,6 +59,8 @@ struct parse_result {
 	unsigned int		 flags;
 	unsigned int		 mode;
 	unsigned int		 bootdevice;
+	enum vm_firmware	 firmware;
+	int			 firmware_set;
 	struct ctl_command	*ctl;
 };
 
@@ -98,7 +100,8 @@ int	 open_imagefile(int, const char *, int,
 	    struct virtio_backing *, off_t *);
 int	 create_imagefile(int, const char *, const char *, uint64_t, const char **);
 int	 vm_start(uint32_t, const char *, size_t, size_t, int, char **, int,
-	    char **, enum vm_disk_fmt *, char *, char *, char *, unsigned int);
+	    char **, enum vm_disk_fmt *, char *, char *, char *, unsigned int,
+	    enum vm_firmware, int);
 int	 vm_start_complete(struct imsg *, int *, int);
 void	 terminate_vm(uint32_t, const char *, unsigned int);
 int	 terminate_vm_complete(struct imsg *, int *, unsigned int);

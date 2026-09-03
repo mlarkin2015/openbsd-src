@@ -19,6 +19,7 @@
 
 #define MASTER			0
 #define SLAVE			1
+#define I8259_PIN_COUNT		16
 
 #define ELCR0			0x4D0
 #define ELCR1			0x4D1

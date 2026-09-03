@@ -75,7 +75,8 @@ int
 vm_start(uint32_t start_id, const char *name, size_t memsize, size_t ncpus,
     int nnics,
     char **nics, int ndisks, char **disks, enum vm_disk_fmt *disktypes,
-    char *kernel, char *iso, char *instance, unsigned int bootdevice)
+    char *kernel, char *iso, char *instance, unsigned int bootdevice,
+    enum vm_firmware firmware, int firmware_set)
 {
 	struct vmop_create_params vmc;
 	struct stat sb;
@@ -106,7 +107,12 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, size_t ncpus,
 		flags |= VMOP_CREATE_CDROM;
 	if (instance)
 		flags |= VMOP_CREATE_INSTANCE;
-	else if (flags != 0 && flags != VMOP_CREATE_CPU) {
+	if (firmware_set)
+		flags |= VMOP_CREATE_FIRMWARE;
+	else
+		firmware = VMFW_BIOS;
+	if (!instance && flags != 0 &&
+	    (flags & ~(VMOP_CREATE_CPU | VMOP_CREATE_FIRMWARE)) != 0) {
 		if (memsize < 1)
 			memsize = VM_DEFAULT_MEMORY;
 		if (ndisks > VM_MAX_DISKS_PER_VM)
@@ -126,6 +132,7 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, size_t ncpus,
 	memset(&vmc, 0, sizeof(vmc));
 	vmc.vmc_kernel = -1;
 	vmc.vmc_flags = flags;
+	vmc.vmc_firmware = firmware;
 
 	vmc.vmc_nmemranges = 1;
 	vmc.vmc_memranges[0].vmr_size = memsize;
@@ -245,6 +252,14 @@ vm_start_complete(struct imsg *imsg, int *ret, int autoconnect)
 			case VMD_BIOS_MISSING:
 				warnx("vmm bios firmware file not found.");
 				*ret = ENOENT;
+				break;
+			case VMD_UEFI_MISSING:
+				warnx("vmm UEFI firmware files not found.");
+				*ret = ENOENT;
+				break;
+			case VMD_EFIVARS_INVALID:
+				warnx("could not initialize UEFI variable store");
+				*ret = EINVAL;
 				break;
 			case VMD_DISK_MISSING:
 				warnx("could not open disk image(s)");

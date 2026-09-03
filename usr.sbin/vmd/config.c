@@ -17,7 +17,9 @@
  */
 
 #include <sys/types.h>
+#include <sys/mman.h>
 #include <sys/queue.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 #include <net/if.h>
@@ -39,6 +41,112 @@
 const char *vmd_descsw[] = { "bridge", "veb", NULL };
 
 static int	 config_init_localprefix(struct vmd_config *);
+static int	 config_open_uefi_vars(struct vmop_create_params *, int *);
+
+static int
+config_copy_file(int from, int to, off_t len)
+{
+	char	 buf[64 * 1024];
+	off_t	 off = 0;
+	size_t	 chunk;
+	ssize_t	 n, written;
+
+	while (off < len) {
+		chunk = MIN(sizeof(buf), (size_t)(len - off));
+		n = pread(from, buf, chunk, off);
+		if (n <= 0)
+			return (-1);
+		written = pwrite(to, buf, n, off);
+		if (written != n) {
+			if (written >= 0)
+				errno = EIO;
+			return (-1);
+		}
+		off += n;
+	}
+
+	return (0);
+}
+
+static int
+config_open_uefi_vars(struct vmop_create_params *vmc, int *retfd)
+{
+	struct stat	 tsb, vsb;
+	char		 shmname[] = "/vmd-efivars.XXXXXXXXXX";
+	int		 created = 0, ret = VMD_EFIVARS_INVALID;
+	int		 tfd = -1, vfd = -1;
+
+	*retfd = -1;
+	if ((tfd = open(VM_DEFAULT_UEFI_VARS,
+	    O_RDONLY | O_CLOEXEC)) == -1) {
+		log_warn("can't open %s", VM_DEFAULT_UEFI_VARS);
+		return (VMD_UEFI_MISSING);
+	}
+	if (fstat(tfd, &tsb) == -1 || !S_ISREG(tsb.st_mode) ||
+	    tsb.st_size != VM_UEFI_VARS_SIZE) {
+		log_warnx("invalid UEFI variable-store template %s",
+		    VM_DEFAULT_UEFI_VARS);
+		goto fail;
+	}
+
+	if (vmc->vmc_efivars[0] == '\0') {
+		if ((vfd = shm_mkstemp(shmname)) == -1) {
+			ret = errno;
+			goto fail;
+		}
+		if (shm_unlink(shmname) == -1 ||
+		    ftruncate(vfd, tsb.st_size) == -1 ||
+		    config_copy_file(tfd, vfd, tsb.st_size) == -1) {
+			ret = errno;
+			goto fail;
+		}
+	} else {
+		vfd = open(vmc->vmc_efivars,
+		    O_RDWR | O_EXLOCK | O_NONBLOCK | O_NOFOLLOW);
+		if (vfd == -1 && errno == ENOENT) {
+			vfd = open(vmc->vmc_efivars, O_RDWR | O_CREAT | O_EXCL |
+			    O_EXLOCK | O_NONBLOCK | O_NOFOLLOW, 0600);
+			if (vfd != -1)
+				created = 1;
+		}
+		if (vfd == -1) {
+			ret = errno;
+			log_warn("can't open efivars %s", vmc->vmc_efivars);
+			goto fail;
+		}
+
+		if (created) {
+			if (ftruncate(vfd, tsb.st_size) == -1 ||
+			    config_copy_file(tfd, vfd, tsb.st_size) == -1 ||
+			    fsync(vfd) == -1) {
+				ret = errno;
+				log_warn("can't initialize efivars %s",
+				    vmc->vmc_efivars);
+				goto fail;
+			}
+		}
+
+		if (fstat(vfd, &vsb) == -1 || !S_ISREG(vsb.st_mode) ||
+		    vsb.st_size != tsb.st_size) {
+			log_warnx("efivars %s has invalid size",
+			    vmc->vmc_efivars);
+			goto fail;
+		}
+	}
+
+	close(tfd);
+	*retfd = vfd;
+	return (0);
+
+ fail:
+	if (tfd != -1)
+		close(tfd);
+	if (vfd != -1)
+		close(vfd);
+	if (created)
+		unlink(vmc->vmc_efivars);
+	return (ret);
+}
 
 static int
 config_init_localprefix(struct vmd_config *cfg)
@@ -193,7 +301,8 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 	struct vmop_create_params *vmc = &vm->vm_params;
 	enum vm_disk_fmt	 type;
 	unsigned int		 i, j;
-	int			 fd = -1, cdromfd = -1, kernfd = -1;
+	int			 fd = -1, cdromfd = -1, efivarsfd = -1;
+	int			 kernfd = -1;
 	int			*tapfds = NULL;
 	int			 aflags, oflags, ret = -1;
 	ssize_t			 n = 0;
@@ -207,6 +316,11 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 	if (vm->vm_state & VM_STATE_RUNNING) {
 		log_warnx("%s: vm is already running", __func__);
 		return (EALREADY);
+	}
+	if (vmc->vmc_efivars[0] != '\0' && !vm->vm_from_config) {
+		log_warnx("%s: efivars is only accepted from %s", __func__,
+		    VMD_CONF);
+		return (EINVAL);
 	}
 
 	/*
@@ -280,10 +394,14 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 		 * license.
 		 */
 		if (kernfd == -1) {
-			if ((kernfd = open(VM_DEFAULT_BIOS,
+			const char *fwpath = vmc->vmc_firmware == VMFW_UEFI ?
+			    VM_DEFAULT_UEFI_CODE : VM_DEFAULT_BIOS;
+
+			if ((kernfd = open(fwpath,
 			    O_RDONLY | O_CLOEXEC)) == -1) {
-				log_warn("can't open %s", VM_DEFAULT_BIOS);
-				ret = VMD_BIOS_MISSING;
+				log_warn("can't open %s", fwpath);
+				ret = vmc->vmc_firmware == VMFW_UEFI ?
+				    VMD_UEFI_MISSING : VMD_BIOS_MISSING;
 				goto fail;
 			}
 		}
@@ -300,6 +418,14 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 		vm->vm_kernel = kernfd;
 		vmc->vmc_kernel = kernfd;
 		kernfd = -1;
+	}
+
+	if (vmc->vmc_firmware == VMFW_UEFI) {
+		ret = config_open_uefi_vars(vmc, &efivarsfd);
+		if (ret != 0)
+			goto fail;
+		vm->vm_efivars = efivarsfd;
+		efivarsfd = -1;
 	}
 
 	/* Open CDROM image for child */
@@ -485,9 +611,19 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 		ret = errno;
 		goto fail;
 	}
+	if (vmc->vmc_firmware == VMFW_UEFI &&
+	    (efivarsfd = dup(vm->vm_efivars)) == -1) {
+		ret = errno;
+		goto fail;
+	}
 	/* XXX check proc_compose_imsg return values */
 	proc_compose_imsg(ps, PROC_VMM, IMSG_VMDOP_START_VM_REQUEST,
 	    vm->vm_vmid, kernfd, vmc, sizeof(*vmc));
+	if (vmc->vmc_firmware == VMFW_UEFI) {
+		proc_compose_imsg(ps, PROC_VMM, IMSG_VMDOP_START_VM_EFIVARS,
+		    vm->vm_vmid, efivarsfd, NULL, 0);
+		efivarsfd = -1;
+	}
 
 	if (strlen(vmc->vmc_cdrom))
 		proc_compose_imsg(ps, PROC_VMM, IMSG_VMDOP_START_VM_CDROM,
@@ -534,6 +670,8 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 
 	if (kernfd != -1)
 		close(kernfd);
+	if (efivarsfd != -1)
+		close(efivarsfd);
 	if (cdromfd != -1)
 		close(cdromfd);
 	for (i = 0; i < vmc->vmc_ndisks; i++)
@@ -588,6 +726,37 @@ config_getvm(struct privsep *ps, struct imsg *imsg)
 	if (errno == 0)
 		errno = EINVAL;
 
+	return (-1);
+}
+
+int
+config_getefivars(struct privsep *ps, struct imsg *imsg)
+{
+	struct vmd_vm	*vm;
+	int		 fd;
+	uint32_t	 peer_id;
+
+	peer_id = imsg_get_id(imsg);
+	errno = 0;
+	if ((vm = vm_getbyvmid(peer_id)) == NULL) {
+		errno = ENOENT;
+		return (-1);
+	}
+
+	fd = imsg_get_fd(imsg);
+	if (fd == -1 || vm->vm_params.vmc_firmware != VMFW_UEFI ||
+	    vm->vm_efivars != -1) {
+		log_warnx("invalid UEFI variable-store fd");
+		goto fail;
+	}
+
+	vm->vm_efivars = fd;
+	return (0);
+
+ fail:
+	if (fd != -1)
+		close(fd);
+	errno = EINVAL;
 	return (-1);
 }
 

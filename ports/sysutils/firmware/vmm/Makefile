@@ -26,7 +26,7 @@ DIST_TUPLE=	github qemu sgabios \
 		github DMTF libspdm \
 		1be116c7b7713fa9003e1bd53b53a34758549eb9 \
 		edk2/SecurityPkg/DeviceSecurity/SpdmLib/libspdm
-REVISION=	2
+REVISION=	5
 
 HOMEPAGE=	https://www.seabios.org/
 
@@ -75,6 +75,7 @@ EDK2_BUILD_ENV=	WORKSPACE=${EDK2_WRKSRC} \
 FIX_CRLF_FILES=	edk2/BaseTools/Conf/tools_def.template \
 		edk2/BaseTools/Source/C/GenFv/GenFvInternalLib.c \
 		edk2/OvmfPkg/Include/OvmfPlatforms.h \
+		edk2/OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c \
 		edk2/OvmfPkg/Library/PlatformBootManagerLib/BdsPlatform.c \
 		edk2/OvmfPkg/Library/PlatformInitLib/MemDetect.c \
 		edk2/OvmfPkg/Library/PlatformInitLib/Platform.c \
