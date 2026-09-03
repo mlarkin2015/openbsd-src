@@ -29,6 +29,9 @@ void	fw_cfg_init(struct vmop_create_params *);
 uint8_t	vcpu_exit_fw_cfg(struct vm_run_params *);
 uint8_t	vcpu_exit_fw_cfg_dma(struct vm_run_params *);
 void	fw_cfg_add_file(const char *, const void *, size_t);
+typedef int (*fw_cfg_write_cb)(const void *, size_t, void *);
+void	fw_cfg_add_file_callback(const char *, const void *, size_t,
+	    fw_cfg_write_cb, void *);
 void	fw_cfg_add_acpi_rsdp(const void *, size_t);
 
 #endif /* _FW_CFG_H_ */
