@@ -10,7 +10,7 @@ SRCS+=		vionet.c
 SRCS+=		mmio.c
 
 .if ${MACHINE} == "amd64"
-SRCS+=		i8253.c i8259.c fw_cfg.c loadfile_elf.c mc146818.c ns8250.c
+SRCS+=		i8253.c i8259.c fw_cfg.c smbios.c loadfile_elf.c mc146818.c ns8250.c
 SRCS+=		x86_vm.c x86_mmio.c x86_mmu.c
 SRCS+=		psp.c sev.c
 SRCS+=		i82093aa.c i82489dx.c acpi.c
