@@ -174,6 +174,14 @@ keyboard support.  Validate controller commands, output-buffer status, keyboard
 enable/reset/LED/scancode commands and IRQ 1 behavior.  A relative PS/2 mouse
 on IRQ 12 is an optional fallback.
 
+The keyboard portion is complete.  Unit coverage exercises controller and
+keyboard commands, scan-set translation and IRQ state.  RFB input remains
+responsive while an unchanged incremental framebuffer request is pending, and
+the display worker no longer sends unchanged full-screen updates in a busy
+loop.  Runtime validation passed in the Ubuntu 26 graphical UEFI installer.
+The Windows 11 DVD prompt also accepted input and loaded the Windows boot image;
+the later Windows boot stall is not an i8042 failure.
+
 The preferred pointing device is a virtio-input tablet advertising absolute X
 and Y axes plus buttons.  Absolute coordinates avoid pointer capture and edge
 warping in a VNC window.  The Windows `vioinput` driver must eventually be
@@ -255,7 +263,8 @@ large parser and privilege surface.
    surface and least-privilege process/IPC contract (complete).
 2. Export OVMF ramfb/GOP through the RFB worker (complete; raw RFB encoding,
    1024x768 live smoke test).
-3. Implement i8042 keyboard and a PS/2 relative-pointer fallback.
+3. Implement i8042 keyboard (complete); retain a PS/2 relative-pointer fallback
+   as optional follow-up.
 4. Boot an unmodified Windows ISO to a visible, interactive Setup screen.
 5. Implement virtio-input absolute tablet.
 6. Inject storage/input drivers into Windows WIMs and reach disk selection.

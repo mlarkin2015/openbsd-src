@@ -147,7 +147,9 @@ Configuration, socket lifecycle and staging-surface coverage is implemented in
 `regress/usr.sbin/vmd/config` and `regress/usr.sbin/vmd/display`.  The
 `regress/usr.sbin/vmd/ramfb` tests validate the OVMF descriptor, while
 `regress/usr.sbin/vmd/rfb` performs an end-to-end 3.8 handshake, raw update,
-typed key/pointer IPC and oversized-encoding rejection.  Broader fuzzing and
+typed key/pointer IPC, pending incremental-update wakeup and oversized-encoding
+rejection.  `regress/usr.sbin/vmd/i8042` covers controller commands, keyboard
+command responses, scan-code emission and IRQ 1 state.  Broader fuzzing and
 slow-client coverage remain.
 
 - parse a `display { socket path }` stanza and validate the generated default;
@@ -379,6 +381,12 @@ normal regress target.
 4. Verify keyboard input and both the PS/2 fallback and absolute pointer path.
 5. It is acceptable for Setup to report no installation disk.  This milestone
    intentionally isolates UEFI, display and input from Windows virtio drivers.
+
+Current manual result: an Ubuntu 26 UEFI graphical installer validates the RFB
+and PS/2 keyboard path end to end.  A Windows 11 installer accepts the optical
+boot selection and loads its boot image, but stalls before presenting Setup;
+therefore M0a remains incomplete pending diagnosis of that later boot stage and
+pointer input.
 
 **M0b — injected-driver installation test**:
 

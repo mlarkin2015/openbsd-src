@@ -202,8 +202,14 @@ Everything else depends on these. Order within the phase:
    that bounded guest range into the staging surface.  A live 1024x768 OVMF
    boot produced nonblank pixels through the RFB Unix socket; forced VM stop
    also tears down the worker and socket.
-6. **Input**: i8042 PS/2 keyboard (ports 0x60/0x64, IRQ 1) first, followed by a
-   virtio-input absolute tablet; retain relative PS/2 mouse only as a fallback.
+6. **PS/2 keyboard — complete**: the i8042 controller implements ports
+   0x60/0x64, IRQ 1, controller and keyboard command responses, scan-set
+   translation, and RFB keysym input.  An Ubuntu 26 UEFI installer accepted
+   keyboard input throughout its graphical installer.  The Windows 11 optical
+   boot prompt also consumed the injected Set-1 keycodes and loaded its boot
+   image; its subsequent stall is a separate bring-up issue.  A virtio-input
+   absolute tablet remains next; retain a relative PS/2 mouse only as a
+   fallback.
 7. **Visible Windows Setup milestone**: boot an unmodified Windows installer and
    verify that firmware and Setup are visible and accept keyboard/pointer input.
    It need not discover the virtio installation disk yet.
