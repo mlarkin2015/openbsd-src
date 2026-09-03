@@ -97,13 +97,11 @@ What does **not** exist (gaps that gate Windows):
 | Gap | Impact on Windows |
 |---|---|
 | SMP lifecycle/architecture coverage incomplete | OpenBSD 2/4/8, Linux 4/8 and FreeBSD 2/8 boot; SMP reboot and halt/poweroff pass, while repeated reset loops, pause/unpause and Intel VMX still need validation |
-| No display device (VGA/virtio-gpu) | Windows Setup is graphical — cannot install blind |
-| No input (i8042 PS/2, USB tablet) | Cannot interact with Setup |
-| No IDE/AHCI storage (i82093aa is an IOAPIC, not IDE) | Storage = virtio only, needs driver ISO during setup |
-| fw_cfg missing OVMF entries (`etc/acpi/*`, SMBIOS) | OVMF boots degraded or not at all |
-| No SMBIOS generation | Windows licensing/hardware identity unhappy |
+| No display device or display service | Windows Setup is graphical — cannot install blind |
+| No input (i8042 or virtio-input tablet) | Cannot interact with Setup |
+| No IDE/AHCI/NVMe storage | Storage is virtio-only; Windows drivers must be injected into installation media |
 | Minimal DSDT, optional, no _OSC/HPET or PM timer | Device discovery/power management limitations |
-| No UEFI firmware/NVRAM support | Win11 hard-requires UEFI |
+| UEFI lacks a graphical host path | OVMF boots, but its GOP framebuffer cannot yet be viewed |
 | No Hyper-V TLFS interface | Windows runs unenlightened (or refuses some features) |
 | No TPM 2.0 | Win11 installer check fails |
 
@@ -116,10 +114,53 @@ What does **not** exist (gaps that gate Windows):
 2. **Platform profile**: stay all-PIIX4 (matches existing pci.c bridge) vs move to
    Q35/ICH9 for PCIe/MCFG/TPM coherence. Recommend: PIIX4 profile for the first
    Windows milestone; Q35 later as a separate coherent change.
-3. **Storage strategy for installation**: virtio-only + driver ISO (recommended)
-   vs implementing IDE/AHCI from scratch (months of work).
+3. **Storage strategy for installation**: keep the existing virtio block/SCSI
+   devices and inject the signed Windows virtio drivers into `boot.wim` and
+   `install.wim`.  A second virtio-scsi driver ISO cannot bootstrap its own
+   controller.  AHCI/ATAPI or NVMe remains a later compatibility project.
 4. Secure Boot: defer (Win11 installs with SB off). TPM: implement after core
    platform works; it gates Win11 install checks only.
+
+## Graphical console decisions (2026-09)
+
+The first display implementation will keep the network protocol out of the VM
+process and will not expose a TCP listener by default:
+
+1. OVMF's ramfb/GOP output and, later, virtio-gpu 2D scanout feed a small,
+   bounded staging framebuffer.  The VM process copies only the display surface
+   into that object; the display worker does not receive arbitrary guest RAM or
+   `/dev/vmm`.
+2. A separate display worker serves ordinary RFB over an `AF_UNIX` socket.
+   TigerVNC can open such a socket directly.  Remote access uses an SSH local
+   forward to the Unix socket; direct TCP service is deferred.
+3. The proposed per-VM configuration is:
+
+   ```
+   display {
+       socket "/var/run/vmd/windows11.vnc"
+   }
+   ```
+
+   If `socket` is omitted, vmd derives a collision-free name beneath
+   `/var/run/vmd`.  The socket is mode 0600.  Its owner is the owner explicitly
+   assigned to the VM in `vm.conf`; it is root when no owner was configured and
+   for every manually started/ephemeral VM.  The configured path must be
+   absolute.  vmd rejects symlinks and pre-existing non-sockets, records the
+   device/inode of sockets it creates, and only unlinks that exact socket during
+   teardown.
+4. The worker is initially single-client and implements only the bounded RFB
+   messages needed for framebuffer updates plus keyboard and pointer input.  No
+   clipboard, file transfer, resize extension, or unauthenticated non-local TCP
+   listener is in the first version.  The RFB parser and input IPC require
+   strict length/rate checks and fuzz/regression coverage.
+5. i8042 provides the first firmware/Setup keyboard.  A virtio-input absolute
+   tablet (`ABS_X`/`ABS_Y`) is the preferred pointer after its Windows
+   `vioinput` driver can be injected; this avoids both relative-pointer warping
+   and implementing xHCI solely for a tablet.  A relative PS/2 mouse may remain
+   a fallback.
+6. Virtio-gpu is a later 2D device using the same staging/display backend.  The
+   available Windows driver is principally a WDDM display-only path; VirGL/3D is
+   not part of the initial Windows milestone.
 
 ## Phases
 
@@ -135,26 +176,41 @@ Everything else depends on these. Order within the phase:
    the eight-vCPU FreeBSD test sustained guest-to-host network load.  OpenBSD
    and Ubuntu SMP reboot and Ubuntu halt/poweroff also pass.  Continue with
    repeated reset loops, longer stress and pause/unpause behavior.
-2. **OVMF as ROM** (userspace): load `ovmf.fd` through the existing bios path;
-   map flash read-only in EPT; add NVRAM varstore pflash region (below firmware
-   flash) with EPT write-trap persistence to `/var/vm/<vm>/nvram`;
-   extend fw_cfg with `etc/acpi/tables`, `etc/acpi/rsdp`,
-   `etc/smbios/smbios-{tables,entry-point-64}`; add `firmware "ovmf"` vm.conf
-   option (`parse.y`, `config.c`, `vmd.h`).
-3. **SMBIOS generation** (userspace, new `smbios.c`): types 0,1,2,3,4(per-vCPU),
-   16,17,19,20,32 exposed via fw_cfg.
-4. **Display**: virtio-gpu 2D scanout (`viogpu.c`), host-side framebuffer surface,
-   EFI GOP under OVMF so firmware console + Windows basic display driver work.
-5. **Input**: i8042 PS/2 keyboard+mouse (ports 0x60/0x64, IRQ 1/12) first;
-   xHCI tablet later if needed.
-6. **ACPI foundation** (PLAN-004 subset): real DSDT authored in ASL (PCI0 with
+2. **OVMF as ROM — complete** (userspace): OVMF boots OpenBSD from an EFI disk
+   and installer image; `firmware uefi|bios`, persistent per-VM `efivars`,
+   ephemeral variables, fw_cfg ACPI handoff, reset and firmware-setup behavior
+   are implemented and runtime-tested.  Graphical output is deliberately the
+   next layer rather than part of firmware loading.
+3. **SMBIOS generation — complete** (userspace, `smbios.c`): types 0,1,2,3,4,
+   16,17,19,20,32 and the end marker are exposed via fw_cfg.  Type 4 describes
+   the single virtual package with one core/thread per vCPU, matching the CPUID
+   topology.  The Type 1 UUID is deterministic for the VM name and instance.
+4. **Display service foundation**: configuration, safe Unix-socket lifecycle,
+   least-privilege worker, bounded staging surface and RFB parser.
+5. **Firmware display**: expose OVMF ramfb/GOP output through the staging surface
+   and RFB worker.  Polling/damage comparison is acceptable for this first path.
+6. **Input**: i8042 PS/2 keyboard (ports 0x60/0x64, IRQ 1) first, followed by a
+   virtio-input absolute tablet; retain relative PS/2 mouse only as a fallback.
+7. **Visible Windows Setup milestone**: boot an unmodified Windows installer and
+   verify that firmware and Setup are visible and accept keyboard/pointer input.
+   It need not discover the virtio installation disk yet.
+8. **Windows installation-media workflow**: provide a reproducible Windows
+   PowerShell/ADK procedure to inject `vioscsi` and/or `viostor` into every
+   relevant `boot.wim` index and selected `install.wim` editions.  Add NetKVM,
+   `vioinput`, and `viogpu` to `install.wim` as those devices land.
+9. **Virtio-gpu 2D**: implement one scanout with explicit transfer/flush damage
+   and reuse the display worker.  Defer 3D/VirGL.
+10. **ACPI foundation** (PLAN-004 subset): real DSDT authored in ASL (PCI0 with
    _PRT/_CRS/_OSC, RTC, PIT, PS2K/PS2M, power button, _S5 sleep), interrupt
    source overrides in MADT, consistent FADT PM1 blocks with actual SLP_TYP/SLP_EN
    shutdown emulation.
 
-**Milestone M0**: Windows 10 x64 installer reaches the graphical partitioning
-screen (virtio storage driver loaded from ISO), keyboard/mouse work, VM can be
-powered off cleanly from Setup.
+**Milestone M0a**: An unmodified Windows 10/11 x64 installer reaches a visible
+graphical Setup screen; keyboard and absolute pointer input work.  Storage may
+still be absent.
+
+**Milestone M0b**: Setup media with injected virtio drivers reaches the
+partitioning screen, sees the installation disk, and can power off cleanly.
 
 ### Phase 1 — Enlighten the guest (Hyper-V TLFS, corrected PLAN-002)
 
