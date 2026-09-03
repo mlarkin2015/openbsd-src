@@ -2,7 +2,7 @@
 
 .if ${MACHINE} == "amd64"
 SUBDIR =
-SUBDIR += config diskfmt lapic x86_mmio x86_mmu
+SUBDIR += config diskfmt lapic smbios x86_mmio x86_mmu
 
 .elif make(regress) || make(all)
 ${.TARGETS}:

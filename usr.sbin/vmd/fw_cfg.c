@@ -29,6 +29,7 @@
 #include "vmd.h"
 #include "vmm.h"
 #include "fw_cfg.h"
+#include "smbios.h"
 
 #define	FW_CFG_SIGNATURE	0x0000
 #define	FW_CFG_ID		0x0001
@@ -102,6 +103,8 @@ fw_cfg_init(struct vmop_create_params *vmc)
 	char bootorder[64];
 	const char *bootfmt;
 	int bootidx = -1;
+	uint8_t *smbios_tables, *smbios_anchor;
+	size_t smbios_tables_len, smbios_anchor_len;
 
 	if (pthread_mutex_init(&fw_cfg_mtx, NULL) != 0)
 		fatalx("unable to create fw_cfg mutex");
@@ -152,6 +155,16 @@ fw_cfg_init(struct vmop_create_params *vmc)
 		log_debug("%s: bootorder: %s", __func__, bootorder);
 		fw_cfg_add_file("bootorder", bootorder, strlen(bootorder) + 1);
 	}
+
+	if (smbios_build_tables(vmc, &smbios_tables, &smbios_tables_len,
+	    &smbios_anchor, &smbios_anchor_len) == -1)
+		fatal("%s: cannot build SMBIOS tables", __func__);
+	fw_cfg_add_file("etc/smbios/smbios-tables", smbios_tables,
+	    smbios_tables_len);
+	fw_cfg_add_file("etc/smbios/smbios-anchor", smbios_anchor,
+	    smbios_anchor_len);
+	free(smbios_tables);
+	free(smbios_anchor);
 }
 
 static void
