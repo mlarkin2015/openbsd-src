@@ -26,7 +26,7 @@ DIST_TUPLE=	github qemu sgabios \
 		github DMTF libspdm \
 		1be116c7b7713fa9003e1bd53b53a34758549eb9 \
 		edk2/SecurityPkg/DeviceSecurity/SpdmLib/libspdm
-REVISION=	5
+REVISION=	6
 
 HOMEPAGE=	https://www.seabios.org/
 
