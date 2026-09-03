@@ -143,7 +143,7 @@ vm "windows11" {
 - `usr.sbin/vmd/parse.y` — add grammar rules, keywords, token definitions
 - `usr.sbin/vmd/config.c` — validate new options, pass through to VM
 
-### 7.1A Display Endpoint Configuration
+### 7.1A Display Endpoint Configuration (implemented)
 
 The proposed display configuration is deliberately small:
 
@@ -171,8 +171,8 @@ The socket rules are part of the interface, not implementation details:
   if it does not, the UID is root;
 - a VM started manually by `vmctl start` always receives a root-owned display
   socket, even if its lifecycle ownership internally records the vmctl caller;
-- vmd validates the parent directory and rejects a symlink or an existing
-  non-socket at the final path;
+- vmd validates the parent directory and rejects any existing object, including
+  a stale socket or symlink, at the final path;
 - vmd must not blindly unlink the configured name.  It records the device and
   inode of a socket it successfully bound and unlinks only that same object at
   VM teardown;
@@ -182,7 +182,9 @@ The privileged/configuration side creates and owns the listener before passing
 only the required fd to the display worker.  The worker serves normal RFB over
 `AF_UNIX`, handles one client initially, and re-pledges after receiving its fds.
 It has no `inet`, filesystem, `/dev/vmm`, disk-image or guest-wide-memory access.
-Input is returned to the VM process as bounded typed keyboard/pointer messages.
+Input will be returned to the VM process as bounded typed keyboard/pointer
+messages when the worker is added.  The configuration, listener creation, fd
+handoff and teardown portions are implemented; RFB service is the next layer.
 
 Direct TCP support is deferred.  If added, the default bind is loopback-only and
 a tiny `stdio inet sendfd` listener passes established connections to the same
