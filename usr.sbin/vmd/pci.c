@@ -69,7 +69,8 @@ struct pci_msix_cap {
 	uint32_t pmc_pba;
 } __packed;
 
-static int pci_msix_mmio(uint32_t, int, uint32_t, uint64_t *, void *);
+static int pci_msix_mmio(uint32_t, int, uint32_t, uint8_t, uint64_t *,
+    void *);
 static void pci_msi_deliver(uint64_t, uint32_t);
 static int pci_msi_enabled(struct pci_dev *);
 static int pci_msix_enabled(struct pci_dev *);
@@ -526,8 +527,8 @@ pci_msix_drain(struct pci_dev *dev)
 }
 
 static int
-pci_msix_mmio(uint32_t vcpu_id, int dir, uint32_t ofs, uint64_t *data,
-    void *cookie)
+pci_msix_mmio(uint32_t vcpu_id, int dir, uint32_t ofs, uint8_t size,
+    uint64_t *data, void *cookie)
 {
 	struct pci_dev *dev = cookie;
 	struct pci_msix_entry *entry;
@@ -536,6 +537,7 @@ pci_msix_mmio(uint32_t vcpu_id, int dir, uint32_t ofs, uint64_t *data,
 	int drain = 0;
 
 	(void)vcpu_id;
+	(void)size;
 	if (ofs < dev->pd_msix_nvec * sizeof(*entry)) {
 		vector = ofs / sizeof(*entry);
 		if ((ofs & 3) != 0)
@@ -647,7 +649,8 @@ pci_add_isa_bridge(void)
 
 #ifdef __amd64__
 int
-pci_handle_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
+pci_handle_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint8_t size,
+    uint64_t *data)
 {
 	struct pci_dev *dev;
 	pci_mmiobar_fn_t fn;
@@ -665,7 +668,7 @@ pci_handle_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
 			fn = (pci_mmiobar_fn_t)dev->pd_barfunc[j];
 			if (fn == NULL)
 				break;
-			return (fn(vcpu_id, dir, addr - base, data,
+			return (fn(vcpu_id, dir, addr - base, size, data,
 			    dev->pd_bar_cookie[j]));
 		}
 	}
@@ -679,7 +682,12 @@ static void
 pci_config_write(struct pci_dev *dev, uint8_t reg, uint8_t ofs, uint8_t sz,
     uint32_t data)
 {
+	const uint32_t status_w1c = PCI_STATUS_PARITY_ERROR |
+	    PCI_STATUS_TARGET_TARGET_ABORT | PCI_STATUS_MASTER_TARGET_ABORT |
+	    PCI_STATUS_MASTER_ABORT | PCI_STATUS_SPECIAL_ERROR |
+	    PCI_STATUS_PARITY_DETECT;
 	uint32_t old, val, mask, fixed;
+	uint32_t write_data;
 	uint8_t baridx;
 	int drain = 0;
 
@@ -694,7 +702,23 @@ pci_config_write(struct pci_dev *dev, uint8_t reg, uint8_t ofs, uint8_t sz,
 		mask = UINT32_MAX;
 	else
 		mask = ((1U << (sz * 8)) - 1) << (ofs * 8);
-	val = (old & ~mask) | ((data << (ofs * 8)) & mask);
+	write_data = (data << (ofs * 8)) & mask;
+	val = (old & ~mask) | write_data;
+
+	/*
+	 * The upper half of this register is PCI status, not ordinary
+	 * read/write configuration space.  Its capability and DEVSEL bits are
+	 * read-only, while the error bits are cleared by writing one.  Replacing
+	 * the status word with the guest's write makes a normal 0xf900 error
+	 * acknowledgement erase PCI_STATUS_CAPLIST_SUPPORT.  Modern virtio
+	 * drivers then cannot discover their vendor capabilities and fall back
+	 * to the incompatible legacy register layout.
+	 */
+	if (reg == PCI_COMMAND_STATUS_REG / 4) {
+		val = (old & ~(mask & 0x0000ffffU)) |
+		    (write_data & 0x0000ffffU);
+		val &= ~(write_data & status_w1c);
+	}
 
 	if (reg >= PCI_MAPREG_START / 4 && reg < PCI_MAPREG_END / 4) {
 		baridx = reg - PCI_MAPREG_START / 4;

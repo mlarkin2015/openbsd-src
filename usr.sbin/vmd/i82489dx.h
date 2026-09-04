@@ -45,7 +45,7 @@ enum i82489dx_avic_ipi_failure {
 
 void i82489dx_init(uint32_t);
 void i82489dx_reset(uint32_t);
-int i82489dx_mmio(uint32_t, int, paddr_t, uint64_t *);
+int i82489dx_mmio(uint32_t, int, paddr_t, uint8_t, uint64_t *);
 int i82489dx_x2apic(uint32_t, int, uint32_t, uint64_t *);
 int i82489dx_vector_irq(uint32_t, int, uint8_t, int);
 int i82489dx_avic_write(uint32_t, uint16_t, uint32_t, uint32_t);
@@ -54,6 +54,8 @@ void i82489dx_avic_ipi(uint32_t, uint32_t, uint32_t, uint8_t, uint8_t,
 int i82489dx_avic_activate(uint32_t, uint8_t, uint8_t, uint32_t *);
 int i82489dx_avic_deactivate(uint32_t, uint8_t, uint32_t *);
 int i82489dx_hw_accel(int);
+uint8_t i82489dx_get_cr8(uint32_t);
+void i82489dx_set_cr8(uint32_t, uint8_t);
 int i82489dx_is_pending(int);
 int i82489dx_ack(int);
 int i82489dx_enabled(int);

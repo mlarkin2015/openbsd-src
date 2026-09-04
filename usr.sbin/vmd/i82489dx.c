@@ -234,7 +234,7 @@ i82489dx_init(uint32_t curcpu)
 	 */
 	if (curcpu == 0)
 		mmio_dev_add(LAPIC_BASE, LAPIC_BASE + 0xFFF,
-		    (mmio_dev_fn_t)i82489dx_mmio);
+		    i82489dx_mmio);
 }
 
 void
@@ -303,12 +303,15 @@ i82489dx_hw_accel(int vcpu_id)
 }
 
 int
-i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
+i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint8_t size,
+    uint64_t *data)
 {
 	struct i82489dx *lapic;
 	uint16_t reg;
 	uint32_t d, icrlo = 0, icrhi = 0;
 	int dispatch_icr = 0, eoi_vector = 0xffff, mapidx;
+
+	(void)size;
 
 	if (vcpu_id >= LAPIC_MAX_VCPUS) {
 		log_warnx("%s: invalid vcpu id %u", __func__, vcpu_id);
@@ -454,9 +457,6 @@ i82489dx_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
 			    (lapic->lvt[LVT_TIMER] & LAPIC_LVTT_TM) ==
 			    LAPIC_LVTT_TM_PERIODIC;
 			i82489dx_timer_reload(lapic);
-			log_debug("%s: vcpu %u lapic timer icr=%u div=%u",
-			    __func__, vcpu_id, lapic->icr_timer,
-			    i82489dx_divisor(lapic->dcr_timer));
 		}
 		break;
 	case LAPIC_CCR_TIMER:
@@ -664,9 +664,6 @@ i82489dx_icr_dispatch(uint32_t source, uint32_t lo, uint64_t targets)
 	mode = lo & LAPIC_DLMODE_MASK;
 	vector = lo & LAPIC_LVTT_VEC_MASK;
 
-	log_debug("%s: vcpu %u mode=0x%x vector=0x%x targets=0x%llx",
-	    __func__, source, mode, vector, (unsigned long long)targets);
-
 	if (mode == LAPIC_DLMODE_FIXED && source < (uint32_t)lapic_ncpus) {
 		pthread_mutex_lock(&lapics[source].mtx);
 		i82489dx_stats_add(&lapics[source].stats.ipi_targets,
@@ -796,13 +793,13 @@ i82489dx_x2apic(uint32_t vcpu_id, int dir, uint32_t msr, uint64_t *data)
 		return (0);
 	default:
 		if (i82489dx_mmio(vcpu_id, dir,
-		    LAPIC_BASE + (reg << 4), data) != 0)
+		    LAPIC_BASE + (reg << 4), sizeof(uint32_t), data) != 0)
 			return (EINVAL);
 		/* Return the masked/effective value for AVIC backing sync. */
 		if (dir == MMIO_DIR_WRITE) {
 			*data = 0;
 			if (i82489dx_mmio(vcpu_id, MMIO_DIR_READ,
-			    LAPIC_BASE + (reg << 4), data) != 0)
+			    LAPIC_BASE + (reg << 4), sizeof(uint32_t), data) != 0)
 				return (EINVAL);
 		}
 		return (0);
@@ -980,6 +977,38 @@ i82489dx_ppr(struct i82489dx *lapic)
 	return lapic->tpr & LAPIC_TPRI_MASK;
 }
 
+uint8_t
+i82489dx_get_cr8(uint32_t vcpu_id)
+{
+	struct i82489dx *lapic;
+	uint8_t cr8;
+
+	if (vcpu_id >= LAPIC_MAX_VCPUS || vcpu_id >= (uint32_t)lapic_ncpus)
+		return 0;
+
+	lapic = &lapics[vcpu_id];
+	pthread_mutex_lock(&lapic->mtx);
+	cr8 = (lapic->tpr & LAPIC_TPRI_INT_MASK) >> 4;
+	pthread_mutex_unlock(&lapic->mtx);
+
+	return cr8;
+}
+
+void
+i82489dx_set_cr8(uint32_t vcpu_id, uint8_t cr8)
+{
+	struct i82489dx *lapic;
+
+	if (vcpu_id >= LAPIC_MAX_VCPUS || vcpu_id >= (uint32_t)lapic_ncpus)
+		return;
+
+	lapic = &lapics[vcpu_id];
+	pthread_mutex_lock(&lapic->mtx);
+	/* MOV CR8 sets the TPR priority class and clears its subclass. */
+	lapic->tpr = (cr8 & 0x0f) << 4;
+	pthread_mutex_unlock(&lapic->mtx);
+}
+
 static int
 i82489dx_highest_pending(struct i82489dx *lapic)
 {
@@ -1043,14 +1072,12 @@ i82489dx_timer_check(uint32_t vcpu_id)
 	    (lapic->lvt[LVT_TIMER] & LAPIC_LVT_MASKED))
 		goto out;
 
-	if (vector < 32) {
+	if (vector < 16) {
 		log_debug("%s: vcpu %u timer vector %u too low, dropped",
 		    __func__, vcpu_id, vector);
 		goto out;
 	}
 
-	log_debug("%s: vcpu %u lapic timer expired, vector %u", __func__,
-	    vcpu_id, vector);
 	i82489dx_stats_add(&lapic->stats.timer_irqs, 1);
 	pending = vector;
 
@@ -1064,7 +1091,9 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
     int level)
 {
 	struct i82489dx *lapic;
-	int error, hw_accel;
+	int error, hw_accel, pending;
+
+	(void)destmode;
 
 	if (dest_vcpu >= LAPIC_MAX_VCPUS ||
 	    dest_vcpu >= (uint32_t)lapic_ncpus) {
@@ -1072,7 +1101,7 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 		    dest_vcpu);
 		return (0);
 	}
-	if (vector < 32) {
+	if (vector < 16) {
 		log_debug("%s: skipping low vector %d", __func__, vector);
 		return (0);
 	}
@@ -1086,9 +1115,6 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 		return (0);
 	}
 
-	log_debug("%s: delivering vec=%d level=%d to vcpu %u (%s dest)",
-	    __func__, vector, level, dest_vcpu,
-	    destmode ? "logical" : "physical");
 	i82489dx_stats_add(&lapic->stats.vectors, 1);
 	hw_accel = lapic->hw_accel != 0;
 	if (!hw_accel) {
@@ -1122,7 +1148,25 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 		pthread_mutex_unlock(&lapic->mtx);
 	}
 
-	return (0);
+	/*
+	 * Wake the LAPIC destination, rather than relying on the device which
+	 * asserted an IOAPIC input to guess where the IOAPIC routed it.  This is
+	 * particularly important for lowest-priority delivery: the device-side
+	 * vcpu_id is normally zero, while the IOAPIC may have selected any vCPU.
+	 * Without this wake a halted target can retain a deliverable vector in
+	 * its software IRR indefinitely.
+	 */
+	pending = intr_pending(dest_vcpu);
+	if (pending) {
+		error = vcpu_intr(current_vm->vm_vmmid, dest_vcpu, 1);
+		if (error != 0)
+			fatalx("%s: can't assert vector %u on vcpu %u: %s",
+			    __func__, vector, dest_vcpu, strerror(error));
+		vcpu_unhalt(dest_vcpu);
+		vcpu_signal_run(dest_vcpu);
+	}
+
+	return (1);
 }
 
 /* Mirror a completed AVIC register-write trap into the userspace model. */
@@ -1136,14 +1180,14 @@ i82489dx_avic_write(uint32_t vcpu_id, uint16_t offset, uint32_t value,
 	if (offset == LAPIC_ICRLO) {
 		data = icrhi;
 		error = i82489dx_mmio(vcpu_id, MMIO_DIR_WRITE,
-		    LAPIC_BASE + LAPIC_ICRHI, &data);
+		    LAPIC_BASE + LAPIC_ICRHI, sizeof(uint32_t), &data);
 		if (error != 0)
 			return (error);
 	}
 
 	data = value;
 	return (i82489dx_mmio(vcpu_id, MMIO_DIR_WRITE,
-	    LAPIC_BASE + offset, &data));
+	    LAPIC_BASE + offset, sizeof(uint32_t), &data));
 }
 
 void

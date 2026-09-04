@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <machine/i82093reg.h>
@@ -28,6 +29,7 @@
 
 #include "acpi.h"
 #include "fw_cfg.h"
+#include "hpet.h"
 #include "vmd.h"
 #include "virtio.h"
 
@@ -36,6 +38,7 @@ struct acpi_pm1 {
 	uint16_t	status;
 	uint16_t	enable;
 	uint16_t	control;
+	struct timespec	timer_start;
 };
 
 static struct acpi_pm1 acpi_pm1 = {
@@ -56,6 +59,8 @@ acpi_pm1_init(void)
 	acpi_pm1.enable = 0;
 	/* There is no SMI command interface; firmware leaves ACPI mode on. */
 	acpi_pm1.control = ACPI_PM1_SCI_EN;
+	if (clock_gettime(CLOCK_MONOTONIC, &acpi_pm1.timer_start) == -1)
+		fatal("clock_gettime");
 	mutex_unlock(&acpi_pm1.mtx);
 }
 
@@ -72,6 +77,56 @@ acpi_pm1_read_byte(uint16_t port)
 	if (port >= VMD_PM1A_CNT_BASE &&
 	    port < VMD_PM1A_CNT_BASE + VMD_PM1A_CNT_LEN)
 		return acpi_pm1.control >> ((port - VMD_PM1A_CNT_BASE) * 8);
+
+	return 0xff;
+}
+
+/*
+ * Return the ACPI fixed-hardware timer.  It is a free-running 24-bit
+ * counter clocked at 3.579545 MHz; the four-byte register access and the
+ * counter width are separate properties in the FADT.
+ */
+static uint32_t
+acpi_pm_timer_read(void)
+{
+	struct timespec now;
+	uint64_t sec, nsec, ticks;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+		fatal("clock_gettime");
+	sec = now.tv_sec - acpi_pm1.timer_start.tv_sec;
+	if (now.tv_nsec < acpi_pm1.timer_start.tv_nsec) {
+		sec--;
+		nsec = 1000000000ULL + now.tv_nsec -
+		    acpi_pm1.timer_start.tv_nsec;
+	} else {
+		nsec = now.tv_nsec - acpi_pm1.timer_start.tv_nsec;
+	}
+	ticks = sec * ACPI_FREQUENCY +
+	    nsec * ACPI_FREQUENCY / 1000000000ULL;
+
+	return ticks & 0x00ffffff;
+}
+
+uint8_t
+vcpu_exit_acpi_pm_timer(struct vm_run_params *vrp)
+{
+	struct vm_exit *vei = vrp->vrp_exit;
+	uint32_t data = 0, timer;
+	uint16_t offset;
+	uint8_t i;
+
+	if (vei->vei.vei_dir == VEI_DIR_IN) {
+		mutex_lock(&acpi_pm1.mtx);
+		timer = acpi_pm_timer_read();
+		mutex_unlock(&acpi_pm1.mtx);
+		offset = vei->vei.vei_port - VMD_PM_TMR_BASE;
+		for (i = 0; i < vei->vei.vei_size && offset + i < 4; i++)
+			data |= ((timer >> ((offset + i) * 8)) & 0xff) <<
+			    (i * 8);
+		set_return_data(vei, data);
+	}
+	/* Writes to the fixed-hardware PM timer have no effect. */
 
 	return 0xff;
 }
@@ -315,7 +370,7 @@ acpi_create_fadt(paddr_t pa, paddr_t facs_pa, paddr_t dsdt_pa)
 	/* PM register lengths */
 	fadt.pm1_evt_len = VMD_PM1A_EVT_LEN;
 	fadt.pm1_cnt_len = VMD_PM1A_CNT_LEN;
-	fadt.pm_tmr_len = 0;
+	fadt.pm_tmr_len = VMD_PM_TMR_LEN;
 	fadt.gpe0_blk_len = 0;
 	fadt.p_lvl2_lat = 100;
 	fadt.p_lvl3_lat = 1000;
@@ -328,8 +383,26 @@ acpi_create_fadt(paddr_t pa, paddr_t facs_pa, paddr_t dsdt_pa)
 	fadt.pm1b_evt_blk = 0;
 	fadt.pm1a_cnt_blk = VMD_PM1A_CNT_BASE;
 	fadt.pm1b_cnt_blk = 0;
-	fadt.pm_tmr_blk = 0;
+	fadt.pm_tmr_blk = VMD_PM_TMR_BASE;
 	fadt.gpe0_blk = 0;
+
+	/*
+	 * Revision 5 and newer consumers use the extended GAS fields in
+	 * preference to the legacy 32-bit port fields.  PM1A event and control
+	 * are required for non-hardware-reduced ACPI, so describe both forms.
+	 */
+	fadt.x_pm1a_evt_blk.address_space_id = GAS_SYSTEM_IOSPACE;
+	fadt.x_pm1a_evt_blk.register_bit_width = VMD_PM1A_EVT_LEN * 8;
+	fadt.x_pm1a_evt_blk.access_size = GAS_ACCESS_DWORD;
+	fadt.x_pm1a_evt_blk.address = VMD_PM1A_EVT_BASE;
+	fadt.x_pm1a_cnt_blk.address_space_id = GAS_SYSTEM_IOSPACE;
+	fadt.x_pm1a_cnt_blk.register_bit_width = VMD_PM1A_CNT_LEN * 8;
+	fadt.x_pm1a_cnt_blk.access_size = GAS_ACCESS_WORD;
+	fadt.x_pm1a_cnt_blk.address = VMD_PM1A_CNT_BASE;
+	fadt.x_pm_tmr_blk.address_space_id = GAS_SYSTEM_IOSPACE;
+	fadt.x_pm_tmr_blk.register_bit_width = VMD_PM_TMR_LEN * 8;
+	fadt.x_pm_tmr_blk.access_size = GAS_ACCESS_DWORD;
+	fadt.x_pm_tmr_blk.address = VMD_PM_TMR_BASE;
 
 	/* IAPC Boot Architecture Flags */
 	fadt.iapc_boot_arch = FADT_LEGACY_DEVICES;
@@ -420,6 +493,36 @@ acpi_create_madt(paddr_t pa, size_t numcpu)
 }
 
 /*
+ * Create the High Precision Event Timer table.  The event timer block ID
+ * mirrors the capabilities register exposed by hpet(4).
+ */
+void
+acpi_create_hpet(paddr_t pa)
+{
+	struct acpi_hpet table;
+
+	memset(&table, 0, sizeof(table));
+	acpi_populate_header(&table.hdr, VMD_HPET_OEM_TABLEID);
+	memcpy(table.hdr.signature, HPET_SIG, sizeof(table.hdr.signature));
+	table.hdr.length = sizeof(table);
+	table.hdr.revision = 1;
+	table.event_timer_block_id = VMD_HPET_CAP_ID;
+	table.base_address.address_space_id = GAS_SYSTEM_MEMORY;
+	table.base_address.register_bit_width = 64;
+	table.base_address.access_size = GAS_ACCESS_QWORD;
+	table.base_address.address = VMD_HPET_BASE;
+	table.hpet_number = 0;
+	table.main_counter_min_clock_tick = 0x80;
+	table.page_protection = 0;
+	table.hdr.checksum = acpi_calculate_checksum((uint8_t *)&table,
+	    sizeof(table));
+
+	acpi_verify_checksum((uint8_t *)&table, sizeof(table));
+	if (write_mem(pa, &table, sizeof(table)) != 0)
+		log_warnx("%s: could not write HPET table", __func__);
+}
+
+/*
  * acpi_create_xsdt
  *
  * create XSDT table at 'pa' with pointers to the tables provided
@@ -505,7 +608,7 @@ acpi_create_rsdp(paddr_t pa, paddr_t xsdt_pa)
 void
 acpi_init(size_t numcpu)
 {
-	paddr_t tables[4];
+	paddr_t tables[5];
 	size_t numtables;
 	ssize_t dsdt_size;
 	uint16_t rsdp_ptr_real;
@@ -537,6 +640,8 @@ acpi_init(size_t numcpu)
 
 	acpi_create_madt(VMD_MADT_PADDR, numcpu);
 	tables[numtables++] = VMD_MADT_PADDR;
+	acpi_create_hpet(VMD_HPET_PADDR);
+	tables[numtables++] = VMD_HPET_PADDR;
 
 	acpi_create_xsdt(VMD_XSDT_PADDR, tables, numtables);
 	acpi_create_rsdp(VMD_RSDP_PADDR, VMD_XSDT_PADDR);

@@ -367,6 +367,7 @@ vioscsi_op_names(uint8_t type)
 	/* defined locally */
 	case READ_DISC_INFORMATION: return "READ_DISC_INFORMATION";
 	case GET_CONFIGURATION: return "GET_CONFIGURATION";
+	case GET_PERFORMANCE: return "GET_PERFORMANCE";
 	case MECHANISM_STATUS: return "MECHANISM_STATUS";
 	case GET_EVENT_STATUS_NOTIFICATION:
 	    return "GET_EVENT_STATUS_NOTIFICATION";
@@ -448,6 +449,36 @@ vioscsi_finish_read(struct virtio_dev *dev, struct ioinfo *info)
 	}
 
 	return info->buf;
+}
+
+/* Complete an unsupported SCSI command with CHECK CONDITION. */
+static int
+vioscsi_handle_unsupported(struct virtio_dev *dev,
+    struct virtio_vq_info *vq_info, struct virtio_vq_acct *acct)
+{
+	struct virtio_scsi_res_hdr resp;
+
+	memset(&resp, 0, sizeof(resp));
+	vioscsi_prepare_resp(&resp, VIRTIO_SCSI_S_OK, SCSI_CHECK,
+	    SKEY_ILLEGAL_REQUEST, SENSE_INVALID_OPCODE, SENSE_DEFAULT_ASCQ);
+
+	acct->resp_desc = vioscsi_next_ring_desc(vq_info, acct->desc,
+	    acct->req_desc, &acct->resp_idx);
+	if ((acct->resp_desc->flags & VRING_DESC_F_WRITE) == 0 ||
+	    acct->resp_desc->len < sizeof(resp)) {
+		log_warnx("%s: invalid response descriptor", __func__);
+		return (0);
+	}
+	if (write_mem(acct->resp_desc->addr, &resp, sizeof(resp))) {
+		log_warnx("%s: unable to write response @ 0x%llx", __func__,
+		    acct->resp_desc->addr);
+		return (0);
+	}
+
+	dev->isr = 1;
+	vioscsi_next_ring_item(vq_info, acct->avail, acct->used,
+	    acct->req_desc, acct->req_idx);
+	return (1);
 }
 
 static int
@@ -1324,7 +1355,12 @@ vioscsi_handle_report_luns(struct virtio_dev *dev,
 	}
 
 	_lto4b(RPL_SINGLE_LUN, reply_rpl->length);
-	memcpy(reply_rpl->lun, req->lun, RPL_SINGLE_LUN);
+	/*
+	 * REPORT LUNS uses the SCSI LUN addressing format, not the
+	 * virtio-scsi transport LUN from the request header.  The sole
+	 * emulated device is LUN 0, whose type-zero address is all zeroes.
+	 * reply_rpl was zeroed by calloc(3), so no further encoding is needed.
+	 */
 
 	vioscsi_prepare_resp(&resp,
 	    VIRTIO_SCSI_S_OK, SCSI_OK, 0, 0, 0);
@@ -2207,7 +2243,11 @@ vioscsi_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
     uint8_t sz)
 {
 	struct vioscsi_dev *vioscsi = NULL;
+	uint8_t cfg[36] = { 0 };
+	uint32_t current;
 	uint32_t res = 0;
+	uint8_t base;
+	size_t i;
 
 	if (dev->device_id != PCI_PRODUCT_VIRTIO_SCSI)
 		fatalx("%s: virtio device is not a scsi device", __func__);
@@ -2216,94 +2256,71 @@ vioscsi_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 	DPRINTF("%s: request %s reg %s sz %u", __func__,
 	    dir ? "READ" : "WRITE", vioscsi_reg_name(reg), sz);
 
-	if (dir == VEI_DIR_OUT) {
-		switch (reg) {
-		case VIRTIO_SCSI_CONFIG_SENSE_SIZE:
-			/* Support writing to sense size register. */
-			if (data != VIOSCSI_SENSE_LEN)
-				log_warnx("%s: guest write to sense size "
-				    "register ignored", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_CDB_SIZE:
-			/* Support writing CDB size. */
-			if (data != VIOSCSI_CDB_LEN)
-				log_warnx("%s: guest write to cdb size "
-				    "register ignored", __func__);
-			break;
-		default:
-			log_warnx("%s: invalid register 0x%04x", __func__, reg);
-			break;
-		}
-	} else {
-		switch (reg) {
-		case VIRTIO_SCSI_CONFIG_NUM_QUEUES:
-			/* Number of request queues, not number of all queues. */
-			if (sz == 4)
-				res = (uint32_t)(VIOSCSI_NUM_REQ_QUEUES);
-			else
-				log_warnx("%s: unaligned read of num queues "
-				    "register", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_SEG_MAX:
-			if (sz == 4)
-				res = (uint32_t)(VIOSCSI_SEG_MAX);
-			else
-				log_warnx("%s: unaligned read of seg max "
-				    "register", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_MAX_SECTORS:
-			if (sz == 4)
-				res = (uint32_t)(vioscsi->max_xfer);
-			else
-				log_warnx("%s: unaligned read of max sectors "
-				    "register", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_CMD_PER_LUN:
-			if (sz == 4)
-				res = (uint32_t)(VIOSCSI_CMD_PER_LUN);
-			else
-				log_warnx("%s: unaligned read of cmd per lun "
-				    "register", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_EVENT_INFO_SIZE:
-			res = 0;
-			break;
-		case VIRTIO_SCSI_CONFIG_SENSE_SIZE:
-			if (sz == 4)
-				res = (uint32_t)(VIOSCSI_SENSE_LEN);
-			else
-				log_warnx("%s: unaligned read of sense size "
-				    "register", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_CDB_SIZE:
-			if (sz == 4)
-				res = (uint32_t)(VIOSCSI_CDB_LEN);
-			else
-				log_warnx("%s: unaligned read of cdb size "
-				    "register", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_MAX_CHANNEL:
-			/* defined by standard to be zero */
-			res = 0;
-			break;
-		case VIRTIO_SCSI_CONFIG_MAX_TARGET:
-			if (sz == 2)
-				res = (uint32_t)(VIOSCSI_MAX_TARGET);
-			else
-				log_warnx("%s: unaligned read of max target "
-				    "register", __func__);
-			break;
-		case VIRTIO_SCSI_CONFIG_MAX_LUN:
-			if (sz == 4)
-				res = (uint32_t)(VIOSCSI_MAX_LUN);
-			else
-				log_warnx("%s: unaligned read of max lun "
-				    "register", __func__);
-			break;
-		default:
-			log_warnx("%s: invalid register 0x%04x", __func__, reg);
-		}
+	if ((sz != 1 && sz != 2 && sz != 4) ||
+	    (size_t)reg + sz > sizeof(cfg)) {
+		log_warnx("%s: invalid register 0x%04x", __func__, reg);
+		return (0);
 	}
+
+	if (dir == VEI_DIR_OUT) {
+		/*
+		 * sense_size and cdb_size are writable, but the request and
+		 * response layouts implemented here have fixed-size arrays.  Merge
+		 * sub-field writes so byte-at-a-time writes of the supported sizes
+		 * succeed, while retaining the only layouts the backend can use.
+		 */
+		if (reg >= VIRTIO_SCSI_CONFIG_SENSE_SIZE &&
+		    (size_t)reg + sz <= VIRTIO_SCSI_CONFIG_SENSE_SIZE + 4) {
+			base = VIRTIO_SCSI_CONFIG_SENSE_SIZE;
+			current = VIOSCSI_SENSE_LEN;
+		} else if (reg >= VIRTIO_SCSI_CONFIG_CDB_SIZE &&
+		    (size_t)reg + sz <= VIRTIO_SCSI_CONFIG_CDB_SIZE + 4) {
+			base = VIRTIO_SCSI_CONFIG_CDB_SIZE;
+			current = VIOSCSI_CDB_LEN;
+		} else {
+			log_warnx("%s: invalid register 0x%04x", __func__, reg);
+			return (0);
+		}
+
+		for (i = 0; i < sz; i++) {
+			uint32_t shift = (reg - base + i) * 8;
+
+			current &= ~(0xffU << shift);
+			current |= ((data >> (i * 8)) & 0xffU) << shift;
+		}
+		if ((base == VIRTIO_SCSI_CONFIG_SENSE_SIZE &&
+		    current != VIOSCSI_SENSE_LEN) ||
+		    (base == VIRTIO_SCSI_CONFIG_CDB_SIZE &&
+		    current != VIOSCSI_CDB_LEN))
+			log_warnx("%s: guest write to %s register ignored",
+			    __func__, base == VIRTIO_SCSI_CONFIG_SENSE_SIZE ?
+			    "sense size" : "cdb size");
+		return (0);
+	}
+
+	/*
+	 * Expose the complete device-specific configuration as a packed,
+	 * little-endian byte array.  This permits valid unaligned and partial
+	 * reads, including the byte-at-a-time accesses used by Windows.
+	 */
+#define VIOSCSI_CFG_PUT(_off, _value, _width) do {			\
+	for (i = 0; i < (_width); i++)				\
+		cfg[(_off) + i] = (uint64_t)(_value) >> (i * 8);	\
+} while (0)
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_NUM_QUEUES,
+	    VIOSCSI_NUM_REQ_QUEUES, 4);
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_SEG_MAX, VIOSCSI_SEG_MAX, 4);
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_MAX_SECTORS, vioscsi->max_xfer, 4);
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_CMD_PER_LUN,
+	    VIOSCSI_CMD_PER_LUN, 4);
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_SENSE_SIZE, VIOSCSI_SENSE_LEN, 4);
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_CDB_SIZE, VIOSCSI_CDB_LEN, 4);
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_MAX_TARGET, VIOSCSI_MAX_TARGET, 2);
+	VIOSCSI_CFG_PUT(VIRTIO_SCSI_CONFIG_MAX_LUN, VIOSCSI_MAX_LUN, 4);
+#undef VIOSCSI_CFG_PUT
+
+	for (i = 0; i < sz; i++)
+		res |= (uint32_t)cfg[reg + i] << (i * 8);
 
 	return (res);
 }
@@ -2438,7 +2455,6 @@ vioscsi_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 		    __func__, vq_idx, req.id, req.lun[0], req.lun[1],
 		    req.lun[2], req.lun[3],req.cdb[0],
 		    vioscsi_op_names(req.cdb[0]));
-
 		/* opcode is first byte */
 		switch (req.cdb[0]) {
 		case TEST_UNIT_READY:
@@ -2503,11 +2519,9 @@ vioscsi_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 			    &acct);
 			break;
 		default:
-			log_warnx("%s: unsupported opcode 0x%02x,%s",
+			log_debug("%s: unsupported opcode 0x%02x,%s",
 			    __func__, req.cdb[0], vioscsi_op_names(req.cdb[0]));
-			/* Move ring indexes */
-			vioscsi_next_ring_item(vq_info, acct.avail, acct.used,
-			    acct.req_desc, acct.req_idx);
+			ret = vioscsi_handle_unsupported(dev, vq_info, &acct);
 			break;
 		}
 next_msg:

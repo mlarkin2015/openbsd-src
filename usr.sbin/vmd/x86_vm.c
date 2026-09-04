@@ -37,6 +37,7 @@
 #include "acpi.h"
 #include "atomicio.h"
 #include "fw_cfg.h"
+#include "hpet.h"
 #include "i8042.h"
 #include "i8253.h"
 #include "i8259.h"
@@ -88,7 +89,7 @@ static int	loadfile_bios(gzFile, off_t, struct vcpu_reg_state *);
 static int	loadfile_uefi(gzFile, int, off_t,
     struct vcpu_reg_state *);
 static int	uefi_flash_init(int);
-static int	uefi_flash_mmio(uint32_t, int, uint64_t, uint64_t *);
+static int	uefi_flash_mmio(uint32_t, int, paddr_t, uint8_t, uint64_t *);
 static int	vcpu_exit_eptviolation(struct vm_run_params *);
 static int	vcpu_exit_avic(struct vm_run_params *);
 static int	vcpu_exit_x2apic(struct vm_run_params *);
@@ -423,7 +424,8 @@ uefi_flash_init(int fd)
 }
 
 static int
-uefi_flash_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
+uefi_flash_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint8_t size,
+    uint64_t *data)
 {
 	uint8_t erased[VM_UEFI_FLASH_BLOCK_SIZE];
 	uint8_t value;
@@ -433,6 +435,7 @@ uefi_flash_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
 	int error = 0;
 
 	(void)vcpu_id;
+	(void)size;
 	off = addr - (GB(4) - VM_UEFI_FIRMWARE_SIZE);
 	if (off < 0 || off >= uefi_flash.uf_size)
 		return (EINVAL);
@@ -667,6 +670,7 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	i82093aa_init(vmc->vmc_ncpus);
 	for (i = 0; i < vmc->vmc_ncpus; i++)
 		i82489dx_init(i);
+	hpet_init(vm->vm_vmmid);
 
 	acpi_pm1_init();
 	for (i = VMD_PM1A_EVT_BASE;
@@ -675,6 +679,9 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 	for (i = VMD_PM1A_CNT_BASE;
 	    i < VMD_PM1A_CNT_BASE + VMD_PM1A_CNT_LEN; i++)
 		ioports_map[i] = vcpu_exit_acpi_pm1;
+	for (i = VMD_PM_TMR_BASE;
+	    i < VMD_PM_TMR_BASE + VMD_PM_TMR_LEN; i++)
+		ioports_map[i] = vcpu_exit_acpi_pm_timer;
 
 	acpi_init(vmc->vmc_ncpus);
 
@@ -701,6 +708,7 @@ void
 pause_vm_md(struct vmd_vm *vm)
 {
 	i8253_stop();
+	hpet_stop();
 	mc146818_stop();
 	ns8250_stop();
 	virtio_stop(vm);
@@ -710,6 +718,7 @@ void
 unpause_vm_md(struct vmd_vm *vm)
 {
 	i8253_start();
+	hpet_start();
 	mc146818_start();
 	ns8250_start();
 	virtio_start(vm);
@@ -939,6 +948,7 @@ vcpu_exit(struct vm_run_params *vrp)
 	switch (vrp->vrp_exit_reason) {
 	case VMX_EXIT_INT_WINDOW:
 	case SVM_VMEXIT_VINTR:
+	case VM_EXIT_CR8:
 	case VMX_EXIT_CPUID:
 	case VMX_EXIT_EXTINT:
 	case SVM_VMEXIT_INTR:
@@ -1022,9 +1032,6 @@ vcpu_exit_eptviolation(struct vm_run_params *vrp)
 		break;
 
 	case VEE_FAULT_MMIO_ASSIST:
-		log_debug("%s: EPT violation, mmio assist requested: "
-		    "rip=0x%llx", __progname, ve->vrs.vrs_gprs[VCPU_REGS_RIP]);
-
 		/* Intel VMX might give us the length of the instruction. */
 		if (ve->vee.vee_insn_info & VEE_LEN_VALID)
 			len = ve->vee.vee_insn_len;
@@ -1362,8 +1369,6 @@ vcpu_assert_irq(uint32_t vmm_id, uint32_t vcpu_id, int irq)
 	i82093aa_assert_pin(irq);
 
 	if (intr_pending(vcpu_id)) {
-		log_debug("%s: interrupt pending", __func__);
-
 		if (vcpu_intr(vmm_id, vcpu_id, 1))
 			fatalx("%s: can't assert INTR", __func__);
 
@@ -1660,21 +1665,15 @@ intr_ack(int vcpu_id)
 	/* XXX select active interrupt controller */
 	int vec;
 
-	log_debug("%s: acking IRQ vcpu id %d", __func__, vcpu_id);
-
 	if (!i82489dx_hw_accel(vcpu_id)) {
 		vec = i82489dx_ack(vcpu_id);
-		if (vec != 0xFFFF) {
-			log_debug("%s: LAPIC took the IRQ", __func__);
+		if (vec != 0xFFFF)
 			return vec;
-		}
 	}
 
 	if (i82489dx_enabled(vcpu_id) &&
 	    !i82489dx_extint_enabled(vcpu_id))
 		return 0xFFFF;
-
-	log_debug("%s: PIC took the IRQ", __func__);
 
 	vec = i8259_ack();
 	if (vec == 0)

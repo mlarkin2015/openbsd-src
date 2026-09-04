@@ -36,7 +36,7 @@ write_reg(uint32_t vcpu, uint16_t reg, uint32_t value)
 {
 	uint64_t data = value;
 
-	assert(i82489dx_mmio(vcpu, MMIO_DIR_WRITE, LAPIC_BASE + reg,
+	assert(i82489dx_mmio(vcpu, MMIO_DIR_WRITE, LAPIC_BASE + reg, 4,
 	    &data) == 0);
 }
 
@@ -45,7 +45,7 @@ read_reg(uint32_t vcpu, uint16_t reg)
 {
 	uint64_t data = 0;
 
-	assert(i82489dx_mmio(vcpu, MMIO_DIR_READ, LAPIC_BASE + reg,
+	assert(i82489dx_mmio(vcpu, MMIO_DIR_READ, LAPIC_BASE + reg, 4,
 	    &data) == 0);
 	return ((uint32_t)data);
 }
@@ -73,10 +73,10 @@ write_ioapic(uint32_t reg, uint32_t value)
 	uint64_t data = reg;
 
 	assert(i82093aa_mmio(0, MMIO_DIR_WRITE,
-	    IOAPIC_BASE_DEFAULT + IOAPIC_REG, &data) == 0);
+	    IOAPIC_BASE_DEFAULT + IOAPIC_REG, 4, &data) == 0);
 	data = value;
 	assert(i82093aa_mmio(0, MMIO_DIR_WRITE,
-	    IOAPIC_BASE_DEFAULT + IOAPIC_DATA, &data) == 0);
+	    IOAPIC_BASE_DEFAULT + IOAPIC_DATA, 4, &data) == 0);
 }
 
 static void
@@ -121,6 +121,15 @@ main(void)
 	assert(vector_targets[1] == 0);
 	assert(last_vector == 0x46);
 
+	/* Vectors 0x10-0x1f are valid; only exception vectors are reserved. */
+	write_reg(0, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
+	i82489dx_vector_irq(0, 0, 0x1f, 0);
+	assert(read_reg(0, LAPIC_IRR) == (1U << 31));
+	assert(i82489dx_ack(0) == 0x1f);
+	eoi(0);
+	i82489dx_vector_irq(0, 0, 0x0f, 0);
+	assert(read_reg(0, LAPIC_IRR) == 0);
+
 	/* INIT all-excluding-self, followed by the architectural deassert. */
 	write_reg(0, LAPIC_ICRLO, LAPIC_DEST_ALLEXCL |
 	    LAPIC_DLMODE_INIT | LAPIC_LVL_TRIG | LAPIC_LVL_ASSERT);
@@ -152,8 +161,8 @@ main(void)
 
 	/* Diagnostic counters cover the same MMIO and fixed-IPI operations. */
 	i82489dx_stats_snapshot(&stats);
-	assert(stats.mmio_reads == 4);
-	assert(stats.mmio_writes == 9);
+	assert(stats.mmio_reads == 6);
+	assert(stats.mmio_writes == 11);
 	assert(stats.icr_writes == 6);
 	assert(stats.ipi_targets == 2);
 
@@ -280,6 +289,13 @@ main(void)
 	write_reg(1, LAPIC_TPRI, 0);
 	write_reg(2, LAPIC_TPRI, 0);
 
+	/* CR8 exposes only the task-priority class. */
+	write_reg(1, LAPIC_TPRI, 0x2b);
+	assert(i82489dx_get_cr8(1) == 2);
+	i82489dx_set_cr8(1, 4);
+	assert(read_reg(1, LAPIC_TPRI) == 0x40);
+	write_reg(1, LAPIC_TPRI, 0);
+
 	/* Cluster logical mode matches both cluster and local-ID mask. */
 	write_reg(1, LAPIC_DFR, 0);
 	write_reg(2, LAPIC_DFR, 0);
@@ -301,6 +317,22 @@ mmio_dev_add(paddr_t start, paddr_t end, mmio_dev_fn_t fn)
 	(void)start;
 	(void)end;
 	(void)fn;
+	return (0);
+}
+
+int
+intr_pending(int vcpu_id)
+{
+	(void)vcpu_id;
+	return (0);
+}
+
+int
+vcpu_intr(uint32_t vmid, uint32_t target, uint8_t level)
+{
+	(void)vmid;
+	(void)target;
+	(void)level;
 	return (0);
 }
 

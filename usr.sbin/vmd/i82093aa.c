@@ -40,39 +40,10 @@ static struct i82093aa ioapic = {
 	.mtx = PTHREAD_MUTEX_INITIALIZER
 };
 
-static void	i82093aa_decode_redent(uint32_t);
 static void	i82093aa_evaluate_pin(uint8_t);
 static int	i82093aa_deliver(uint8_t, int, int, uint8_t, int);
 static void	i82093aa_regsel(int, uint64_t *);
 static void	i82093aa_winop(int, uint64_t *);
-
-static void
-i82093aa_decode_redent(uint32_t reg)
-{
-	uint8_t pin, dest, delmod, vector;
-	uint32_t lo, hi;
-
-	if (reg < I82093AA_REDTBL0_LO || reg > I82093AA_REDTBL23_HI) {
-		log_warnx("%s: impossible reg 0x%x", __func__, reg);
-		return;
-	}
-
-	pin = (reg - I82093AA_REDTBL0_LO) / 2;
-	lo = ioapic.redtbl[pin * 2];
-	hi = ioapic.redtbl[pin * 2 + 1];
-	dest = (hi & IOAPIC_REDHI_DEST_MASK) >> IOAPIC_REDHI_DEST_SHIFT;
-	delmod = (lo & IOAPIC_REDLO_DEL_MASK) >> IOAPIC_REDLO_DEL_SHIFT;
-	vector = lo & IOAPIC_REDLO_VECTOR_MASK;
-
-	log_debug("%s: pin %u %s write: hi=0x%08x lo=0x%08x "
-	    "dest=%u/%s delivery=%u vector=%u %s/%s %s rirr=%u",
-	    __func__, pin, reg & 1 ? "high" : "low", hi, lo, dest,
-	    lo & IOAPIC_REDLO_DSTMOD ? "logical" : "physical", delmod,
-	    vector, lo & IOAPIC_REDLO_LEVEL ? "level" : "edge",
-	    lo & IOAPIC_REDLO_ACTLO ? "active-low" : "active-high",
-	    lo & IOAPIC_REDLO_MASK ? "masked" : "unmasked",
-	    !!(lo & IOAPIC_REDLO_RIRR));
-}
 
 static void
 i82093aa_winop(int dir, uint64_t *data)
@@ -133,7 +104,6 @@ i82093aa_winop(int dir, uint64_t *data)
 				d &= IOAPIC_REDHI_DEST_MASK;
 			ioapic.redtbl[idx] = d;
 
-			i82093aa_decode_redent(ioapic.reg);
 			i82093aa_evaluate_pin(pin);
 			break;
 		default:
@@ -168,12 +138,11 @@ i82093aa_regsel(int dir, uint64_t *data)
 }
 
 int
-i82093aa_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint64_t *data)
+i82093aa_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint8_t size,
+    uint64_t *data)
 {
-	log_debug("%s: vcpu=%u dir=%d addr=0x%lx data=0x%llx", __func__,
-	    vcpu_id, dir, addr,
-	    *data);
-
+	(void)vcpu_id;
+	(void)size;
 	if (addr == (IOAPIC_BASE_DEFAULT + IOAPIC_REG)) {
 		i82093aa_regsel(dir, data);
 	} else if (addr == (IOAPIC_BASE_DEFAULT + IOAPIC_DATA)) {
@@ -202,7 +171,7 @@ i82093aa_init(int numcpus)
 		ioapic.last_level[pin] = 0;
 	}
 	mmio_dev_add(IOAPIC_BASE_DEFAULT, IOAPIC_BASE_DEFAULT + 0xFFFF,
-	    (mmio_dev_fn_t)i82093aa_mmio);
+	    i82093aa_mmio);
 }
 
 void
@@ -212,7 +181,6 @@ i82093aa_assert_pin(uint8_t pin)
 		log_warnx("%s: invalid pin %u", __func__, pin);
 		return;
 	}
-	log_debug("%s: asserting pin %u", __func__, pin);
 	pthread_mutex_lock(&ioapic.mtx);
 	ioapic.pin_level[pin] = 1;
 	i82093aa_evaluate_pin(pin);
@@ -226,7 +194,6 @@ i82093aa_deassert_pin(uint8_t pin)
 		log_warnx("%s: invalid pin %u", __func__, pin);
 		return;
 	}
-	log_debug("%s: deasserting pin %u", __func__, pin);
 	pthread_mutex_lock(&ioapic.mtx);
 	ioapic.pin_level[pin] = 0;
 	i82093aa_evaluate_pin(pin);
@@ -289,7 +256,7 @@ i82093aa_deliver(uint8_t dest, int dest_mode, int delivery_mode,
 		    delivery_mode);
 		return 0;
 	}
-	if (vector < 32)
+	if (vector < 16)
 		return 0;
 
 	targets = i82489dx_targets(dest, dest_mode);
@@ -303,9 +270,6 @@ i82093aa_deliver(uint8_t dest, int dest_mode, int delivery_mode,
 			ioapic.arb_next = 0;
 	}
 
-	log_debug("%s: vector %u to %s destination 0x%x, targets 0x%llx",
-	    __func__, vector, dest_mode ? "logical" : "physical", dest,
-	    (unsigned long long)targets);
 	for (i = 0; i < ioapic.ncpus; i++) {
 		if ((targets & (1ULL << i)) == 0 || !i82489dx_enabled(i))
 			continue;
@@ -322,7 +286,6 @@ i82093aa_eoi(int vector)
 	uint8_t pin;
 	uint64_t ent;
 
-	log_debug("%s: EOI for vector %d", __func__, vector);
 	pthread_mutex_lock(&ioapic.mtx);
 
 	for (pin = 0; pin < I82093AA_PIN_COUNT; pin++) {
@@ -344,4 +307,18 @@ i82093aa_eoi(int vector)
 	}
 
 	pthread_mutex_unlock(&ioapic.mtx);
+}
+
+uint64_t
+i82093aa_redirection(uint8_t pin)
+{
+	uint64_t ent = 0;
+
+	if (pin >= I82093AA_PIN_COUNT)
+		return 0;
+	pthread_mutex_lock(&ioapic.mtx);
+	ent = ioapic.redtbl[pin * 2] |
+	    ((uint64_t)ioapic.redtbl[pin * 2 + 1] << 32);
+	pthread_mutex_unlock(&ioapic.mtx);
+	return ent;
 }

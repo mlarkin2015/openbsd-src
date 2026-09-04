@@ -113,7 +113,8 @@ What does **not** exist (gaps that gate Windows):
 | Minimal DSDT, optional, no _OSC/HPET or PM timer | Device discovery/power management limitations |
 | UEFI lacks a graphical host path | OVMF boots, but its GOP framebuffer cannot yet be viewed |
 | No Hyper-V TLFS interface | Windows runs unenlightened (or refuses some features) |
-| No TPM 2.0 | Win11 installer check fails |
+| No TPM 2.0 | Win11 installer hardware check fails |
+| OVMF built without Secure Boot support | Win11 installer hardware check fails; UEFI alone is insufficient |
 
 ## Design decisions to make first
 
@@ -128,8 +129,11 @@ What does **not** exist (gaps that gate Windows):
    devices and inject the signed Windows virtio drivers into `boot.wim` and
    `install.wim`.  A second virtio-scsi driver ISO cannot bootstrap its own
    controller.  AHCI/ATAPI or NVMe remains a later compatibility project.
-4. Secure Boot: defer (Win11 installs with SB off). TPM: implement after core
-   platform works; it gates Win11 install checks only.
+4. Secure Boot and TPM 2.0 remain deferred until the core Windows 10 platform
+   works.  Both are independent requirements for a supported Windows 11 VM;
+   UEFI alone does not satisfy the installer hardware checks.  An unsupported
+   installer bypass is useful only for development and is not a completion
+   criterion.
 
 ## Graphical console decisions (2026-09)
 
@@ -264,14 +268,22 @@ enlightened timers/EOI.
 
 ### Phase 2 — Windows 11 requirements
 
-1. TPM 2.0: ACPI `_HID MSFT0101` + TIS MMIO @0xFED40000 + TPM2 table
-   (corrected PLAN-005); minimal command subset using libc SHA/libcrypto;
-   state persisted by parent process.
-2. **Complete:** MSI-X support in `virtio.c` + per-device vectors (corrected
+1. [ ] **vTPM 2.0**: ACPI `_HID MSFT0101` + TIS MMIO @0xFED40000 + TPM2
+   table (corrected PLAN-005); provide the command set required by Windows,
+   isolate the software-TPM implementation from the VM process, and persist
+   private TPM state per VM through the privileged parent or a dedicated
+   subprocess.
+2. [ ] **Secure Boot**: build an OVMF variant with Secure Boot and
+   authenticated-variable support; provision Microsoft-compatible keys in a
+   reproducible template; preserve each VM's key databases in its existing
+   `efivars` store; and validate signed boot, db/dbx updates and recovery from
+   malformed variable state.  Do not require host firmware Secure Boot or a
+   host TPM—the guest-facing implementations are virtual.
+3. **Complete:** MSI-X support in `virtio.c` + per-device vectors (corrected
    PLAN-003 §3.2), including MSI fallback and guest boot validation.
-3. Config validation warnings (PLAN-007 §7.2), vm.conf(5) docs, qcow2 conversion
+4. Config validation warnings (PLAN-007 §7.2), vm.conf(5) docs, qcow2 conversion
    guidance instead of vhdx support.
-4. Optional here: minimal xHCI with tablet device replacing/augmenting i8042.
+5. Optional here: minimal xHCI with tablet device replacing/augmenting i8042.
 
 **Milestone M2**: Windows 11 installs and passes hardware checks.
 
