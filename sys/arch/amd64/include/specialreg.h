@@ -703,6 +703,7 @@
 #define MSR_SYS_CFG	0xc0010010	/* System Configuration */
 #define MSR_PATCH_LOADER	0xc0010020
 #define MSR_INT_PEN_MSG	0xc0010055	/* Interrupt pending message */
+#define MSR_VM_CR	0xc0010114	/* SVM control */
 
 #define MSR_FP_CFG	0xc0011028	/* Floating Point Configuration */
 #define FP_CFG_9	(1 << 9)	/* FP-DSS chickenbit */
@@ -1455,6 +1456,7 @@
 #define MSR_AMD_VM_HSAVE_PA		0xc0010117
 #define CPUID_AMD_SVM_CAP		0x8000000A
 #define AMD_SVM_NESTED_PAGING_CAP	(1 << 0)
+#define AMD_SVM_NRIPS_CAP		(1 << 3)
 #define AMD_SVM_VMCB_CLEAN_CAP		(1 << 5)
 #define AMD_SVM_FLUSH_BY_ASID_CAP	(1 << 6)
 #define AMD_SVM_DECODE_ASSIST_CAP	(1 << 7)
@@ -1547,6 +1549,8 @@
 #define SVM_INTERCEPT_CR13_WRITE	(1UL << 29)
 #define SVM_INTERCEPT_CR14_WRITE	(1UL << 30)
 #define SVM_INTERCEPT_CR15_WRITE	(1UL << 31)
+#define SVM_EXITINFO_CR_GPR_MASK	0xf
+#define SVM_EXITINFO_CR_VALID		(1ULL << 63)
 #define SVM_INTERCEPT_DR0_READ		(1UL << 0)
 #define SVM_INTERCEPT_DR1_READ		(1UL << 1)
 #define SVM_INTERCEPT_DR2_READ		(1UL << 2)

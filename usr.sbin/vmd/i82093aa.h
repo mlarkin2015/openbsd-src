@@ -76,10 +76,11 @@
 #define I82093AA_REDTBL23_LO		0x3E
 #define I82093AA_REDTBL23_HI		0x3F
 
-int i82093aa_mmio(uint32_t, int, paddr_t, uint64_t *);
+int i82093aa_mmio(uint32_t, int, paddr_t, uint8_t, uint64_t *);
 void i82093aa_init(int);
 void i82093aa_assert_pin(uint8_t);
 void i82093aa_deassert_pin(uint8_t);
 void i82093aa_eoi(int);
+uint64_t i82093aa_redirection(uint8_t);
 
 #endif /* !_I82093AA_H_ */

@@ -22,6 +22,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 
+#include "../../sys/arch/amd64/include/vmmvar.h"
 #include <dev/vmm/vmm.h>
 
 #include <machine/i82489reg.h>
@@ -41,10 +42,16 @@
 
 #include "atomicio.h"
 #include "display.h"
+#include "acpi.h"
+#include "i82093aa.h"
+#include "i8259.h"
 #include "pci.h"
 #include "virtio.h"
 #include "vmd.h"
 #include "i82489dx.h"
+#if defined(__amd64__) || defined(__i386__)
+#include "x86_vm.h"
+#endif
 
 #define MMIO_NOTYET 0
 
@@ -105,6 +112,7 @@ enum vm_stat_counter {
 	VMSTAT_EXIT_IO,
 	VMSTAT_EXIT_MMIO,
 	VMSTAT_EXIT_INTRWIN,
+	VMSTAT_EXIT_CR8,
 	VMSTAT_EXIT_AVIC,
 	VMSTAT_EXIT_AVIC_IPI_NOTRUN,
 	VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE,
@@ -150,6 +158,8 @@ vm_stats_count_exit(struct vm_run_params *vrp)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_MMIO);
 	else if (reason == VMX_EXIT_INT_WINDOW || reason == SVM_VMEXIT_VINTR)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_INTRWIN);
+	else if (reason == VM_EXIT_CR8)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_CR8);
 	else if (reason == SVM_AVIC_INCOMPLETE_IPI) {
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC);
 		switch (vea->vea_ipi_failure) {
@@ -209,7 +219,8 @@ vm_stats_report(int fd, short event, void *arg)
 		}
 		if (enabled) {
 			log_info("stats %ds vcpu%zu: run=%llu none=%llu io=%llu "
-			    "mmio=%llu intrwin=%llu avic=%llu x2apic=%llu "
+			    "mmio=%llu intrwin=%llu cr8-lower=%llu avic=%llu "
+			    "x2apic=%llu "
 			    "hlt=%llu other=%llu "
 			    "inject=%llu intr-assert=%llu intr-deassert=%llu",
 			    VM_STATS_INTERVAL, i,
@@ -218,6 +229,7 @@ vm_stats_report(int fd, short event, void *arg)
 			    (unsigned long long)delta[VMSTAT_EXIT_IO],
 			    (unsigned long long)delta[VMSTAT_EXIT_MMIO],
 			    (unsigned long long)delta[VMSTAT_EXIT_INTRWIN],
+			    (unsigned long long)delta[VMSTAT_EXIT_CR8],
 			    (unsigned long long)delta[VMSTAT_EXIT_AVIC],
 			    (unsigned long long)delta[VMSTAT_EXIT_X2APIC],
 			    (unsigned long long)delta[VMSTAT_EXIT_HLT],
@@ -1323,6 +1335,9 @@ vcpu_run_loop(void *arg)
 
 		/* Still more interrupts pending? */
 		vrp->vrp_intr_pending = intr_pending(n);
+		if (!i82489dx_hw_accel(n))
+			vrp->vrp_exit->vrs.vrs_crs[VCPU_REGS_CR8] =
+			    i82489dx_get_cr8(n);
 
 		/* Pair a later HLT exit with wakeups racing this guest entry. */
 		mutex_lock(&vcpu_run_mtx[n]);
@@ -1336,6 +1351,9 @@ vcpu_run_loop(void *arg)
 			    __func__, current_vm->vm_vmid, n);
 			break;
 		}
+		if (!i82489dx_hw_accel(n))
+			i82489dx_set_cr8(n,
+			    vrp->vrp_exit->vrs.vrs_crs[VCPU_REGS_CR8]);
 		vm_stats_count_exit(vrp);
 
 		/* INIT supersedes any ordinary exit which raced with its kick. */
@@ -1368,8 +1386,14 @@ vcpu_run_loop(void *arg)
 		}
 	}
 
-	if (ret != 0)
+	if (ret != 0) {
+		log_info("%s: vcpu %u stopped with status %lld after exit "
+		    "0x%x rip 0x%llx", __func__, n, (long long)ret,
+		    vrp->vrp_exit_reason,
+		    (unsigned long long)vrp->vrp_exit->vrs.vrs_gprs[
+		    VCPU_REGS_RIP]);
 		vcpu_stop_peers(n);
+	}
 
 	mutex_lock(&vm_mtx);
 	vcpu_done[n] = 1;

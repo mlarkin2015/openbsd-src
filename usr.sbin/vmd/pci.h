@@ -49,7 +49,8 @@
 typedef int (*pci_cs_fn_t)(int dir, uint8_t reg, uint32_t *data);
 typedef int (*pci_iobar_fn_t)(int dir, uint16_t reg, uint32_t *data, uint8_t *,
     void *, uint8_t);
-typedef int (*pci_mmiobar_fn_t)(uint32_t, int, uint32_t, uint64_t *, void *);
+typedef int (*pci_mmiobar_fn_t)(uint32_t, int, uint32_t, uint8_t,
+    uint64_t *, void *);
 
 struct pci_msix_entry {
 	uint64_t pme_addr;
@@ -146,7 +147,7 @@ uint8_t pci_get_dev_irq(uint8_t);
 void pci_handle_address_reg(struct vm_run_params *);
 void pci_handle_data_reg(struct vm_run_params *);
 uint8_t pci_handle_io(struct vm_run_params *);
-int pci_handle_mmio(uint32_t, int, uint64_t, uint64_t *);
+int pci_handle_mmio(uint32_t, int, paddr_t, uint8_t, uint64_t *);
 #endif /* __amd64__ */
 
 #endif /* _PCI_H_ */

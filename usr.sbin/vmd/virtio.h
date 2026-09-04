@@ -244,6 +244,8 @@ struct virtio_vq_info {
 
 	/* MSI-X table entry selected by the guest for this virtqueue. */
 	uint16_t q_msix_vector;
+	uint16_t q_msix_vector_staged;
+	uint8_t q_msix_vector_bytes;
 
 	uint8_t vq_enabled;
 };
@@ -406,6 +408,8 @@ struct virtio_dev {
 
 	uint8_t		isr;			/* isr status register [rw] */
 	uint8_t		status;			/* device status register [rw] */
+	uint16_t	config_msix_vector_staged;
+	uint8_t		config_msix_vector_bytes;
 	uint64_t	device_feature;		/* device features [r] */
 	uint64_t 	driver_feature;		/* driver features [rw] */
 

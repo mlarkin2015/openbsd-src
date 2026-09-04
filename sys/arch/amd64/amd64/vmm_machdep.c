@@ -103,6 +103,7 @@ int svm_vmgexit_sync_guest(struct vcpu *);
 int svm_handle_vmgexit(struct vcpu *);
 int svm_handle_efercr(struct vcpu *, uint64_t);
 int svm_get_iflag(struct vcpu *, uint64_t);
+int svm_irqready(struct vcpu *, uint64_t);
 int svm_handle_msr(struct vcpu *);
 int vmm_handle_xsetbv(struct vcpu *, uint64_t *);
 int vmx_handle_xsetbv(struct vcpu *);
@@ -110,6 +111,10 @@ int svm_handle_xsetbv(struct vcpu *);
 int vmm_handle_cpuid(struct vcpu *);
 int vmx_handle_rdmsr(struct vcpu *);
 int vmx_handle_wrmsr(struct vcpu *);
+static int vmm_handle_mtrr_msr(struct vcpu *, uint32_t, int, uint64_t *);
+static int vmm_handle_mce_msr(struct vcpu *, uint32_t, int, uint64_t *);
+static int vmm_handle_mca_msr(struct vcpu *, uint32_t, int, uint64_t *);
+static void vmm_reset_emulated_msrs(struct vcpu *);
 int vmx_handle_cr0_write(struct vcpu *, uint64_t);
 int vmx_handle_cr4_write(struct vcpu *, uint64_t);
 int vmx_handle_cr(struct vcpu *);
@@ -169,6 +174,7 @@ static int svm_avic_has_pending(struct vcpu *);
 static void svm_avic_hlt_prepare(struct vcpu *);
 static int svm_avic_hlt_wait(struct vcpu *);
 static int svm_x2avic_wake_ipi_targets(struct vcpu *, uint64_t, uint8_t);
+static void svm_cr8_write_intercept(struct vcpu *, int);
 static void svm_avic_set_mode(struct vcpu *, uint8_t);
 static void svm_avic_export_state(struct vcpu *, uint32_t *);
 static void svm_avic_import_state(struct vcpu *, const uint32_t *, uint8_t,
@@ -1355,6 +1361,7 @@ vcpu_readregs_svm(struct vcpu *vcpu, uint64_t regmask,
 		crs[VCPU_REGS_CR0] = vmcb->v_cr0;
 		crs[VCPU_REGS_CR3] = vmcb->v_cr3;
 		crs[VCPU_REGS_CR4] = vmcb->v_cr4;
+		crs[VCPU_REGS_CR8] = vmcb->v_tpr & 0xf;
 		crs[VCPU_REGS_CR2] = vcpu->vc_gueststate.vg_cr2;
 		crs[VCPU_REGS_XCR0] = vcpu->vc_gueststate.vg_xcr0;
 	}
@@ -1632,6 +1639,8 @@ vcpu_writeregs_svm(struct vcpu *vcpu, uint64_t regmask,
 		vmcb->v_cr0 = crs[VCPU_REGS_CR0];
 		vmcb->v_cr3 = crs[VCPU_REGS_CR3];
 		vmcb->v_cr4 = crs[VCPU_REGS_CR4];
+		vmcb->v_tpr = crs[VCPU_REGS_CR8] & 0xf;
+		svm_set_dirty(vcpu, SVM_CLEANBITS_TPR);
 		vcpu->vc_gueststate.vg_cr2 = crs[VCPU_REGS_CR2];
 		vcpu->vc_gueststate.vg_xcr0 = crs[VCPU_REGS_XCR0];
 	}
@@ -1812,6 +1821,7 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 		    (vcpu->vc_svm_avic_cap & VMM_AVIC_XAPIC) ?
 		    VMM_AVIC_XAPIC : 0);
 	}
+	svm_cr8_write_intercept(vcpu, vcpu->vc_svm_avic_mode == 0);
 
 	/* PAT */
 	vmcb->v_g_pat = PATENTRY(0, PAT_WB) | PATENTRY(1, PAT_WC) |
@@ -2957,6 +2967,7 @@ vcpu_reset_regs(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	if (ret == 0) {
 		memset(&vcpu->vc_exit, 0, sizeof(vcpu->vc_exit));
 		vcpu->vc_gueststate.vg_exit_reason = 0;
+		vmm_reset_emulated_msrs(vcpu);
 		vcpu->vc_apicbase = LAPIC_BASE | APICBASE_GLOBAL_ENABLE;
 		if (vcpu->vc_id == 0)
 			vcpu->vc_apicbase |= APICBASE_BSP;
@@ -3097,6 +3108,27 @@ svm_avic_reset_vlapic(struct vcpu *vcpu)
 }
 
 static void
+svm_cr8_write_intercept(struct vcpu *vcpu, int enable)
+{
+	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
+	uint32_t old;
+
+	/* Post-write CR traps are SEV-ES-only; use the ordinary intercept. */
+	if (vcpu->vc_seves ||
+	    !curcpu()->ci_vmm_cap.vcc_svm.svm_decode_assist ||
+	    !curcpu()->ci_vmm_cap.vcc_svm.svm_nrips)
+		enable = 0;
+
+	old = vmcb->v_cr_rw;
+	if (enable)
+		vmcb->v_cr_rw |= SVM_INTERCEPT_CR8_WRITE;
+	else
+		vmcb->v_cr_rw &= ~SVM_INTERCEPT_CR8_WRITE;
+	if (old != vmcb->v_cr_rw)
+		svm_set_dirty(vcpu, SVM_CLEANBITS_I);
+}
+
+static void
 svm_avic_set_mode(struct vcpu *vcpu, uint8_t mode)
 {
 	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
@@ -3115,6 +3147,7 @@ svm_avic_set_mode(struct vcpu *vcpu, uint8_t mode)
 		vmcb->v_intr_masking |= SVM_INTR_MASKING_AVIC_ENABLE;
 	if (mode == VMM_AVIC_X2APIC)
 		vmcb->v_intr_masking |= SVM_INTR_MASKING_X2AVIC_ENABLE;
+	svm_cr8_write_intercept(vcpu, mode == 0);
 	WRITE_ONCE(vcpu->vc_svm_avic_mode, mode);
 	svm_set_dirty(vcpu, SVM_CLEANBITS_AVIC | SVM_CLEANBITS_TPR);
 }
@@ -3411,7 +3444,7 @@ svm_avic_inject(struct vcpu *vcpu, uint8_t vector, int level)
 	uint32_t bit;
 	uint16_t offset;
 
-	if (READ_ONCE(vcpu->vc_svm_avic_mode) == 0 || vector < 32)
+	if (READ_ONCE(vcpu->vc_svm_avic_mode) == 0 || vector < 16)
 		return (EINVAL);
 
 	offset = (vector / 32) << 4;
@@ -3458,7 +3491,7 @@ svm_avic_eoi(struct vcpu *vcpu, uint8_t vector)
 	uint16_t offset;
 	int i;
 
-	if (vector < 32)
+	if (vector < 16)
 		return;
 
 	offset = (vector / 32) << 4;
@@ -3711,6 +3744,7 @@ vcpu_init(struct vcpu *vcpu, struct vm_create_params *vcp)
 
 	/* Shadow PAT MSR, starting with host's value. */
 	vcpu->vc_shadow_pat = rdmsr(MSR_CR_PAT);
+	vmm_reset_emulated_msrs(vcpu);
 
 	if (vmm_softc->mode == VMM_MODE_EPT)
 		ret = vcpu_init_vmx(vcpu);
@@ -4422,7 +4456,7 @@ vmm_translate_gva(struct vcpu *vcpu, uint64_t va, uint64_t *pa, int mode)
 int
 vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 {
-	int ret = 0, exitinfo;
+	int inject_blocked = 0, ret = 0, exitinfo;
 	struct region_descriptor gdt;
 	struct cpu_info *ci = NULL;
 	uint64_t exit_reason, cr3, msr, insn_error;
@@ -4502,7 +4536,7 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 			return (EINVAL);
 		}
 
-		/* Interruptibility state 0x3 covers NMIs and STI */
+		/* Bits 0 and 1 block interrupts after STI and MOV SS. */
 		if (!(int_st & 0x3) && vcpu->vc_irqready) {
 			eii = (uint64_t)vcpu->vc_inject.vie_vector;
 			eii |= (1ULL << 31);	/* Valid */
@@ -4513,22 +4547,42 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 			}
 
 			vcpu->vc_inject.vie_type = VCPU_INJECT_NONE;
-		}
-	} else if (!(vcpu->vc_intr || READ_ONCE(vcpu->vc_intr_latch))) {
-		/*
-		 * Disable window exiting
-		 */
+		} else
+			inject_blocked = 1;
+	}
+
+	/*
+	 * A pending interrupt can first become visible at VMM_IOC_RUN entry, so
+	 * the post-exit logic below has not yet had an opportunity to arm
+	 * interrupt-window exiting.  Arm it before the first VM entry; otherwise
+	 * an assertion which raced vmd's snapshot, or an additional vector queued
+	 * behind the one being injected, can wait until an unrelated exit.
+	 */
+	if (inject_blocked || vcpu->vc_intr ||
+	    READ_ONCE(vcpu->vc_intr_latch)) {
 		if (vmread(VMCS_PROCBASED_CTLS, &procbased)) {
-			printf("%s: can't read procbased ctls on exit\n",
+			printf("%s: can't read procbased controls for interrupt "
+			    "window\n", __func__);
+			return (EINVAL);
+		}
+		procbased |= IA32_VMX_INTERRUPT_WINDOW_EXITING;
+		if (vmwrite(VMCS_PROCBASED_CTLS, procbased)) {
+			printf("%s: can't enable interrupt-window exiting\n",
 			    __func__);
 			return (EINVAL);
-		} else {
-			procbased &= ~IA32_VMX_INTERRUPT_WINDOW_EXITING;
-			if (vmwrite(VMCS_PROCBASED_CTLS, procbased)) {
-				printf("%s: can't write procbased ctls "
-				    "on exit\n", __func__);
-				return (EINVAL);
-			}
+		}
+	} else {
+		/* No blocked or additional interrupt remains. */
+		if (vmread(VMCS_PROCBASED_CTLS, &procbased)) {
+			printf("%s: can't read procbased controls for interrupt "
+			    "window\n", __func__);
+			return (EINVAL);
+		}
+		procbased &= ~IA32_VMX_INTERRUPT_WINDOW_EXITING;
+		if (vmwrite(VMCS_PROCBASED_CTLS, procbased)) {
+			printf("%s: can't disable interrupt-window exiting\n",
+			    __func__);
+			return (EINVAL);
 		}
 	}
 
@@ -4773,10 +4827,15 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 			 */
 			ret = vmx_handle_exit(vcpu);
 
-			if (vcpu->vc_gueststate.vg_rflags & PSL_I)
-				vcpu->vc_irqready = 1;
-			else
-				vcpu->vc_irqready = 0;
+			if (vmread(VMCS_GUEST_INTERRUPTIBILITY_ST, &int_st)) {
+				printf("%s: can't read interruptibility state\n",
+				    __func__);
+				ret = EINVAL;
+				break;
+			}
+			vcpu->vc_irqready =
+			    (vcpu->vc_gueststate.vg_rflags & PSL_I) != 0 &&
+			    (int_st & 0x3) == 0;
 
 			/*
 			 * If not ready for interrupts, but interrupts pending,
@@ -5115,6 +5174,100 @@ svm_avic_handle_exit(struct vcpu *vcpu)
 }
 
 /*
+ * Keep SVM's virtual TPR synchronized with vmd's software LAPIC.  An
+ * ordinary CR intercept happens before MOV CR8 executes; DecodeAssist names
+ * the source GPR and NRIPS supplies the following RIP.
+ */
+static int
+svm_handle_cr8_write(struct vcpu *vcpu, int *completed)
+{
+	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
+	uint64_t info, nrip, old, value;
+	uint8_t reg;
+
+	*completed = 0;
+	if (vcpu->vc_svm_avic_mode != 0 || vcpu->vc_seves ||
+	    !curcpu()->ci_vmm_cap.vcc_svm.svm_decode_assist ||
+	    !curcpu()->ci_vmm_cap.vcc_svm.svm_nrips)
+		return (EINVAL);
+
+	info = vmcb->v_exitinfo1;
+	if ((info & SVM_EXITINFO_CR_VALID) == 0)
+		return (EINVAL);
+	reg = info & SVM_EXITINFO_CR_GPR_MASK;
+	switch (reg) {
+	case VCPU_REGS_RAX:
+		value = vmcb->v_rax;
+		break;
+	case VCPU_REGS_RCX:
+		value = vcpu->vc_gueststate.vg_rcx;
+		break;
+	case VCPU_REGS_RDX:
+		value = vcpu->vc_gueststate.vg_rdx;
+		break;
+	case VCPU_REGS_RBX:
+		value = vcpu->vc_gueststate.vg_rbx;
+		break;
+	case VCPU_REGS_RSP:
+		value = vmcb->v_rsp;
+		break;
+	case VCPU_REGS_RBP:
+		value = vcpu->vc_gueststate.vg_rbp;
+		break;
+	case VCPU_REGS_RSI:
+		value = vcpu->vc_gueststate.vg_rsi;
+		break;
+	case VCPU_REGS_RDI:
+		value = vcpu->vc_gueststate.vg_rdi;
+		break;
+	case VCPU_REGS_R8:
+		value = vcpu->vc_gueststate.vg_r8;
+		break;
+	case VCPU_REGS_R9:
+		value = vcpu->vc_gueststate.vg_r9;
+		break;
+	case VCPU_REGS_R10:
+		value = vcpu->vc_gueststate.vg_r10;
+		break;
+	case VCPU_REGS_R11:
+		value = vcpu->vc_gueststate.vg_r11;
+		break;
+	case VCPU_REGS_R12:
+		value = vcpu->vc_gueststate.vg_r12;
+		break;
+	case VCPU_REGS_R13:
+		value = vcpu->vc_gueststate.vg_r13;
+		break;
+	case VCPU_REGS_R14:
+		value = vcpu->vc_gueststate.vg_r14;
+		break;
+	case VCPU_REGS_R15:
+		value = vcpu->vc_gueststate.vg_r15;
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	/* Bits 63:4 are reserved in CR8. */
+	if (value & ~0xfULL)
+		return (vmm_inject_gp(vcpu));
+	nrip = vmcb->v_nrip;
+	if (nrip <= vmcb->v_rip || nrip - vmcb->v_rip > 15)
+		return (EINVAL);
+
+	old = vmcb->v_tpr & 0xf;
+	vmcb->v_tpr = value;
+	/* The emulated instruction consumes an STI/MOV-SS interrupt shadow. */
+	vmcb->v_intr_shadow &= ~SVM_INTERRUPT_SHADOW_MASK;
+	svm_set_dirty(vcpu, SVM_CLEANBITS_TPR);
+	vcpu->vc_gueststate.vg_rip = nrip;
+	*completed = 1;
+
+	/* A lower TPR can make a software-LAPIC interrupt deliverable now. */
+	return (value < old ? EAGAIN : 0);
+}
+
+/*
  * svm_handle_exit
  *
  * Handle exits from the VM by decoding the exit reason and calling various
@@ -5132,8 +5285,13 @@ svm_handle_exit(struct vcpu *vcpu)
 	rflags = vcpu->vc_gueststate.vg_rflags;
 
 	switch (exit_reason) {
+	case SVM_VMEXIT_CR8_WRITE:
+		ret = svm_handle_cr8_write(vcpu, &update_rip);
+		if (ret == EAGAIN)
+			vcpu->vc_gueststate.vg_exit_reason = VM_EXIT_CR8;
+		break;
 	case SVM_VMEXIT_VINTR:
-		if (!svm_get_iflag(vcpu, rflags)) {
+		if (!svm_irqready(vcpu, rflags)) {
 			DPRINTF("%s: impossible interrupt window exit "
 			    "config\n", __func__);
 			ret = EINVAL;
@@ -5559,6 +5717,22 @@ svm_get_iflag(struct vcpu *vcpu, uint64_t rflags)
 }
 
 /*
+ * svm_irqready
+ *
+ * Return whether a maskable external interrupt may be injected now.  IF can
+ * be set while interrupt delivery remains blocked for one instruction after
+ * STI or a write to SS, as recorded in the VMCB interrupt-shadow bit.
+ */
+int
+svm_irqready(struct vcpu *vcpu, uint64_t rflags)
+{
+	struct vmcb		*vmcb = (struct vmcb *)vcpu->vc_control_va;
+
+	return (svm_get_iflag(vcpu, rflags) &&
+	    !(vmcb->v_intr_shadow & SVM_INTERRUPT_SHADOW_MASK));
+}
+
+/*
  * vmx_handle_exit
  *
  * Handle exits from the VM by decoding the exit reason and calling various
@@ -5680,7 +5854,7 @@ vmx_handle_exit(struct vcpu *vcpu)
 			return (EINVAL);
 		}
 
-		/* Interruptibility state 0x3 covers NMIs and STI */
+		/* Bits 0 and 1 block interrupts after STI and MOV SS. */
 		istate &= ~0x3;
 
 		if (vmwrite(VMCS_GUEST_INTERRUPTIBILITY_ST,
@@ -6907,6 +7081,157 @@ fault:
 }
 
 /*
+ * MTRRs describe the guest's intended cache types, but EPT/NPT remains the
+ * authority for the host mappings.  Keep a conventional virtual MTRR set so
+ * guests can initialize their memory-type machinery without ever changing
+ * host MTRRs.
+ */
+#define VMM_MTRR_CAP		(MTRRcap_FIXED | MTRRcap_WC | \
+				 VMM_MTRR_VAR_COUNT)
+#define VMM_MTRR_TYPE_WB	6
+#define VMM_MTRR_FIXED_WB	0x0606060606060606ULL
+#define VMM_MCG_CAP_CTL_P	(1ULL << 8)
+#define VMM_MCA_BANK_COUNT	1
+
+static int
+vmm_mtrr_fixed_index(uint32_t msr)
+{
+	if (msr == MSR_MTRRfix64K_00000)
+		return (0);
+	if (msr >= MSR_MTRRfix16K_80000 &&
+	    msr < MSR_MTRRfix16K_80000 + 2)
+		return (1 + msr - MSR_MTRRfix16K_80000);
+	if (msr >= MSR_MTRRfix4K_C0000 &&
+	    msr < MSR_MTRRfix4K_C0000 + 8)
+		return (3 + msr - MSR_MTRRfix4K_C0000);
+	return (-1);
+}
+
+static int
+vmm_handle_mtrr_msr(struct vcpu *vcpu, uint32_t msr, int write,
+    uint64_t *val)
+{
+	uint64_t *shadow;
+	int idx;
+
+	shadow = NULL;
+	if (msr >= MSR_MTRRvarBase &&
+	    msr < MSR_MTRRvarBase + VMM_MTRR_VAR_COUNT * 2)
+		shadow = &vcpu->vc_mtrr_var[msr - MSR_MTRRvarBase];
+	idx = vmm_mtrr_fixed_index(msr);
+	if (idx >= 0)
+		shadow = &vcpu->vc_mtrr_fixed[idx];
+
+	if (shadow == NULL) {
+		switch (msr) {
+		case MSR_MTRRcap:
+			if (write)
+				return (0);
+			*val = VMM_MTRR_CAP;
+			return (1);
+		case MSR_MTRRdefType:
+			shadow = &vcpu->vc_mtrr_def_type;
+			break;
+		default:
+			return (0);
+		}
+	}
+
+	if (write)
+		*shadow = *val;
+	else
+		*val = *shadow;
+	return (1);
+}
+
+/*
+ * The MCE interface controls delivery and records global machine-check state.
+ * Physical machine-check state must not be visible to a guest.
+ */
+static int
+vmm_handle_mce_msr(struct vcpu *vcpu, uint32_t msr, int write,
+    uint64_t *val)
+{
+	uint64_t *shadow;
+
+	shadow = NULL;
+	switch (msr) {
+	case MSR_MCG_CAP:
+		if (write)
+			return (0);
+		*val = VMM_MCG_CAP_CTL_P | VMM_MCA_BANK_COUNT;
+		return (1);
+	case MSR_MCG_CTL:
+		shadow = &vcpu->vc_mcg_ctl;
+		break;
+	case MSR_MCG_STATUS:
+		shadow = &vcpu->vc_mcg_status;
+		break;
+	default:
+		return (0);
+	}
+
+	if (write)
+		*shadow = *val;
+	else
+		*val = *shadow;
+	return (1);
+}
+
+/*
+ * Advertise one permanently error-free MCA bank.  The guest can configure
+ * and clear the virtual bank without observing or modifying host state.
+ */
+static int
+vmm_handle_mca_msr(struct vcpu *vcpu, uint32_t msr, int write,
+    uint64_t *val)
+{
+	uint64_t *shadow;
+
+	switch (msr) {
+	case MSR_MC0_CTL:
+		shadow = &vcpu->vc_mci_ctl;
+		break;
+	case MSR_MC0_STATUS:
+		shadow = &vcpu->vc_mci_status;
+		break;
+	case MSR_MC0_ADDR:
+		shadow = &vcpu->vc_mci_addr;
+		break;
+	case MSR_MC0_MISC:
+		shadow = &vcpu->vc_mci_misc;
+		break;
+	default:
+		return (0);
+	}
+
+	if (write)
+		*shadow = *val;
+	else
+		*val = *shadow;
+	return (1);
+}
+
+static void
+vmm_reset_emulated_msrs(struct vcpu *vcpu)
+{
+	int i;
+
+	memset(vcpu->vc_mtrr_var, 0, sizeof(vcpu->vc_mtrr_var));
+	for (i = 0; i < VMM_MTRR_FIXED_COUNT; i++)
+		vcpu->vc_mtrr_fixed[i] = VMM_MTRR_FIXED_WB;
+	vcpu->vc_mtrr_def_type = VMM_MTRR_TYPE_WB |
+	    MTRRdefType_FIXED_ENABLE | MTRRdefType_ENABLE;
+
+	vcpu->vc_mcg_ctl = ~0ULL;
+	vcpu->vc_mcg_status = 0;
+	vcpu->vc_mci_ctl = ~0ULL;
+	vcpu->vc_mci_status = 0;
+	vcpu->vc_mci_addr = 0;
+	vcpu->vc_mci_misc = 0;
+}
+
+/*
  * vmx_handle_rdmsr
  *
  * Handler for rdmsr instructions. Bitmap MSRs are allowed implicit access
@@ -6925,7 +7250,7 @@ fault:
 int
 vmx_handle_rdmsr(struct vcpu *vcpu)
 {
-	uint64_t insn_length;
+	uint64_t insn_length, val;
 	uint64_t *rax, *rdx;
 	uint64_t *rcx;
 	int ret = 0;
@@ -6961,6 +7286,13 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 		*rdx = 0;
 		break;
 	default:
+		if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 0, &val) ||
+		    vmm_handle_mce_msr(vcpu, (uint32_t)*rcx, 0, &val) ||
+		    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 0, &val)) {
+			*rax = val & 0xffffffffULL;
+			*rdx = val >> 32;
+			break;
+		}
 		if (*rcx >= MSR_X2APIC_BASE && *rcx <= MSR_X2APIC_END) {
 			ret = vmm_x2apic_msr(vcpu, *rcx, 0, 0);
 			if (ret != EAGAIN)
@@ -6968,7 +7300,7 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 			break;
 		}
 		/* Unsupported MSRs causes #GP exception, don't advance %rip */
-		printf("%s: unsupported rdmsr (msr=0x%llx), injecting #GP\n",
+		DPRINTF("%s: unsupported rdmsr (msr=0x%llx), injecting #GP\n",
 		    __func__, *rcx);
 		ret = vmm_inject_gp(vcpu);
 		return (ret);
@@ -7197,6 +7529,10 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 		    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
 		break;
 	default:
+		if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 1, &val) ||
+		    vmm_handle_mce_msr(vcpu, (uint32_t)*rcx, 1, &val) ||
+		    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 1, &val))
+			break;
 		if (*rcx >= MSR_X2APIC_BASE && *rcx <= MSR_X2APIC_END) {
 			ret = vmm_x2apic_msr(vcpu, *rcx, 1, val);
 			if (ret != EAGAIN)
@@ -7274,6 +7610,11 @@ svm_handle_msr(struct vcpu *vcpu)
 			    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
 			break;
 		default:
+			if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 1,
+			    &val) || vmm_handle_mce_msr(vcpu,
+			    (uint32_t)*rcx, 1, &val) ||
+			    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 1, &val))
+				break;
 			if (*rcx >= MSR_X2APIC_BASE &&
 			    *rcx <= MSR_X2APIC_END) {
 				ret = vmm_x2apic_msr(vcpu, *rcx, 1, val);
@@ -7293,6 +7634,7 @@ svm_handle_msr(struct vcpu *vcpu)
 		case MSR_INT_PEN_MSG:
 		case MSR_PLATFORM_ID:
 		case MSR_SYS_CFG:
+		case MSR_VM_CR:
 			/* Ignored */
 			*rax = 0;
 			*rdx = 0;
@@ -7311,6 +7653,14 @@ svm_handle_msr(struct vcpu *vcpu)
 			*rdx = 0;
 			break;
 		default:
+			if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 0,
+			    &val) || vmm_handle_mce_msr(vcpu,
+			    (uint32_t)*rcx, 0, &val) ||
+			    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 0, &val)) {
+				*rax = val & 0xffffffffULL;
+				*rdx = val >> 32;
+				break;
+			}
 			if (*rcx >= MSR_X2APIC_BASE &&
 			    *rcx <= MSR_X2APIC_END) {
 				ret = vmm_x2apic_msr(vcpu, *rcx, 0, 0);
@@ -7322,7 +7672,7 @@ svm_handle_msr(struct vcpu *vcpu)
 			 * Unsupported MSRs causes #GP exception, don't advance
 			 * %rip
 			 */
-			printf("%s: unsupported rdmsr (msr=0x%llx), "
+			DPRINTF("%s: unsupported rdmsr (msr=0x%llx), "
 			    "injecting #GP\n", __func__, *rcx);
 			ret = vmm_inject_gp(vcpu);
 			return (ret);
@@ -7798,7 +8148,12 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		break;
 	case 0x80000007:	/* apmi */
 		*rax = eax;
-		*rbx = ebx;
+		/*
+		 * Do not expose AMD MCA extensions, including Scalable MCA.
+		 * vmm provides a conventional virtual MCA bank, but not the
+		 * extended MSR space advertised by this leaf.
+		 */
+		*rbx = ebx & VMM_APMI_EBX_INCLUDE_MASK;
 		*rcx = ecx;
 		*rdx = edx & VMM_APMI_EDX_INCLUDE_MASK;
 		break;
@@ -7875,6 +8230,17 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 	uint64_t exit_reason;
 	struct schedstate_percpu *spc;
 	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
+
+	/*
+	 * With AVIC inactive, SVM virtualizes MOV CR8 in V_TPR while vmd owns
+	 * the LAPIC.  Import vmd's TPR class so MMIO TPR writes are visible to
+	 * subsequent CR8 reads; vcpu_readregs_svm() exports the reciprocal
+	 * CR8-to-TPR update on every return to vmd.
+	 */
+	if (vcpu->vc_svm_avic_mode == 0) {
+		vmcb->v_tpr = vcpu->vc_exit.vrs.vrs_crs[VCPU_REGS_CR8] & 0xf;
+		svm_set_dirty(vcpu, SVM_CLEANBITS_TPR);
+	}
 
 	/* See vcpu_run_vmx(): preserve assertions racing VMM_IOC_RUN entry. */
 	vcpu->vc_intr = vrp->vrp_intr_pending |
@@ -7971,6 +8337,25 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 		break;
 	}
 	memset(&vcpu->vc_exit, 0, sizeof(vcpu->vc_exit));
+	/*
+	 * As on VMX, a pending interrupt can first become visible at ioctl entry.
+	 * Do not wait for an unrelated guest exit before arming the SVM virtual-
+	 * interrupt window.
+	 */
+	if (vcpu->vc_intr || READ_ONCE(vcpu->vc_intr_latch) ||
+	    (!vcpu->vc_irqready &&
+	    vcpu->vc_inject.vie_type == VCPU_INJECT_INTR)) {
+		vmcb->v_intercept1 |= SVM_INTERCEPT_VINTR;
+		vmcb->v_irq = 1;
+		vmcb->v_intr_misc = SVM_INTR_MISC_V_IGN_TPR;
+		vmcb->v_intr_vector = 0;
+		svm_set_dirty(vcpu, SVM_CLEANBITS_TPR | SVM_CLEANBITS_I);
+	} else {
+		vmcb->v_irq = 0;
+		vmcb->v_intr_vector = 0;
+		vmcb->v_intercept1 &= ~SVM_INTERCEPT_VINTR;
+		svm_set_dirty(vcpu, SVM_CLEANBITS_TPR | SVM_CLEANBITS_I);
+	}
 	/* A returned VMM_IOC_RUN acknowledges any earlier administrative kick. */
 	(void)svm_avic_hlt_consume_kick(vcpu);
 	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
@@ -7986,6 +8371,9 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 	}
 
 	while (ret == 0) {
+		/* Re-evaluate this if the thread migrated to a different pCPU. */
+		svm_cr8_write_intercept(vcpu,
+		    vcpu->vc_svm_avic_mode == 0);
 		vmm_update_pvclock(vcpu);
 		if (ci != curcpu()) {
 			/*
@@ -8158,7 +8546,8 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			kicked = ret == 0 && svm_avic_hlt_consume_kick(vcpu);
 			blocked = svm_avic_hlt_is_blocked(vcpu);
 
-			if (svm_get_iflag(vcpu, vcpu->vc_gueststate.vg_rflags))
+			if (svm_irqready(vcpu,
+			    vcpu->vc_gueststate.vg_rflags))
 				vcpu->vc_irqready = 1;
 			else
 				vcpu->vc_irqready = 0;

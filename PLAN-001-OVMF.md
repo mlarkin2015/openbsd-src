@@ -20,6 +20,20 @@ Secure Boot and enrolled Microsoft keys are later milestones.  The split
 flash layout is retained so they can be added without changing the VM-facing
 storage design.
 
+### Long-term Secure Boot milestone
+
+- [ ] Enable OVMF Secure Boot and authenticated-variable support without
+  regressing the current non-SMM vmd platform build.
+- [ ] Produce a reproducible variable-store template with the required
+  Microsoft-compatible PK/KEK/db certificates and an updateable dbx.
+- [ ] Keep PK, KEK, db and dbx private to each VM in the existing persistent
+  `efivars` backing file; ephemeral VMs continue to receive an ephemeral copy.
+- [ ] Validate signed Windows boot, variable authentication, key enrollment,
+  db/dbx updates, reset and recovery behavior.  UEFI boot by itself is not
+  sufficient for the supported Windows 11 configuration.
+- [ ] Integrate with the virtual TPM and measured-boot work in PLAN-005 after
+  both independent device paths are functional.
+
 ## Firmware build milestone
 
 The port overlay is in `ports/sysutils/firmware/vmm`.  It extends the existing

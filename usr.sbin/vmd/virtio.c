@@ -39,6 +39,7 @@
 #include <unistd.h>
 
 #include "atomicio.h"
+#include "mmio.h"
 #include "pci.h"
 #include "vioscsi.h"
 #include "virtio.h"
@@ -136,11 +137,19 @@ static void virtio_pci_add_intr_caps(uint8_t, uint16_t);
 static void virtio_pci_add_cap(uint8_t, uint8_t, uint8_t, uint32_t);
 static int virtio_pci_msix_io(struct virtio_dev *, int, uint16_t, uint32_t *,
     uint8_t);
+static int virtio_pci_common_field(uint8_t, uint8_t, uint8_t *, uint8_t *);
+static int virtio_msix_vector_valid(struct virtio_dev *, uint16_t);
+static void virtio_io_cfg_msix_partial(struct virtio_dev *, uint8_t,
+    uint8_t, uint32_t, uint8_t);
+static uint32_t virtio_io_cfg_field(struct virtio_dev *, int, uint8_t,
+    uint32_t, uint8_t);
 static void virtio_inject_irq(struct virtio_dev *, uint16_t);
 static void vmmci_pipe_dispatch(int, short, void *);
 
 static int virtio_io_dispatch(int, uint16_t, uint32_t *, uint8_t *, void *,
     uint8_t);
+static int virtio_mmio_dispatch(uint32_t, int, uint32_t, uint8_t, uint64_t *,
+    void *);
 static int virtio_io_isr(int, uint16_t, uint32_t *, uint8_t *, void *, uint8_t);
 static int virtio_io_notify(int, uint16_t, uint32_t *, uint8_t *, void *,
     uint8_t);
@@ -466,6 +475,41 @@ virtio_io_dispatch(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 	return (ret);
 }
 
+/*
+ * Virtio 1.x PCI capabilities may reside in either memory or I/O space.
+ * Use MMIO for the modern transport, as expected by contemporary guests,
+ * while retaining the existing register and subprocess implementations.
+ */
+static int
+virtio_mmio_dispatch(uint32_t vcpu_id, int dir, uint32_t reg, uint8_t sz,
+    uint64_t *data, void *arg)
+{
+	struct virtio_dev *dev = arg;
+	uint32_t io_data;
+	uint8_t intr = 0xff;
+	int io_dir, ret;
+
+	(void)vcpu_id;
+	if (sz != 1 && sz != 2 && sz != 4)
+		return (EINVAL);
+	if (reg > UINT16_MAX)
+		return (EINVAL);
+
+	io_dir = dir == MMIO_DIR_READ ? VEI_DIR_IN : VEI_DIR_OUT;
+	io_data = (uint32_t)*data;
+	if (dev->device_id == PCI_PRODUCT_VIRTIO_BLOCK ||
+	    dev->device_id == PCI_PRODUCT_VIRTIO_NETWORK ||
+	    dev->device_id == PCI_PRODUCT_VIRTIO_SCSI)
+		ret = virtio_pci_io(io_dir, (uint16_t)reg, &io_data, &intr,
+		    dev, sz);
+	else
+		ret = virtio_io_dispatch(io_dir, (uint16_t)reg, &io_data,
+		    &intr, dev, sz);
+	if (ret == 0 && dir == MMIO_DIR_READ)
+		*data = io_data;
+	return (ret);
+}
+
 static void
 virtio_inject_irq(struct virtio_dev *dev, uint16_t vq_idx)
 {
@@ -489,37 +533,198 @@ virtio_pci_msix_io(struct virtio_dev *dev, int dir, uint16_t reg,
     uint32_t *data, uint8_t sz)
 {
 	uint16_t actual = reg & 0xff;
-	size_t i;
+	uint8_t field_reg, field_sz;
 
 	if ((reg & 0xff00) != VIO1_CFG_BAR_OFFSET)
 		return (0);
+	if (!virtio_pci_common_field(actual, sz, &field_reg, &field_sz))
+		return (0);
 
-	if (dir == VEI_DIR_OUT && actual == VIO1_PCI_QUEUE_SELECT) {
-		dev->pci_cfg.queue_select = *data;
+	/*
+	 * Keep the queue selector and device status in the VM process in
+	 * step with the copy in the device process.  The original access is
+	 * still forwarded below, after being applied to this copy.
+	 */
+	if (dir == VEI_DIR_OUT &&
+	    (field_reg == VIO1_PCI_QUEUE_SELECT ||
+	    field_reg == VIO1_PCI_DEVICE_STATUS)) {
+		(void)virtio_io_cfg(dev, dir, actual, *data, sz);
 		return (0);
 	}
-	if (dir == VEI_DIR_OUT && actual == VIO1_PCI_DEVICE_STATUS &&
-	    sz == 1 && *data == 0) {
-		dev->pci_cfg.config_msix_vector = VIRTIO_MSI_NO_VECTOR;
-		for (i = 0; i < dev->num_queues; i++)
-			dev->vq[i].q_msix_vector = VIRTIO_MSI_NO_VECTOR;
-		return (0);
-	}
 
-	if (actual != VIO1_PCI_CONFIG_MSIX_VECTOR &&
-	    actual != VIO1_PCI_QUEUE_MSIX_VECTOR)
+	if (field_reg != VIO1_PCI_CONFIG_MSIX_VECTOR &&
+	    field_reg != VIO1_PCI_QUEUE_MSIX_VECTOR)
 		return (0);
 	*data = virtio_io_cfg(dev, dir, actual, *data, sz);
 	return (1);
 }
 
+struct virtio_pci_common_field {
+	uint8_t	reg;
+	uint8_t	sz;
+};
+
 /*
- * virtio 1.x PCI config register io. If a register is read, returns the value.
- * Otherwise returns 0.
+ * A PCI transport may split a common configuration field into byte or word
+ * port accesses.  Keep 64-bit fields split into their architecturally
+ * accessible 32-bit halves because the emulation interface carries at most
+ * four bytes of data per access.
+ */
+static const struct virtio_pci_common_field virtio_pci_common_fields[] = {
+	{ VIO1_PCI_DEVICE_FEATURE_SELECT, 4 },
+	{ VIO1_PCI_DEVICE_FEATURE, 4 },
+	{ VIO1_PCI_DRIVER_FEATURE_SELECT, 4 },
+	{ VIO1_PCI_DRIVER_FEATURE, 4 },
+	{ VIO1_PCI_CONFIG_MSIX_VECTOR, 2 },
+	{ VIO1_PCI_NUM_QUEUES, 2 },
+	{ VIO1_PCI_DEVICE_STATUS, 1 },
+	{ VIO1_PCI_CONFIG_GENERATION, 1 },
+	{ VIO1_PCI_QUEUE_SELECT, 2 },
+	{ VIO1_PCI_QUEUE_SIZE, 2 },
+	{ VIO1_PCI_QUEUE_MSIX_VECTOR, 2 },
+	{ VIO1_PCI_QUEUE_ENABLE, 2 },
+	{ VIO1_PCI_QUEUE_NOTIFY_OFF, 2 },
+	{ VIO1_PCI_QUEUE_DESC, 4 },
+	{ VIO1_PCI_QUEUE_DESC + 4, 4 },
+	{ VIO1_PCI_QUEUE_AVAIL, 4 },
+	{ VIO1_PCI_QUEUE_AVAIL + 4, 4 },
+	{ VIO1_PCI_QUEUE_USED, 4 },
+	{ VIO1_PCI_QUEUE_USED + 4, 4 },
+};
+
+static int
+virtio_pci_common_field(uint8_t reg, uint8_t sz, uint8_t *field_reg,
+    uint8_t *field_sz)
+{
+	const struct virtio_pci_common_field *field;
+	uint16_t end;
+	size_t i;
+
+	if (sz != 1 && sz != 2 && sz != 4)
+		return (0);
+	end = (uint16_t)reg + sz;
+	if (end > sizeof(struct virtio_pci_common_cfg))
+		return (0);
+
+	for (i = 0; i < nitems(virtio_pci_common_fields); i++) {
+		field = &virtio_pci_common_fields[i];
+		if (reg >= field->reg && end <= field->reg + field->sz) {
+			*field_reg = field->reg;
+			*field_sz = field->sz;
+			return (1);
+		}
+	}
+	return (0);
+}
+
+static int
+virtio_msix_vector_valid(struct virtio_dev *dev, uint16_t vector)
+{
+	return (vector == VIRTIO_MSI_NO_VECTOR ||
+	    vector < dev->num_queues + 1);
+}
+
+/*
+ * Keep an invalid intermediate value staged until the remaining byte is
+ * written.  In particular, changing the reset value 0xffff to 0x0001 with
+ * two byte writes must not turn the first value, 0xff01, back into 0xffff
+ * before the high byte arrives.  Interrupt delivery continues to use the
+ * last committed vector while a value is staged.
+ */
+static void
+virtio_io_cfg_msix_partial(struct virtio_dev *dev, uint8_t field_reg,
+    uint8_t reg, uint32_t data, uint8_t sz)
+{
+	uint16_t *committed, *staged;
+	uint16_t mask;
+	uint8_t *bytes, byte_mask, shift;
+
+	if (field_reg == VIO1_PCI_CONFIG_MSIX_VECTOR) {
+		committed = &dev->pci_cfg.config_msix_vector;
+		staged = &dev->config_msix_vector_staged;
+		bytes = &dev->config_msix_vector_bytes;
+	} else {
+		if (dev->pci_cfg.queue_select >= dev->num_queues)
+			return;
+		committed = &dev->vq[dev->pci_cfg.queue_select].q_msix_vector;
+		staged =
+		    &dev->vq[dev->pci_cfg.queue_select].q_msix_vector_staged;
+		bytes = &dev->vq[dev->pci_cfg.queue_select].q_msix_vector_bytes;
+	}
+
+	if (*bytes == 0)
+		*staged = *committed;
+	shift = (reg - field_reg) * 8;
+	mask = ((1U << (sz * 8)) - 1) << shift;
+	*staged = (*staged & ~mask) | ((data << shift) & mask);
+	byte_mask = ((1U << sz) - 1) << (reg - field_reg);
+	*bytes |= byte_mask;
+
+	/* Commit a usable value immediately, or reject a complete bad word. */
+	if (virtio_msix_vector_valid(dev, *staged) || *bytes == 0x3) {
+		if (virtio_msix_vector_valid(dev, *staged))
+			*committed = *staged;
+		else
+			*committed = VIRTIO_MSI_NO_VECTOR;
+		*staged = *committed;
+		*bytes = 0;
+	}
+
+	if (field_reg == VIO1_PCI_QUEUE_MSIX_VECTOR)
+		dev->pci_cfg.queue_msix_vector = *committed;
+}
+
+/*
+ * Virtio 1.x PCI common configuration I/O.  Accesses may begin at any byte
+ * within a field.  Merge writes into, and extract reads from, the complete
+ * little-endian field so the natural-width handler below performs each
+ * field's side effects exactly once.
  */
 uint32_t
 virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
     uint8_t sz)
+{
+	uint32_t field_data, mask, res;
+	uint8_t field_reg, field_sz, shift;
+
+	if (!virtio_pci_common_field(reg, sz, &field_reg, &field_sz)) {
+		log_warnx("%s: invalid register 0x%04x size %u", __func__,
+		    reg, sz);
+		return (0);
+	}
+
+	shift = (reg - field_reg) * 8;
+	mask = sz == 4 ? 0xffffffffU : (1U << (sz * 8)) - 1;
+	if (dir == VEI_DIR_IN) {
+		field_data = virtio_io_cfg_field(dev, dir, field_reg, 0,
+		    field_sz);
+		res = (field_data >> shift) & mask;
+		return (res);
+	}
+	if (field_sz == 2 && sz != field_sz &&
+	    (field_reg == VIO1_PCI_CONFIG_MSIX_VECTOR ||
+	    field_reg == VIO1_PCI_QUEUE_MSIX_VECTOR)) {
+		virtio_io_cfg_msix_partial(dev, field_reg, reg, data, sz);
+		return (0);
+	}
+
+	if (reg == field_reg && sz == field_sz)
+		field_data = data & mask;
+	else {
+		field_data = virtio_io_cfg_field(dev, VEI_DIR_IN, field_reg, 0,
+		    field_sz);
+		field_data &= ~(mask << shift);
+		field_data |= (data & mask) << shift;
+	}
+
+	res = virtio_io_cfg_field(dev, dir, field_reg, field_data, field_sz);
+	return (res);
+}
+
+/* Handle one complete, naturally-sized common configuration field. */
+static uint32_t
+virtio_io_cfg_field(struct virtio_dev *dev, int dir, uint8_t reg,
+    uint32_t data, uint8_t sz)
 {
 	struct virtio_pci_common_cfg *pci_cfg = &dev->pci_cfg;
 	uint32_t res = 0;
@@ -558,24 +763,29 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 				break;
 			}
 			pci_cfg->driver_feature = data;
-			if (pci_cfg->driver_feature_select == 0)
+			if (pci_cfg->driver_feature_select == 0) {
+				dev->driver_feature &= 0xffffffff00000000ULL;
 				dev->driver_feature |= pci_cfg->driver_feature;
-			else
+			} else {
+				dev->driver_feature &= 0x00000000ffffffffULL;
 				dev->driver_feature |=
-				    ((uint64_t)pci_cfg->driver_feature << 32);
+				    (uint64_t)pci_cfg->driver_feature << 32;
+			}
 			dev->driver_feature &= dev->device_feature;
 			DPRINTF("%s: driver features 0x%llx", __func__,
 			    dev->driver_feature);
 			break;
 		case VIO1_PCI_CONFIG_MSIX_VECTOR:
+			dev->config_msix_vector_bytes = 0;
 			if (sz != 2)
 				log_warnx("%s: invalid config MSI-X vector size %u",
 				    __func__, sz);
-			else if (data == VIRTIO_MSI_NO_VECTOR ||
-			    data < dev->num_queues + 1)
+			else if (virtio_msix_vector_valid(dev, data))
 				pci_cfg->config_msix_vector = data;
 			else
 				pci_cfg->config_msix_vector = VIRTIO_MSI_NO_VECTOR;
+			dev->config_msix_vector_staged =
+			    pci_cfg->config_msix_vector;
 			break;
 		case VIO1_PCI_NUM_QUEUES:
 			log_warnx("illegal write to num queues register");
@@ -592,6 +802,9 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 				dev->driver_feature = 0;
 				dev->isr = 0;
 				pci_cfg->config_msix_vector = VIRTIO_MSI_NO_VECTOR;
+				dev->config_msix_vector_staged =
+				    VIRTIO_MSI_NO_VECTOR;
+				dev->config_msix_vector_bytes = 0;
 
 				pci_cfg->queue_select = 0;
 				if (dev->num_queues > 0) {
@@ -645,8 +858,9 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 				log_warnx("%s: invalid queue MSI-X vector size %u",
 				    __func__, sz);
 			else if (pci_cfg->queue_select < dev->num_queues) {
-				if (data == VIRTIO_MSI_NO_VECTOR ||
-				    data < dev->num_queues + 1)
+				dev->vq[pci_cfg->queue_select].q_msix_vector_bytes =
+				    0;
+				if (virtio_msix_vector_valid(dev, data))
 					dev->vq[pci_cfg->queue_select].q_msix_vector =
 					    data;
 				else
@@ -654,6 +868,9 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 					    VIRTIO_MSI_NO_VECTOR;
 				pci_cfg->queue_msix_vector =
 				    dev->vq[pci_cfg->queue_select].q_msix_vector;
+				dev->vq[pci_cfg->queue_select].
+				    q_msix_vector_staged =
+				    pci_cfg->queue_msix_vector;
 			}
 			break;
 		case VIO1_PCI_QUEUE_ENABLE:
@@ -756,7 +973,10 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 			}
 			break;
 		case VIO1_PCI_CONFIG_MSIX_VECTOR:
-			res = pci_cfg->config_msix_vector;
+			if (dev->config_msix_vector_bytes != 0)
+				res = dev->config_msix_vector_staged;
+			else
+				res = pci_cfg->config_msix_vector;
 			break;
 		case VIO1_PCI_NUM_QUEUES:
 			res = dev->num_queues;
@@ -774,7 +994,12 @@ virtio_io_cfg(struct virtio_dev *dev, int dir, uint8_t reg, uint32_t data,
 			res = pci_cfg->queue_size;
 			break;
 		case VIO1_PCI_QUEUE_MSIX_VECTOR:
-			res = pci_cfg->queue_msix_vector;
+			if (pci_cfg->queue_select < dev->num_queues &&
+			    dev->vq[pci_cfg->queue_select].q_msix_vector_bytes != 0)
+				res = dev->vq[pci_cfg->queue_select].
+				    q_msix_vector_staged;
+			else
+				res = pci_cfg->queue_msix_vector;
 			break;
 		case VIO1_PCI_QUEUE_ENABLE:
 			res = pci_cfg->queue_enable;
@@ -1199,7 +1424,7 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 	virtio_dev_init(vm, &viornd, id, PCI_PRODUCT_VIRTIO_ENTROPY,
 	    VIORND_QUEUE_SIZE_DEFAULT, VIRTIO_RND_QUEUES, VIRTIO_F_VERSION_1);
 
-	bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_io_dispatch,
+	bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_MEM, virtio_mmio_dispatch,
 	    &viornd);
 	if (bar_id == -1 || bar_id > 0xff) {
 		log_warnx("can't add bar for virtio rng device");
@@ -1233,7 +1458,8 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			    VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_MQ |
 			    VIRTIO_F_VERSION_1));
 
-			bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_pci_io,
+			bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_MEM,
+			    virtio_mmio_dispatch,
 			    dev);
 			if (bar_id == -1 || bar_id > 0xff) {
 				log_warnx("can't add bar for virtio net "
@@ -1304,7 +1530,8 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			    VIOBLK_QUEUE_SIZE_DEFAULT, VIRTIO_BLK_QUEUES,
 			    (VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SEG_MAX));
 
-			bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_pci_io,
+			bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_MEM,
+			    virtio_mmio_dispatch,
 			    dev);
 			if (bar_id == -1 || bar_id > 0xff) {
 				log_warnx("can't add bar for virtio block "
@@ -1360,7 +1587,8 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 		virtio_dev_init(vm, dev, id, PCI_PRODUCT_VIRTIO_SCSI,
 		    VIOSCSI_QUEUE_SIZE_DEFAULT, VIRTIO_SCSI_QUEUES,
 		    VIRTIO_F_VERSION_1);
-		bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_IO, virtio_pci_io, dev);
+		bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_MEM,
+		    virtio_mmio_dispatch, dev);
 		if (bar_id == -1 || bar_id > 0xff) {
 			log_warnx("can't add bar for vioscsi device");
 			free(dev);
@@ -1570,6 +1798,8 @@ virtio_dev_init(struct vmd_vm *vm, struct virtio_dev *dev, uint8_t pci_id,
 	dev->pci_cfg.config_generation = 0;
 	dev->pci_cfg.config_msix_vector = VIRTIO_MSI_NO_VECTOR;
 	dev->pci_cfg.queue_msix_vector = VIRTIO_MSI_NO_VECTOR;
+	dev->config_msix_vector_staged = VIRTIO_MSI_NO_VECTOR;
+	dev->config_msix_vector_bytes = 0;
 	dev->cfg.device_feature = features;
 
 	dev->num_queues = num_queues;
@@ -1620,6 +1850,8 @@ virtio_vq_init(struct virtio_dev *dev, size_t idx)
 
 	vq_info->last_avail = 0;
 	vq_info->notified_avail = 0;
+	vq_info->q_msix_vector_staged = VIRTIO_MSI_NO_VECTOR;
+	vq_info->q_msix_vector_bytes = 0;
 	vq_info->q_msix_vector = VIRTIO_MSI_NO_VECTOR;
 }
 

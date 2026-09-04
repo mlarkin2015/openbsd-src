@@ -1049,6 +1049,9 @@ cpu_check_vmm_cap(struct cpu_info *ci)
 		if (edx & AMD_SVM_VMCB_CLEAN_CAP)
 			ci->ci_vmm_cap.vcc_svm.svm_vmcb_clean = 1;
 
+		if (edx & AMD_SVM_NRIPS_CAP)
+			ci->ci_vmm_cap.vcc_svm.svm_nrips = 1;
+
 		if (edx & AMD_SVM_DECODE_ASSIST_CAP)
 			ci->ci_vmm_cap.vcc_svm.svm_decode_assist = 1;
 

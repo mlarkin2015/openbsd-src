@@ -94,6 +94,7 @@
 #define VM_EXIT_TERMINATED			0xFFFE
 #define VM_EXIT_NONE				0xFFFF
 #define VM_EXIT_X2APIC				0xFFFD
+#define VM_EXIT_CR8				0xFFFC
 
 /* AMD hardware LAPIC acceleration modes. */
 #define VMM_AVIC_XAPIC				0x01
@@ -574,7 +575,6 @@ struct vm_rwregs_params {
  *  speedstep (CPUIDECX_EST)
  *  thermal (CPUIDECX_TM2, CPUID_ACPI, CPUID_TM)
  *  context id (CPUIDECX_CNXTID)
- *  machine check (CPUID_MCE, CPUID_MCA)
  *  silicon debug (CPUIDECX_SDBG)
  *  xTPR (CPUIDECX_XTPR)
  *  perf/debug (CPUIDECX_PDCM)
@@ -586,7 +586,6 @@ struct vm_rwregs_params {
  *  self snoop (CPUID_SS)
  *  hyperthreading (CPUID_HTT; re-added for SMP guests)
  *  pending break enabled (CPUID_PBE)
- *  MTRR (CPUID_MTRR)
  *  Speculative execution control features (AMD)
  */
 #define VMM_CPUIDECX_MASK ~(CPUIDECX_EST | CPUIDECX_TM2 | CPUIDECX_MWAIT | \
@@ -597,14 +596,14 @@ struct vm_rwregs_params {
 #define VMM_ECPUIDECX_MASK ~(CPUIDECX_SVM | CPUIDECX_MWAITX)
 #define VMM_CPUIDEDX_MASK ~(CPUID_ACPI | CPUID_TM | \
     CPUID_HTT | CPUID_DS | \
-    CPUID_PSN | CPUID_SS | CPUID_PBE | \
-    CPUID_MTRR | CPUID_MCE | CPUID_MCA)
+    CPUID_PSN | CPUID_SS | CPUID_PBE)
 #define VMM_AMDSPEC_EBX_MASK ~(CPUIDEBX_IBPB | CPUIDEBX_IBRS | \
     CPUIDEBX_STIBP | CPUIDEBX_IBRS_ALWAYSON | CPUIDEBX_STIBP_ALWAYSON | \
     CPUIDEBX_IBRS_PREF | CPUIDEBX_SSBD | CPUIDEBX_VIRT_SSBD | \
     CPUIDEBX_SSBD_NOTREQ)
 
-/* This mask is an include list for bits we want to expose */
+/* These masks are include lists for bits we want to expose. */
+#define VMM_APMI_EBX_INCLUDE_MASK 0
 #define VMM_APMI_EDX_INCLUDE_MASK (CPUIDEDX_ITSC)
 
 /*
@@ -698,7 +697,8 @@ struct vmcb_segment {
 #define SVM_ENABLE_SEV		(1ULL << 1)
 #define SVM_SEVES_ENABLE	(1ULL << 2)
 
-#define SMV_GUEST_INTR_MASK	(1ULL << 1)
+#define SVM_INTERRUPT_SHADOW_MASK	(1ULL << 0)
+#define SMV_GUEST_INTR_MASK		(1ULL << 1)
 
 #define SVM_LBRVIRT_ENABLE	(1ULL << 0)
 
@@ -1053,6 +1053,17 @@ struct vcpu {
 	/* Shadowed MSRs */
 	uint64_t vc_shadow_pat;			/* [v] */
 	uint64_t vc_apicbase;			/* [v] */
+#define VMM_MTRR_VAR_COUNT	8
+#define VMM_MTRR_FIXED_COUNT	11
+	uint64_t vc_mtrr_def_type;		/* [v] */
+	uint64_t vc_mtrr_var[VMM_MTRR_VAR_COUNT * 2]; /* [v] */
+	uint64_t vc_mtrr_fixed[VMM_MTRR_FIXED_COUNT]; /* [v] */
+	uint64_t vc_mcg_ctl;			/* [v] */
+	uint64_t vc_mcg_status;			/* [v] */
+	uint64_t vc_mci_ctl;			/* [v] */
+	uint64_t vc_mci_status;			/* [v] */
+	uint64_t vc_mci_addr;			/* [v] */
+	uint64_t vc_mci_misc;			/* [v] */
 
 	/* Userland Protection Keys */
 	uint32_t vc_pkru;			/* [v] */
