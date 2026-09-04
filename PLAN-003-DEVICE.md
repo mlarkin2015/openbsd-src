@@ -179,8 +179,12 @@ keyboard commands, scan-set translation and IRQ state.  RFB input remains
 responsive while an unchanged incremental framebuffer request is pending, and
 the display worker no longer sends unchanged full-screen updates in a busy
 loop.  Runtime validation passed in the Ubuntu 26 graphical UEFI installer.
-The Windows 11 DVD prompt also accepted input and loaded the Windows boot image;
-the later Windows boot stall is not an i8042 failure.
+Windows 8 checked and Windows 11 installers also reach graphical Setup and
+accept keyboard navigation and button activation.  Windows exposed one
+additional PS/2 semantic: keyboard reset and Set Defaults restore scanning,
+rather than leaving it disabled until an explicit Enable command.  Controller
+disable is also cleared by an ordinary keyboard-device write.  Both behaviors
+now have regression coverage.
 
 The preferred pointing device is a virtio-input tablet advertising absolute X
 and Y axes plus buttons.  Absolute coordinates avoid pointer capture and edge

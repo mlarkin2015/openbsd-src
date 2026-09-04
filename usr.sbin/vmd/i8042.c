@@ -316,6 +316,7 @@ i8042_keyboard_command_locked(uint8_t data)
 		i8042_queue_locked(KBR_ACK, 0);
 		break;
 	case KBC_SETDEFAULT:
+		i8042.scanning = 1;
 		i8042.scan_set = 2;
 		i8042_queue_locked(KBR_ACK, 0);
 		break;
@@ -323,7 +324,7 @@ i8042_keyboard_command_locked(uint8_t data)
 		i8042_queue_locked(KBR_RESEND, 0);
 		break;
 	case KBC_RESET:
-		i8042.scanning = 0;
+		i8042.scanning = 1;
 		i8042.scan_set = 2;
 		i8042_queue_locked(KBR_ACK, 0);
 		i8042_queue_locked(KBR_RSTDONE, 0);
@@ -365,6 +366,7 @@ i8042_data_write_locked(uint8_t data)
 	case KBC_AUXWRITE:
 		break;
 	default:
+		i8042.command_byte &= ~KC8_KDISABLE;
 		i8042_keyboard_command_locked(data);
 		break;
 	}
