@@ -74,6 +74,16 @@ being overrun and allowing READ(6) payloads to span multiple descriptors.
 NetBSD CD-ROM probing and full-image reads at 2 KiB and 64 KiB request sizes
 are runtime-validated without corruption.
 
+## Deferred cleanup
+
+- **MSR handling cleanup**: replace the temporary chained facility dispatch in
+  the VMX and SVM MSR-exit paths (for example, `handle_mtrr() || handle_mce() ||
+  handle_mca()`) with a clearer indexed or classified dispatch scheme.  Keep
+  MTRR, PAT, MCE, MCA and future Hyper-V MSR policy separated by architectural
+  facility while avoiding an ever-growing chain in each RDMSR/WRMSR default
+  case.  This is cleanup rather than a blocker for the current Windows boot
+  investigation.
+
 ## Verified current state (original source audit, 2026-08-21)
 
 What exists and works today:
