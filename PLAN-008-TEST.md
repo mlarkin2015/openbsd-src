@@ -397,9 +397,13 @@ storage-driver discovery is intentionally deferred to M0b.
 3. Reboot from the installed disk and confirm display, input, MSI-X, SMP,
    networking (when NetKVM is present), S5 shutdown and warm reset.
 
-Secure Boot and TPM are later tests and are not prerequisites for either first
-bring-up milestone.  Record exact media hashes, driver-package versions and WIM
-indexes in each manual result so failures can be reproduced.
+Secure Boot and TPM are later tests and are not prerequisites for the Windows
+10 M0b bring-up.  They are, however, independent requirements for an
+unmodified, supported Windows 11 installation: the current Windows 11 media
+reaches graphical Setup and reads its vioscsi installation media, then rejects
+the VM because it exposes neither TPM 2.0 nor Secure Boot capability.  Record
+exact media hashes, driver-package versions and WIM indexes in each manual
+result so failures can be reproduced.
 
 ### 8.7 Performance Benchmarks
 

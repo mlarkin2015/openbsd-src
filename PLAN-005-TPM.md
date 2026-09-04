@@ -32,6 +32,20 @@
 
 Implement a virtual TPM 2.0 device (PTPD — Platform TPM for virtualization) to satisfy Windows 11's TPM requirement.
 
+This is an explicitly deferred, long-term Windows 11 compliance milestone.
+The current Windows 10 installation work does not depend on it.  A supported
+Windows 11 VM requires both this vTPM and the independent Secure Boot work in
+PLAN-001; neither requirement is supplied merely by running UEFI firmware.
+
+- [ ] Select or import a maintained software TPM core rather than hand-writing
+  cryptographic primitives.
+- [ ] Implement the ACPI `MSFT0101` device, TPM2 table and TIS/CRB MMIO
+  transport expected by Windows.
+- [ ] Put command processing and persistent secrets in a suitably restricted
+  subprocess/parent-owned state path, with one private state store per VM.
+- [ ] Validate Windows provisioning, reboot, shutdown, snapshot policy and
+  corrupt/mismatched state handling before advertising TPM support.
+
 ## Current State
 
 - No TPM emulation exists in vmm/vmd

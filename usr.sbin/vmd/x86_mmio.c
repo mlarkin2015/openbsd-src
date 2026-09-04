@@ -199,18 +199,6 @@ invalid_mmio_gpa(struct x86_insn *insn, struct vm_exit *exit, uint64_t gpa)
 
 	log_warnx("invalid MMIO address: rip=0x%llx gva=0x%lx gpa=0x%llx",
 	    r[VCPU_REGS_RIP], insn->insn_gva, gpa);
-	log_warnx("MMIO regs: rax=%llx rcx=%llx rdx=%llx rbx=%llx",
-	    r[VCPU_REGS_RAX], r[VCPU_REGS_RCX], r[VCPU_REGS_RDX],
-	    r[VCPU_REGS_RBX]);
-	log_warnx("MMIO regs: rsp=%llx rbp=%llx rsi=%llx rdi=%llx",
-	    r[VCPU_REGS_RSP], r[VCPU_REGS_RBP], r[VCPU_REGS_RSI],
-	    r[VCPU_REGS_RDI]);
-	log_warnx("MMIO regs: r8=%llx r9=%llx r10=%llx r11=%llx",
-	    r[VCPU_REGS_R8], r[VCPU_REGS_R9], r[VCPU_REGS_R10],
-	    r[VCPU_REGS_R11]);
-	log_warnx("MMIO regs: r12=%llx r13=%llx r14=%llx r15=%llx",
-	    r[VCPU_REGS_R12], r[VCPU_REGS_R13], r[VCPU_REGS_R14],
-	    r[VCPU_REGS_R15]);
 	fatalx("invalid mmio gpa 0x%llx", gpa);
 }
 
@@ -1272,11 +1260,11 @@ emulate_add(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		invalid_mmio_gpa(insn, exit, gpa);
 	if ((mmio_fn = mmio_find_dev(gpa)) == NULL)
 		return (ENODEV);
+	opsz = get_operand_size(insn);
 	data = 0;
-	if ((ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data)) != 0)
+	if ((ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, opsz, &data)) != 0)
 		return (ret);
 
-	opsz = get_operand_size(insn);
 	switch (opsz) {
 	case 2:
 		mask = 0xffff;
@@ -1355,14 +1343,14 @@ emulate_and(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		return (0);
 	}
 
+	opsz = get_operand_size(insn);
 	data = 0;
-	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, opsz, &data);
 	if (ret) {
 		log_warnx("%s: mmio function indicated failure", __func__);
 		return (0);
 	}
 
-	opsz = get_operand_size(insn);
 	switch (opsz) {
 	case 2:
 		mask = 0xffff;
@@ -1420,14 +1408,14 @@ emulate_test(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		return (0);
 	}
 
+	opsz = get_operand_size(insn);
 	data = 0;
-	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, opsz, &data);
 	if (ret != 0) {
 		log_warnx("%s: mmio function indicated failure", __func__);
 		return (0);
 	}
 
-	opsz = get_operand_size(insn);
 	switch (opsz) {
 	case 2:
 		mask = 0xffff;
@@ -1487,14 +1475,14 @@ emulate_cmp(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		return (ENODEV);
 	}
 
+	opsz = get_operand_size(insn);
 	data = 0;
-	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, opsz, &data);
 	if (ret != 0) {
 		log_warnx("%s: mmio function indicated failure", __func__);
 		return (ret);
 	}
 
-	opsz = get_operand_size(insn);
 	switch (opsz) {
 	case 1:
 		mask = 0xff;
@@ -1592,7 +1580,7 @@ emulate_pop(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		log_warnx("%s: no mmio fn for gpa 0x%llx", __func__, gpa);
 		return (ENODEV);
 	}
-	ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
+	ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, opsz, &data);
 	if (ret != 0) {
 		log_warnx("%s: mmio function indicated failure", __func__);
 		return (ret);
@@ -1626,6 +1614,12 @@ emulate_push(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		return (ENOTSUP);
 	}
 
+	opsz = get_operand_size(insn);
+	if (opsz != 2 && opsz != 4) {
+		log_warnx("%s: invalid operand size %d", __func__, opsz);
+		return (EINVAL);
+	}
+
 	ret = translate_gva(exit, insn->insn_gva, &gpa, PROT_READ);
 	if (ret != 0) {
 		log_warnx("%s: error translating source gva 0x%lx: %s",
@@ -1642,16 +1636,10 @@ emulate_push(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 	}
 
 	data = 0;
-	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, opsz, &data);
 	if (ret != 0) {
 		log_warnx("%s: mmio function indicated failure", __func__);
 		return (ret);
-	}
-
-	opsz = get_operand_size(insn);
-	if (opsz != 2 && opsz != 4) {
-		log_warnx("%s: invalid operand size %d", __func__, opsz);
-		return (EINVAL);
 	}
 
 	/* PUSH uses the pre-decremented ESP and the SS segment. */
@@ -1704,14 +1692,14 @@ emulate_sub(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		return (ENODEV);
 	}
 
+	opsz = get_operand_size(insn);
 	data = 0;
-	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+	ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, opsz, &data);
 	if (ret != 0) {
 		log_warnx("%s: mmio function indicated failure", __func__);
 		return (ret);
 	}
 
-	opsz = get_operand_size(insn);
 	switch (opsz) {
 	case 2:
 		mask = 0xffff;
@@ -1830,7 +1818,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		    "0x%llx", __func__, opsz, str_reg(insn->insn_reg),
 		    exit->vrs.vrs_gprs[insn->insn_reg]);
 
-		ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &data);
+		ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, opsz, &data);
 		if (!ret) {
 			reg = opsz == 1 ? reg : insn->insn_reg;
 			exit->vrs.vrs_gprs[reg] &= mask;
@@ -1872,7 +1860,7 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 			data = exit->vrs.vrs_gprs[reg] >> regshift;
 			DPRINTF("%s: write 0x%llx to mmio addr 0x%llx",
 			    __func__, data, gpa);
-			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
+			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, opsz, &data);
 			if (ret) {
 				log_warnx("%s: mmio function indicated failure",
 				    __func__);
@@ -1898,8 +1886,10 @@ emulate_mov(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		    insn->insn_gva, gpa);
 		mmio_fn = mmio_find_dev(gpa);
 		if (mmio_fn) {
+			opsz = get_operand_size(insn);
 			data = insn->insn_immediate;
-			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, &data);
+			ret = mmio_fn(vcpu_id, MMIO_DIR_WRITE, gpa, opsz,
+			    &data);
 			if (!ret) {
 				DPRINTF("%s: wrote immediate value 0x%llx to "
 				    "memory", __func__, data);
@@ -1983,13 +1973,15 @@ emulate_movs(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 			return (ENODEV);
 		data = 0;
 		if (srcfn != NULL)
-			ret = srcfn(vcpu_id, MMIO_DIR_READ, srcgpa, &data);
+			ret = srcfn(vcpu_id, MMIO_DIR_READ, srcgpa, opsz,
+			    &data);
 		else
 			ret = read_mem(srcgpa, &data, opsz);
 		if (ret != 0)
 			return (ret);
 		if (dstfn != NULL)
-			ret = dstfn(vcpu_id, MMIO_DIR_WRITE, dstgpa, &data);
+			ret = dstfn(vcpu_id, MMIO_DIR_WRITE, dstgpa, opsz,
+			    &data);
 		else
 			ret = write_mem(dstgpa, &data, opsz);
 		if (ret != 0)
@@ -2057,7 +2049,7 @@ emulate_movzx(struct x86_insn *insn, struct vm_exit *exit, uint32_t vcpu_id)
 		invalid_mmio_gpa(insn, exit, gpa);
 	if ((mmio_fn = mmio_find_dev(gpa)) == NULL)
 		return (ENODEV);
-	if ((ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, &value)) != 0)
+	if ((ret = mmio_fn(vcpu_id, MMIO_DIR_READ, gpa, src, &value)) != 0)
 		return (ret);
 	mask = src == 1 ? 0xff : 0xffff;
 	value &= mask;

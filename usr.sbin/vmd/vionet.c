@@ -1490,86 +1490,11 @@ handle_sync_io(int fd, short event, void *arg)
 static uint32_t
 vionet_cfg_read(struct virtio_dev *dev, struct viodev_msg *msg)
 {
-	struct virtio_pci_common_cfg *pci_cfg = &dev->pci_cfg;
-	uint32_t data = 0;
-	uint16_t reg = msg->reg & 0x00FF;
+	uint32_t data;
+	uint8_t reg = msg->reg & 0xff;
 
 	pthread_rwlock_rdlock(&lock);
-	switch (reg) {
-	case VIO1_PCI_DEVICE_FEATURE_SELECT:
-		data = pci_cfg->device_feature_select;
-		break;
-	case VIO1_PCI_DEVICE_FEATURE:
-		if (pci_cfg->device_feature_select == 0)
-			data = dev->device_feature & (uint32_t)(-1);
-		else if (pci_cfg->device_feature_select == 1)
-			data = dev->device_feature >> 32;
-		else {
-			DPRINTF("%s: ignoring device feature read",
-			    __func__);
-		}
-		break;
-	case VIO1_PCI_DRIVER_FEATURE_SELECT:
-		data = pci_cfg->driver_feature_select;
-		break;
-	case VIO1_PCI_DRIVER_FEATURE:
-		if (pci_cfg->driver_feature_select == 0)
-			data = dev->driver_feature & (uint32_t)(-1);
-		else if (pci_cfg->driver_feature_select == 1)
-			data = dev->driver_feature >> 32;
-		else {
-			DPRINTF("%s: ignoring driver feature read",
-			    __func__);
-		}
-		break;
-	case VIO1_PCI_CONFIG_MSIX_VECTOR:
-		data = pci_cfg->config_msix_vector;
-		break;
-	case VIO1_PCI_NUM_QUEUES:
-		data = dev->num_queues;
-		break;
-	case VIO1_PCI_DEVICE_STATUS:
-		data = dev->status;
-		break;
-	case VIO1_PCI_CONFIG_GENERATION:
-		data = pci_cfg->config_generation;
-		break;
-	case VIO1_PCI_QUEUE_SELECT:
-		data = pci_cfg->queue_select;
-		break;
-	case VIO1_PCI_QUEUE_SIZE:
-		data = pci_cfg->queue_size;
-		break;
-	case VIO1_PCI_QUEUE_MSIX_VECTOR:
-		data = pci_cfg->queue_msix_vector;
-		break;
-	case VIO1_PCI_QUEUE_ENABLE:
-		data = pci_cfg->queue_enable;
-		break;
-	case VIO1_PCI_QUEUE_NOTIFY_OFF:
-		data = pci_cfg->queue_notify_off;
-		break;
-	case VIO1_PCI_QUEUE_DESC:
-		data = (uint32_t)(0xFFFFFFFF & pci_cfg->queue_desc);
-		break;
-	case VIO1_PCI_QUEUE_DESC + 4:
-		data = (uint32_t)(pci_cfg->queue_desc >> 32);
-		break;
-	case VIO1_PCI_QUEUE_AVAIL:
-		data = (uint32_t)(0xFFFFFFFF & pci_cfg->queue_avail);
-		break;
-	case VIO1_PCI_QUEUE_AVAIL + 4:
-		data = (uint32_t)(pci_cfg->queue_avail >> 32);
-		break;
-	case VIO1_PCI_QUEUE_USED:
-		data = (uint32_t)(0xFFFFFFFF & pci_cfg->queue_used);
-		break;
-	case VIO1_PCI_QUEUE_USED + 4:
-		data = (uint32_t)(pci_cfg->queue_used >> 32);
-		break;
-	default:
-		log_warnx("%s: invalid register 0x%04x", __func__, reg);
-	}
+	data = virtio_io_cfg(dev, VEI_DIR_IN, reg, 0, msg->io_sz);
 	pthread_rwlock_unlock(&lock);
 
 	return (data);
@@ -1578,215 +1503,21 @@ vionet_cfg_read(struct virtio_dev *dev, struct viodev_msg *msg)
 static void
 vionet_cfg_write(struct virtio_dev *dev, struct viodev_msg *msg)
 {
-	struct virtio_pci_common_cfg *pci_cfg = &dev->pci_cfg;
 	struct vionet_dev *vionet = (struct vionet_dev *)&dev->vionet;
-	uint32_t data = msg->data;
-	uint16_t reg = msg->reg & 0xFF;
 	unsigned int i;
-	uint8_t sz = msg->io_sz;
-	int pausing = 0;
+	uint8_t reg = msg->reg & 0xff;
+	int pausing;
 
-	DPRINTF("%s: write reg=%d data=0x%x", __func__, msg->reg, data);
+	pausing = reg == VIO1_PCI_DEVICE_STATUS && msg->io_sz == 1 &&
+	    msg->data == 0;
 
 	pthread_rwlock_wrlock(&lock);
-	switch (reg) {
-	case VIO1_PCI_DEVICE_FEATURE_SELECT:
-		if (sz != 4)
-			log_warnx("%s: unaligned write to device "
-			    "feature select (sz=%u)", __func__, sz);
-		else
-			pci_cfg->device_feature_select = data;
-		break;
-	case VIO1_PCI_DEVICE_FEATURE:
-		log_warnx("illegal write to device feature register");
-		break;
-	case VIO1_PCI_DRIVER_FEATURE_SELECT:
-		if (sz != 4)
-			log_warnx("%s: unaligned write to driver "
-			    "feature select register (sz=%u)", __func__,
-			    sz);
-		else
-			pci_cfg->driver_feature_select = data;
-		break;
-	case VIO1_PCI_DRIVER_FEATURE:
-		if (sz != 4) {
-			log_warnx("%s: unaligned write to driver "
-			    "feature register (sz=%u)", __func__, sz);
-			break;
-		}
-		if (pci_cfg->driver_feature_select > 1) {
-			/* We only support a 64-bit feature space. */
-			DPRINTF("%s: ignoring driver feature write",
-			    __func__);
-			break;
-		}
-		pci_cfg->driver_feature = data;
-		if (pci_cfg->driver_feature_select == 0)
-			dev->driver_feature |= pci_cfg->driver_feature;
-		else
-			dev->driver_feature |=
-			    ((uint64_t)pci_cfg->driver_feature << 32);
-		dev->driver_feature &= dev->device_feature;
-		DPRINTF("%s: driver features 0x%llx", __func__,
-		    dev->driver_feature);
-		break;
-	case VIO1_PCI_CONFIG_MSIX_VECTOR:
-		if (sz != 2)
-			log_warnx("%s: invalid config MSI-X vector size %u",
-			    __func__, sz);
-		else if (data == VIRTIO_MSI_NO_VECTOR ||
-		    data < dev->num_queues + 1)
-			pci_cfg->config_msix_vector = data;
-		else
-			pci_cfg->config_msix_vector = VIRTIO_MSI_NO_VECTOR;
-		break;
-	case VIO1_PCI_NUM_QUEUES:
-		log_warnx("illegal write to num queues register");
-		break;
-	case VIO1_PCI_DEVICE_STATUS:
-		if (sz != 1) {
-			log_warnx("%s: unaligned write to device "
-			    "status register (sz=%u)", __func__, sz);
-			break;
-		}
-		dev->status = data;
-		if (dev->status == 0) {
-			/* vionet has special handling being multi-threaded. */
-			pausing = 1;
-			vionet->reset_generation++;
-
-			/*
-			 * Don't allow zero. It's a special case in
-			 * read_pipe_tx().
-			 */
-			if (vionet->reset_generation == 0)
-				vionet->reset_generation = 1;
-
-			/* Reset device and virtqueues. */
-			dev->driver_feature = 0;
-			dev->isr = 0;
-			vionet->active_queue_pairs = 1;
-			pci_cfg->config_msix_vector = VIRTIO_MSI_NO_VECTOR;
-			pci_cfg->queue_select = 0;	/* Technically RXQ. */
-			for (i = 0; i < dev->num_queues; i++)
-				virtio_vq_init(dev, i);
-			virtio_update_qs(dev);
-		}
-		DPRINTF("%s: dev %u status [%s%s%s%s%s%s]", __func__,
-		    dev->pci_id,
-		    (data & VIRTIO_CONFIG_DEVICE_STATUS_ACK) ?
-		    "[ack]" : "",
-		    (data & VIRTIO_CONFIG_DEVICE_STATUS_DRIVER) ?
-		    "[driver]" : "",
-		    (data & VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK) ?
-		    "[driver ok]" : "",
-		    (data & VIRTIO_CONFIG_DEVICE_STATUS_FEATURES_OK) ?
-		    "[features ok]" : "",
-		    (data & VIRTIO_CONFIG_DEVICE_STATUS_DEVICE_NEEDS_RESET)
-		    ? "[needs reset]" : "",
-		    (data & VIRTIO_CONFIG_DEVICE_STATUS_FAILED) ?
-		    "[failed]" : "");
-		break;
-	case VIO1_PCI_CONFIG_GENERATION:
-		log_warnx("illegal write to config generation register");
-		break;
-	case VIO1_PCI_QUEUE_SELECT:
-		pci_cfg->queue_select = data;
-		virtio_update_qs(dev);
-		break;
-	case VIO1_PCI_QUEUE_SIZE:
-		if (data <= VIRTIO_QUEUE_SIZE_MAX)
-			pci_cfg->queue_size = data;
-		else {
-			log_warnx("%s: clamping queue size", __func__);
-			pci_cfg->queue_size = VIRTIO_QUEUE_SIZE_MAX;
-		}
-		virtio_update_qa(dev);
-		break;
-	case VIO1_PCI_QUEUE_MSIX_VECTOR:
-		if (sz != 2)
-			log_warnx("%s: invalid queue MSI-X vector size %u",
-			    __func__, sz);
-		else if (pci_cfg->queue_select < dev->num_queues) {
-			if (data == VIRTIO_MSI_NO_VECTOR ||
-			    data < dev->num_queues + 1)
-				dev->vq[pci_cfg->queue_select].q_msix_vector = data;
-			else
-				dev->vq[pci_cfg->queue_select].q_msix_vector =
-				    VIRTIO_MSI_NO_VECTOR;
-			pci_cfg->queue_msix_vector =
-			    dev->vq[pci_cfg->queue_select].q_msix_vector;
-		}
-		break;
-	case VIO1_PCI_QUEUE_ENABLE:
-		pci_cfg->queue_enable = data;
-		virtio_update_qa(dev);
-		break;
-	case VIO1_PCI_QUEUE_NOTIFY_OFF:
-		log_warnx("illegal write to queue notify offset register");
-		break;
-	case VIO1_PCI_QUEUE_DESC:
-		if (sz != 4) {
-			log_warnx("%s: unaligned write to queue "
-			    "desc. register (sz=%u)", __func__, sz);
-			break;
-		}
-		pci_cfg->queue_desc &= 0xffffffff00000000;
-		pci_cfg->queue_desc |= (uint64_t)data;
-		virtio_update_qa(dev);
-		break;
-	case VIO1_PCI_QUEUE_DESC + 4:
-		if (sz != 4) {
-			log_warnx("%s: unaligned write to queue "
-			    "desc. register (sz=%u)", __func__, sz);
-			break;
-		}
-		pci_cfg->queue_desc &= 0x00000000ffffffff;
-		pci_cfg->queue_desc |= ((uint64_t)data << 32);
-		virtio_update_qa(dev);
-		break;
-	case VIO1_PCI_QUEUE_AVAIL:
-		if (sz != 4) {
-			log_warnx("%s: unaligned write to queue "
-			    "available register (sz=%u)", __func__, sz);
-			break;
-		}
-		pci_cfg->queue_avail &= 0xffffffff00000000;
-		pci_cfg->queue_avail |= (uint64_t)data;
-		virtio_update_qa(dev);
-		break;
-	case VIO1_PCI_QUEUE_AVAIL + 4:
-		if (sz != 4) {
-			log_warnx("%s: unaligned write to queue "
-			    "available register (sz=%u)", __func__, sz);
-			break;
-		}
-		pci_cfg->queue_avail &= 0x00000000ffffffff;
-		pci_cfg->queue_avail |= ((uint64_t)data << 32);
-		virtio_update_qa(dev);
-		break;
-	case VIO1_PCI_QUEUE_USED:
-		if (sz != 4) {
-			log_warnx("%s: unaligned write to queue used "
-			    "register (sz=%u)", __func__, sz);
-			break;
-		}
-		pci_cfg->queue_used &= 0xffffffff00000000;
-		pci_cfg->queue_used |= (uint64_t)data;
-		virtio_update_qa(dev);
-		break;
-	case VIO1_PCI_QUEUE_USED + 4:
-		if (sz != 4) {
-			log_warnx("%s: unaligned write to queue used "
-			    "register (sz=%u)", __func__, sz);
-			break;
-		}
-		pci_cfg->queue_used &= 0x00000000ffffffff;
-		pci_cfg->queue_used |= ((uint64_t)data << 32);
-		virtio_update_qa(dev);
-		break;
-	default:
-		log_warnx("%s: invalid register 0x%04x", __func__, reg);
+	(void)virtio_io_cfg(dev, VEI_DIR_OUT, reg, msg->data, msg->io_sz);
+	if (pausing) {
+		vionet->reset_generation++;
+		if (vionet->reset_generation == 0)
+			vionet->reset_generation = 1;
+		vionet->active_queue_pairs = 1;
 	}
 	pthread_rwlock_unlock(&lock);
 
@@ -1858,23 +1589,22 @@ static uint32_t
 vionet_dev_read(struct virtio_dev *dev, struct viodev_msg *msg)
 {
 	struct vionet_dev *vionet = (struct vionet_dev *)&dev->vionet;
+	uint8_t cfg[VIRTIO_NET_CONFIG_MAX_QUEUES + sizeof(uint16_t)] = { 0 };
 	uint32_t data = 0;
 	uint16_t reg = msg->reg & 0xFF;
+	uint8_t sz = msg->io_sz;
 
-	switch (reg) {
-	case VIRTIO_NET_CONFIG_MAC:
-	case VIRTIO_NET_CONFIG_MAC + 1:
-	case VIRTIO_NET_CONFIG_MAC + 2:
-	case VIRTIO_NET_CONFIG_MAC + 3:
-	case VIRTIO_NET_CONFIG_MAC + 4:
-	case VIRTIO_NET_CONFIG_MAC + 5:
-		data = (uint8_t)vionet->mac[reg - VIRTIO_NET_CONFIG_MAC];
-		break;
-	case VIRTIO_NET_CONFIG_MAX_QUEUES:
-		data = VIONET_QUEUE_PAIRS;
-		break;
-	default:
-		log_warnx("%s: invalid register 0x%04x", __func__, reg);
+	memcpy(cfg + VIRTIO_NET_CONFIG_MAC, vionet->mac,
+	    sizeof(vionet->mac));
+	cfg[VIRTIO_NET_CONFIG_MAX_QUEUES] = VIONET_QUEUE_PAIRS & 0xff;
+	cfg[VIRTIO_NET_CONFIG_MAX_QUEUES + 1] = VIONET_QUEUE_PAIRS >> 8;
+
+	if ((sz != 1 && sz != 2 && sz != 4) ||
+	    (size_t)reg + sz > sizeof(cfg)) {
+		log_warnx("%s: invalid access reg 0x%04x size %u", __func__,
+		    reg, sz);
+	} else {
+		memcpy(&data, cfg + reg, sz);
 	}
 
 	return (data);

@@ -925,7 +925,7 @@ cpu_topology(struct cpu_info *ci)
 				}
 			}
 		}
-	
+
 	} else
 		goto no_topology;
 	if ((ci->ci_cputype & (CPUTYP_E | CPUTYP_L)) == 0) {
@@ -1057,6 +1057,9 @@ cpu_check_vmm_cap(struct cpu_info *ci)
 		if (edx & AMD_SVM_VMCB_CLEAN_CAP)
 			ci->ci_vmm_cap.vcc_svm.svm_vmcb_clean = 1;
 
+		if (edx & AMD_SVM_NRIPS_CAP)
+			ci->ci_vmm_cap.vcc_svm.svm_nrips = 1;
+
 		if (edx & AMD_SVM_DECODE_ASSIST_CAP)
 			ci->ci_vmm_cap.vcc_svm.svm_decode_assist = 1;
 
@@ -1073,7 +1076,7 @@ cpu_check_vmm_cap(struct cpu_info *ci)
 	    ci->ci_pnfeatset >= CPUID_AMD_SVM_CAP) {
 		CPUID(CPUID_AMD_SVM_CAP, dummy, dummy, dummy, cap);
 		if ((cap & AMD_SVM_NESTED_PAGING_CAP) &&
-		    (cap & AMD_SVM_NRIP_SAVE_CAP))
+		    (cap & AMD_SVM_NRIPS_CAP))
 			ci->ci_vmm_flags |= CI_VMM_RVI;
 	}
 

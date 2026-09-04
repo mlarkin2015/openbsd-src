@@ -614,46 +614,35 @@ static uint32_t
 vioblk_dev_read(struct virtio_dev *dev, struct viodev_msg *msg)
 {
 	struct vioblk_dev *vioblk = (struct vioblk_dev *)&dev->vioblk;
+	uint8_t cfg[24] = { 0 };
 	uint32_t data = 0;
 	uint16_t reg = msg->reg;
 	uint8_t sz = msg->io_sz;
+	size_t i;
 
-	switch (reg & 0xFF) {
-	case VIRTIO_BLK_CONFIG_CAPACITY:
-		if (sz != 4) {
-			log_warnx("%s: unaligned read from capacity register",
-			    __func__);
-			break;
-		}
-		data = (uint32_t)(0xFFFFFFFF & vioblk->capacity);
-		break;
-	case VIRTIO_BLK_CONFIG_CAPACITY + 4:
-		if (sz != 4) {
-			log_warnx("%s: unaligned read from capacity register",
-			    __func__);
-			break;
-		}
-		data = (uint32_t)(vioblk->capacity >> 32);
-		break;
-	case VIRTIO_BLK_CONFIG_SEG_MAX:
-		if (sz != 4) {
-			log_warnx("%s: unaligned read from segment max "
-			    "register", __func__);
-			break;
-		}
-		data = vioblk->seg_max;
-		break;
-	case VIRTIO_BLK_CONFIG_GEOMETRY_C:
-	case VIRTIO_BLK_CONFIG_GEOMETRY_H:
-	case VIRTIO_BLK_CONFIG_GEOMETRY_S:
-		/*
-		 * SeaBIOS unconditionally reads without checking the
-		 * geometry feature flag.
-		 */
-		break;
-	default:
+	/*
+	 * The modern virtio PCI device configuration capability describes a
+	 * byte-addressable region.  In particular, Windows accesses fields one
+	 * byte at a time rather than only issuing naturally aligned reads.
+	 * Populate the complete region, leaving fields whose features were not
+	 * negotiated as zero, then extract the requested little-endian slice.
+	 */
+	for (i = 0; i < sizeof(vioblk->capacity); i++)
+		cfg[VIRTIO_BLK_CONFIG_CAPACITY + i] =
+		    vioblk->capacity >> (i * 8);
+	for (i = 0; i < sizeof(vioblk->seg_max); i++)
+		cfg[VIRTIO_BLK_CONFIG_SEG_MAX + i] =
+		    vioblk->seg_max >> (i * 8);
+
+	reg &= 0xff;
+	if ((sz != 1 && sz != 2 && sz != 4) ||
+	    (size_t)reg + sz > sizeof(cfg)) {
 		log_warnx("%s: invalid register 0x%04x", __func__, reg);
+		return (0);
 	}
+
+	for (i = 0; i < sz; i++)
+		data |= (uint32_t)cfg[reg + i] << (i * 8);
 
 	return (data);
 }

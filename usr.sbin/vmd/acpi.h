@@ -42,26 +42,32 @@ struct vm_run_params;
 #define VMD_FADT_PADDR		0x92000
 #define VMD_DSDT_PADDR		0x93000
 #define VMD_FACS_PADDR		0x94000
+#define VMD_HPET_PADDR		0x95000
 #define VMD_RSDP_PADDR		0x9D000
 
 #define VMD_PM1A_EVT_BASE	0xB000
 #define VMD_PM1A_EVT_LEN	4
 #define VMD_PM1A_CNT_BASE	0xB008
 #define VMD_PM1A_CNT_LEN	2
+#define VMD_PM_TMR_BASE		0xB00C
+#define VMD_PM_TMR_LEN		4
 #define VMD_PM1_SLP_TYP_S5	5
 
 #define VMD_FADT_OEM_TABLEID	"VMD FADT"
 #define VMD_DSDT_OEM_TABLEID	"VMD DSDT"
+#define VMD_HPET_OEM_TABLEID	"VMD HPET"
 
 uint8_t acpi_calculate_checksum(uint8_t *, size_t);
 void acpi_populate_header(struct acpi_table_header *, uint8_t *);
 void acpi_create_facs(paddr_t);
 void acpi_create_fadt(paddr_t, paddr_t, paddr_t);
 void acpi_create_madt(paddr_t, size_t);
+void acpi_create_hpet(paddr_t);
 void acpi_create_xsdt(paddr_t, paddr_t *, size_t);
 void acpi_create_rsdp(paddr_t, paddr_t);
 void acpi_pm1_init(void);
 uint8_t vcpu_exit_acpi_pm1(struct vm_run_params *);
+uint8_t vcpu_exit_acpi_pm_timer(struct vm_run_params *);
 void acpi_init(size_t);
 
 #endif /* !_ACPI_H_ */

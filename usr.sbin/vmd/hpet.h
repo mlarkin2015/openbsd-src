@@ -1,7 +1,7 @@
-/*	$OpenBSD: mmio.h,v 1.2 2024/07/09 09:31:37 dv Exp $	*/
+/*	$OpenBSD $	*/
 
 /*
- * Copyright (c) 2024 Mike Larkin <mlarkin@openbsd.org>
+ * Copyright (c) 2026 Mike Larkin <mlarkin@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,30 +16,23 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MMIO_H_
-#define _MMIO_H_
+#ifndef _HPET_H_
+#define _HPET_H_
 
 #include <sys/types.h>
-#include <sys/queue.h>
 
-#define MMIO_DIR_READ 0
-#define MMIO_DIR_WRITE 1
+#define VMD_HPET_BASE		0xfed00000ULL
+#define VMD_HPET_SIZE		0x400
+#define VMD_HPET_FREQUENCY	100000000ULL
+#define VMD_HPET_PERIOD_FS	10000000ULL
+#define VMD_HPET_NUM_TIMERS	3
 
-typedef int (*mmio_dev_fn_t)(uint32_t vcpu_id, int dir, paddr_t addr,
-    uint8_t size, uint64_t *data);
+/* Lower 32 bits of the General Capabilities and ID register. */
+#define VMD_HPET_CAP_ID		0x80862201U
 
-struct mmio_dev {
-	paddr_t start;
-	paddr_t end;
+void	 hpet_init(uint32_t);
+void	 hpet_stop(void);
+void	 hpet_start(void);
+int	 hpet_mmio(uint32_t, int, paddr_t, uint8_t, uint64_t *);
 
-	mmio_dev_fn_t fn;
-
-	SLIST_ENTRY(mmio_dev) dev_next;
-};
-
-
-void mmio_init(void);
-mmio_dev_fn_t mmio_find_dev(paddr_t);
-int mmio_dev_add(paddr_t, paddr_t, mmio_dev_fn_t);
-
-#endif /* _MMIO_H_ */
+#endif /* !_HPET_H_ */

@@ -85,6 +85,7 @@ struct svm {
 	uint32_t	svm_max_asid;
 	uint8_t		svm_flush_by_asid;
 	uint8_t		svm_vmcb_clean;
+	uint8_t		svm_nrips;
 	uint8_t		svm_decode_assist;
 	uint8_t		svm_avic;
 	uint8_t		svm_x2avic;
