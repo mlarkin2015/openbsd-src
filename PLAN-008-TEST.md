@@ -382,11 +382,11 @@ normal regress target.
 5. It is acceptable for Setup to report no installation disk.  This milestone
    intentionally isolates UEFI, display and input from Windows virtio drivers.
 
-Current manual result: an Ubuntu 26 UEFI graphical installer validates the RFB
-and PS/2 keyboard path end to end.  A Windows 11 installer accepts the optical
-boot selection and loads its boot image, but stalls before presenting Setup;
-therefore M0a remains incomplete pending diagnosis of that later boot stage and
-pointer input.
+Current manual result: Ubuntu 26, Windows 8 checked and Windows 11 UEFI
+installers validate the RFB and PS/2 keyboard path end to end.  Windows 11
+reaches graphical Setup, and keyboard navigation and button activation work.
+The absolute pointer path remains the outstanding input requirement for M0a;
+storage-driver discovery is intentionally deferred to M0b.
 
 **M0b — injected-driver installation test**:
 

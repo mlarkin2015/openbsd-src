@@ -121,8 +121,22 @@ test_keyboard_commands(void)
 	write_data(KBC_RESET);
 	assert(read_data() == KBR_ACK);
 	assert(read_data() == KBR_RSTDONE);
-	write_data(KBC_ENABLE);
+	i8042_key_event('a', 1);
+	assert(read_data() == 0x1e);
+	i8042_key_event('a', 0);
+	assert(read_data() == 0x9e);
+
+	write_data(KBC_DISABLE);
 	drain_ack();
+	i8042_key_event('a', 1);
+	assert(!(read_status() & KBS_DIB));
+	write_data(KBC_SETDEFAULT);
+	drain_ack();
+	i8042_key_event('a', 1);
+	assert(read_data() == 0x1e);
+	i8042_key_event('a', 0);
+	assert(read_data() == 0x9e);
+
 	write_data(KBC_GETID);
 	assert(read_data() == KBR_ACK);
 	assert(read_data() == KCID_KBD1);
@@ -185,7 +199,15 @@ test_disable_and_reset(void)
 	write_command(KBC_KBDDISABLE);
 	i8042_key_event('a', 1);
 	assert(!(read_status() & KBS_DIB));
-	write_command(KBC_KBDENABLE);
+	write_data(KBC_ECHO);
+	assert(read_data() == KBR_ECHO);
+	write_command(KBC_RAMREAD);
+	assert(!(read_data() & KC8_KDISABLE));
+	i8042_key_event('a', 1);
+	assert(read_data() == 0x1c);
+	i8042_key_event('a', 0);
+	assert(read_data() == KBR_BREAK);
+	assert(read_data() == 0x1c);
 
 	memset(&reset_exit, 0, sizeof(reset_exit));
 	memset(&reset_vrp, 0, sizeof(reset_vrp));

@@ -215,14 +215,16 @@ Everything else depends on these. Order within the phase:
 6. **PS/2 keyboard — complete**: the i8042 controller implements ports
    0x60/0x64, IRQ 1, controller and keyboard command responses, scan-set
    translation, and RFB keysym input.  An Ubuntu 26 UEFI installer accepted
-   keyboard input throughout its graphical installer.  The Windows 11 optical
-   boot prompt also consumed the injected Set-1 keycodes and loaded its boot
-   image; its subsequent stall is a separate bring-up issue.  A virtio-input
+   keyboard input throughout its graphical installer.  Windows 8 checked and
+   Windows 11 installers now reach graphical Setup and accept keyboard
+   navigation and button activation.  Reset and Set Defaults correctly restore
+   keyboard scanning, as required by the Windows i8042 driver.  A virtio-input
    absolute tablet remains next; retain a relative PS/2 mouse only as a
    fallback.
-7. **Visible Windows Setup milestone**: boot an unmodified Windows installer and
-   verify that firmware and Setup are visible and accept keyboard/pointer input.
-   It need not discover the virtio installation disk yet.
+7. **Visible Windows Setup milestone — keyboard complete**: an unmodified
+   Windows 11 installer reaches graphical Setup and accepts PS/2 keyboard
+   input.  Absolute pointer input remains before M0a is complete.  Setup need
+   not discover the virtio installation disk yet.
 8. **Windows installation-media workflow**: provide a reproducible Windows
    PowerShell/ADK procedure to inject `vioscsi` and/or `viostor` into every
    relevant `boot.wim` index and selected `install.wim` editions.  Add NetKVM,
