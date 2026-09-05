@@ -731,3 +731,5 @@ vmmci*		at virtio?	# VMM control interface
 #viogpu*	at virtio?	# VirtIO GPU device
 #wsdisplay0	at viogpu? console 1
 #wsdisplay*	at viogpu? mux -1
+vioinput*	at virtio?	# VirtIO input device
+wsmouse*	at vioinput? mux 0
