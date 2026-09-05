@@ -84,3 +84,7 @@ file	dev/pv/vmmci.c			vmmci
 device	viogpu: drmbase, wsemuldisplaydev, rasops32
 attach	viogpu at virtio
 file	dev/pv/viogpu.c			viogpu
+
+device	vioinput: wsmousedev
+attach	vioinput at virtio
+file	dev/pv/vioinput.c		vioinput
