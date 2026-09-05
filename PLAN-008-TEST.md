@@ -392,8 +392,12 @@ normal regress target.
 Current manual result: Ubuntu 26, Windows 8 checked and Windows 11 UEFI
 installers validate the RFB and PS/2 keyboard path end to end.  Windows 11
 reaches graphical Setup, and keyboard navigation and button activation work.
-The absolute pointer path remains the outstanding input requirement for M0a;
-storage-driver discovery is intentionally deferred to M0b.
+The standard `1af4:1052` absolute pointer path is implemented with focused
+coverage for configuration discovery, event/status queues, report atomicity,
+coordinate scaling, interrupts and reset.  An installed Windows 10 guest with
+the signed `vioinput` driver validated synchronized absolute motion, left-click,
+dragging, middle/right buttons and wheel input through the RFB display.  The M0a
+input requirement is complete; storage-driver discovery is tracked in M0b.
 
 **M0b — injected-driver installation test**:
 

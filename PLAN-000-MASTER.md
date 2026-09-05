@@ -117,11 +117,8 @@ What does **not** exist (gaps that gate Windows):
 | Gap | Impact on Windows |
 |---|---|
 | SMP lifecycle/architecture coverage incomplete | OpenBSD 2/4/8, Linux 4/8 and FreeBSD 2/8 boot; SMP reboot and halt/poweroff pass, while repeated reset loops, pause/unpause and Intel VMX still need validation |
-| No display device or display service | Windows Setup is graphical — cannot install blind |
-| No input (i8042 or virtio-input tablet) | Cannot interact with Setup |
 | No IDE/AHCI/NVMe storage | Storage is virtio-only; Windows drivers must be injected into installation media |
 | Minimal DSDT, optional, no _OSC/HPET or PM timer | Device discovery/power management limitations |
-| UEFI lacks a graphical host path | OVMF boots, but its GOP framebuffer cannot yet be viewed |
 | No Hyper-V TLFS interface | Windows runs unenlightened (or refuses some features) |
 | No TPM 2.0 | Win11 installer hardware check fails |
 | OVMF built without Secure Boot support | Win11 installer hardware check fails; UEFI alone is insufficient |
@@ -234,13 +231,15 @@ Everything else depends on these. Order within the phase:
    keyboard input throughout its graphical installer.  Windows 8 checked and
    Windows 11 installers now reach graphical Setup and accept keyboard
    navigation and button activation.  Reset and Set Defaults correctly restore
-   keyboard scanning, as required by the Windows i8042 driver.  A virtio-input
-   absolute tablet remains next; retain a relative PS/2 mouse only as a
-   fallback.
-7. **Visible Windows Setup milestone — keyboard complete**: an unmodified
-   Windows 11 installer reaches graphical Setup and accepts PS/2 keyboard
-   input.  Absolute pointer input remains before M0a is complete.  Setup need
-   not discover the virtio installation disk yet.
+   keyboard scanning, as required by the Windows i8042 driver.  A modern
+   virtio-input absolute tablet is implemented for display VMs, has focused
+   queue/configuration regression coverage, and was runtime-tested in Windows
+   10.  Retain a relative PS/2 mouse only as a fallback.
+7. **Visible Windows Setup milestone — complete**: an unmodified Windows 11
+   installer reaches graphical Setup and accepts PS/2 keyboard input.  The
+   `1af4:1052` absolute tablet provides synchronized pointer movement, buttons,
+   dragging and wheel input in an installed Windows 10 guest.  Setup need not
+   discover the virtio installation disk yet.
 8. **Windows installation-media workflow — implemented**: the reproducible
    PowerShell/ADK procedure injects `vioscsi`, `viostor` and `vioinput` into
    every `boot.wim` index and the storage, NetKVM, RNG and input drivers into

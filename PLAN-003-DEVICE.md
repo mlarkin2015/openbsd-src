@@ -19,9 +19,9 @@
      graphics is a comment about guests writing 0xb8000 (`x86_vm.c:189`). Windows
      Setup has no serial console mode.  Start with the OVMF ramfb/GOP surface and
      reuse the display backend for virtio-gpu later.
-   - **Input**: no i8042 PS/2 keyboard/mouse or virtio-input tablet. Without input
-     Setup is unusable. Add an i8042 keyboard first, then a virtio-input absolute
-     tablet; xHCI is not required merely to avoid relative mouse coordinates.
+   - **Input**: i8042 keyboard and a virtio-input absolute tablet are now
+     implemented and Windows-tested.  xHCI is not required merely to avoid
+     relative mouse coordinates.
 4. Disk formats are raw + qcow2 only (`VMDF_RAW`/`VMDF_QCOW2`, `vioblk.c:55`;
    `parse.y:1407`). No vhdx — document conversion instead of implementing it.
 5. USB: defer xHCI and all host-device passthrough. A virtio-input absolute
@@ -44,7 +44,8 @@ service, firmware framebuffer, keyboard and absolute pointer first; virtio-gpu
 - **RTC/NVRAM**: `mc146818.c` — real-time clock + CMOS memory
 - **UART**: `ns8250.c` — ns16550 serial console
 - **PCI**: `pci.c` — PIIX3 PCI-to-ISA bridge
-- **VirtIO**: virtio-net, virtio-blk, virtio-scsi, virtio-rng, virtio-vmmci
+- **VirtIO**: virtio-net, virtio-blk, virtio-scsi, virtio-rng,
+  virtio-input absolute tablet (display VMs), virtio-vmmci
 - **qcow2**: `vioqcow2.c` — qcow2 disk image reader
 
 ## What to Build
@@ -164,7 +165,7 @@ host renderer integration are explicitly deferred.
 - `usr.sbin/vmd/display_worker.c` — restricted Unix-socket RFB worker
 - `usr.sbin/vmd/ramfb.c` / `ramfb.h` — OVMF fw_cfg producer and capture
 - `usr.sbin/vmd/i8042.c` / `i8042.h` — keyboard and PS/2 fallback
-- `usr.sbin/vmd/vioinput.c` / `vioinput.h` — absolute tablet
+- `usr.sbin/vmd/viinput.c` / `viinput.h` — absolute tablet (implemented)
 - `usr.sbin/vmd/viogpu.c` / `viogpu.h` — later 2D scanout producer
 
 ### 3.4 Input Devices
@@ -192,6 +193,15 @@ warping in a VNC window.  The Windows `vioinput` driver must eventually be
 injected into the installer/installed image; the PS/2 fallback covers the
 unmodified-media display milestone.  Do not invent a vendor-specific PS/2
 touchpad protocol merely to obtain absolute coordinates.
+
+The device implementation is complete, host-regression tested and Windows 10
+runtime-tested.  Display
+VMs expose the standard modern PCI ID `1af4:1052`, a byte-addressable 136-byte
+device configuration, and event/status queues with MSI-X.  The RFB worker's
+bounded pointer messages are scaled into a stable 0..32767 absolute range;
+button, wheel, axis and SYN events are delivered as atomic reports.  The
+device remains in the existing VM process and adds no listener or privilege
+surface.
 
 ### 3.5 USB Controllers (Deferred)
 
@@ -270,7 +280,8 @@ large parser and privilege surface.
 3. Implement i8042 keyboard (complete); retain a PS/2 relative-pointer fallback
    as optional follow-up.
 4. Boot an unmodified Windows ISO to a visible, interactive Setup screen.
-5. Implement virtio-input absolute tablet.
+5. Implement virtio-input absolute tablet (implemented, regression-tested and
+   runtime-tested with Windows 10).
 6. Inject storage/input drivers into Windows WIMs and reach disk selection.
 7. Add virtio-gpu 2D on the same display backend.
 8. Consider NVMe, AHCI/ATAPI or xHCI only after a specific compatibility need.

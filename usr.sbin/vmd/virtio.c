@@ -143,7 +143,7 @@ static void virtio_io_cfg_msix_partial(struct virtio_dev *, uint8_t,
     uint8_t, uint32_t, uint8_t);
 static uint32_t virtio_io_cfg_field(struct virtio_dev *, int, uint8_t,
     uint32_t, uint8_t);
-static void virtio_inject_irq(struct virtio_dev *, uint16_t);
+void virtio_inject_irq(struct virtio_dev *, uint16_t);
 static void vmmci_pipe_dispatch(int, short, void *);
 
 static int virtio_io_dispatch(int, uint16_t, uint32_t *, uint8_t *, void *,
@@ -446,16 +446,29 @@ virtio_io_dispatch(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
     void *arg, uint8_t sz)
 {
 	struct virtio_dev *dev = (struct virtio_dev *)arg;
+	pthread_mutex_t *mtx;
 	int ret = 0;
 	uint8_t actual = (uint8_t)reg;
+	int reset = 0;
 
-	mutex_lock(&viornd_mtx);
+	if (dev->device_id == PCI_PRODUCT_VIRTIO_INPUT)
+		mtx = &dev->viinput.mutex;
+	else
+		mtx = &viornd_mtx;
+	mutex_lock(mtx);
 	switch (reg & 0xFF00) {
 	case VIO1_CFG_BAR_OFFSET:
+		reset = dev->device_id == PCI_PRODUCT_VIRTIO_INPUT &&
+		    dir == VEI_DIR_OUT && actual == VIO1_PCI_DEVICE_STATUS &&
+		    sz == 1 && (*data & 0xff) == 0;
 		*data = virtio_io_cfg(dev, dir, actual, *data, sz);
+		if (reset)
+			viinput_reset(dev);
 		break;
 	case VIO1_DEV_BAR_OFFSET:
-		if (dir == VEI_DIR_IN) {
+		if (dev->device_id == PCI_PRODUCT_VIRTIO_INPUT)
+			*data = viinput_cfg_io(dev, dir, actual, *data, sz);
+		else if (dir == VEI_DIR_IN) {
 			log_debug("%s: no device specific handler", __func__);
 			*data = (uint32_t)(-1);
 		}
@@ -471,7 +484,7 @@ virtio_io_dispatch(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 		if (dir == VEI_DIR_IN)
 			*data = (uint32_t)(-1);
 	}
-	mutex_unlock(&viornd_mtx);
+	mutex_unlock(mtx);
 	return (ret);
 }
 
@@ -510,7 +523,7 @@ virtio_mmio_dispatch(uint32_t vcpu_id, int dir, uint32_t reg, uint8_t sz,
 	return (ret);
 }
 
-static void
+void
 virtio_inject_irq(struct virtio_dev *dev, uint16_t vq_idx)
 {
 	uint16_t vector = VIRTIO_MSI_NO_VECTOR;
@@ -1097,6 +1110,9 @@ virtio_io_notify(int dir, uint16_t reg, uint32_t *data, uint8_t *intr,
 	case PCI_PRODUCT_VIRTIO_ENTROPY:
 		raise_intr = viornd_notifyq(dev, vq_idx);
 		break;
+	case PCI_PRODUCT_VIRTIO_INPUT:
+		raise_intr = viinput_notifyq(dev, vq_idx);
+		break;
 	case PCI_PRODUCT_VIRTIO_VMMCI:
 		/* Does not use a virtqueue. */
 		break;
@@ -1618,6 +1634,40 @@ virtio_init(struct vmd_vm *vm, int child_cdrom,
 			log_warnx("failed to launch virtio device");
 			return (1);
 		}
+	}
+
+	/*
+	 * A graphical VM gets an absolute VirtIO tablet.  It is emulated in
+	 * the VM process and consumes the already-authenticated RFB input
+	 * stream; no additional child or listening socket is needed.
+	 */
+	if (vmc->vmc_display) {
+		dev = &viinput;
+		if (pci_add_device(&id, PCI_VENDOR_QUMRANET,
+		    PCI_PRODUCT_QUMRANET_VIO1_INPUT, PCI_CLASS_INPUT,
+		    PCI_SUBCLASS_INPUT_DIGITIZER, PCI_VENDOR_OPENBSD,
+		    PCI_PRODUCT_QUMRANET_VIO1_INPUT, 1, 1, NULL)) {
+			log_warnx("can't add PCI virtio input device");
+			return (1);
+		}
+		virtio_dev_init(vm, dev, id, PCI_PRODUCT_VIRTIO_INPUT,
+		    VIINPUT_QUEUE_SIZE, VIRTIO_INPUT_QUEUES, VIRTIO_F_VERSION_1);
+		if (viinput_init(dev) == -1) {
+			log_warn("can't initialize virtio input device");
+			return (1);
+		}
+		bar_id = pci_add_bar(id, PCI_MAPREG_TYPE_MEM,
+		    virtio_mmio_dispatch, dev);
+		if (bar_id == -1 || bar_id > 0xff) {
+			log_warnx("can't add bar for virtio input device");
+			return (1);
+		}
+		virtio_pci_add_intr_caps(id, dev->num_queues);
+		virtio_pci_add_cap(id, VIRTIO_PCI_CAP_COMMON_CFG, bar_id, 0);
+		virtio_pci_add_cap(id, VIRTIO_PCI_CAP_DEVICE_CFG, bar_id,
+		    VIINPUT_CONFIG_SIZE);
+		virtio_pci_add_cap(id, VIRTIO_PCI_CAP_ISR_CFG, bar_id, 0);
+		virtio_pci_add_cap(id, VIRTIO_PCI_CAP_NOTIFY_CFG, bar_id, 0);
 	}
 
 	/* Virtio 0.9 VMM Control Interface */

@@ -26,6 +26,7 @@
 
 #include "vmd.h"
 #include "pci.h"
+#include "viinput.h"
 
 #ifndef _VIRTIO_H_
 #define _VIRTIO_H_
@@ -80,6 +81,9 @@
 #define VIOSCSI_QUEUE_SIZE_DEFAULT	128
 #define VIONET_QUEUE_SIZE_DEFAULT	256
 
+/* VirtIO input uses device ID 18 and two split virtqueues. */
+#define PCI_PRODUCT_VIRTIO_INPUT	18
+
 /* Virtio network features implemented by vmd. */
 #define VIRTIO_NET_F_CSUM		(1ULL << 0)
 #define VIRTIO_NET_F_MAC		(1ULL << 5)
@@ -120,6 +124,7 @@
 #define VIRTIO_BLK_QUEUES	1
 #define VIRTIO_NET_QUEUES	(VIONET_CTRLQ_MQ + 1)
 #define VIRTIO_SCSI_QUEUES	3
+#define VIRTIO_INPUT_QUEUES	VIINPUT_QUEUES
 #define VIRTIO_VMMCI_QUEUES	0
 #define VIRTIO_MAX_QUEUES	VIRTIO_NET_QUEUES
 
@@ -397,6 +402,7 @@ struct virtio_dev {
 		/* In-process only. */
 		struct vmmci_dev vmmci;
 		struct vioscsi_dev vioscsi;
+		struct viinput_dev viinput;
 	};
 
 	struct virtio_io_cfg		cfg;		/* Virtio 0.9 */
@@ -432,9 +438,11 @@ struct virtio_dev {
 
 /* virtio.c */
 extern struct virtio_dev vmmci;
+extern struct virtio_dev viinput;
 
 int virtio_init(struct vmd_vm *, int, int[][VM_MAX_BASE_PER_DISK], int *);
 void virtio_vq_init(struct virtio_dev *, size_t);
+void virtio_inject_irq(struct virtio_dev *, uint16_t);
 void virtio_broadcast_imsg(struct vmd_vm *, uint16_t, void *, uint16_t);
 void virtio_stop(struct vmd_vm *);
 void virtio_start(struct vmd_vm *);
