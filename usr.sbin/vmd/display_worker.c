@@ -38,6 +38,7 @@
 #ifdef __amd64__
 #include "i8042.h"
 #include "ramfb.h"
+#include "viinput.h"
 #endif
 
 #define DISPLAY_LISTEN_FD	3
@@ -100,6 +101,10 @@ display_input_drain(int fd, short event, void *arg)
 #ifdef __amd64__
 		if (input.type == DISPLAY_INPUT_KEY)
 			i8042_key_event(input.value, input.down);
+		else if (input.type == DISPLAY_INPUT_POINTER &&
+		    display_surface != NULL)
+			viinput_pointer_event(input.buttons, input.x, input.y,
+			    display_surface->width, display_surface->height);
 #endif
 	}
 }

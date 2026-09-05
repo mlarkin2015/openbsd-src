@@ -2,7 +2,7 @@
 
 .if ${MACHINE} == "amd64"
 SUBDIR =
-SUBDIR += config diskfmt display i8042 lapic ramfb rfb smbios virtio
+SUBDIR += config diskfmt display i8042 lapic ramfb rfb smbios viinput virtio
 SUBDIR += x86_mmio x86_mmu
 
 .elif make(regress) || make(all)
