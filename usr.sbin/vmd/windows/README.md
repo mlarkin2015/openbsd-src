@@ -1,19 +1,19 @@
 # Windows installation media for vmd
 
-`New-VmdWindowsIso.ps1` builds a Windows 11 x64 installation ISO containing
-the signed VirtIO drivers needed by the current vmd device model, including
-the absolute-input device.
+`New-VmdWindowsIso.ps1` builds a Windows 10, Windows 11, or Windows Server x64
+installation ISO containing the signed VirtIO drivers needed by the current
+vmd device model, including the absolute-input device.
 
 ## Requirements
 
-- A Windows 11 technician machine, preferably at the same or a newer build
-  than the source media.  Older DISM versions may reject newer images.
+- A Windows technician machine at the same or a newer build than the source
+  media.  Older DISM versions may reject newer images.
 - An elevated, 64-bit Windows PowerShell 5.1 prompt.
 - A local NTFS work volume with ample free space.  Allow roughly three times
   the source ISO size when servicing every edition.
 - The Windows ADK **Deployment Tools** component, which supplies
   `oscdimg.exe`.
-- An original Windows 11 x64 ISO and the official **stable**
+- An original Windows x64 ISO and the official **stable**
   `virtio-win.iso`.  The GitHub repository contains its packaging sources;
   use the published binary ISO linked below, not a source archive.
 
@@ -51,6 +51,19 @@ Unselected editions remain on the ISO without VirtIO drivers and should not be
 installed on vmd.  An `install.esd` is converted to `install.wim` while
 preserving all editions, so the output can be larger than the source ISO.
 
+The script normally detects the virtio-win OS directory from the selected
+install images.  Client builds select `w10` or `w11`; supported Server builds
+select `2k16`, `2k19`, `2k22`, or `2k25`.  To override detection for custom or
+unusual media, specify the directory explicitly:
+
+```powershell
+.\New-VmdWindowsIso.ps1 `
+    -WindowsIso C:\ISO\Win10.iso `
+    -VirtioIso C:\ISO\virtio-win.iso `
+    -VirtioDriverOs w10 `
+    -OutputIso C:\ISO\Win10-vmd.iso
+```
+
 ## Driver policy
 
 | Driver | `boot.wim` / WinRE | `install.wim` | vmd device |
@@ -62,11 +75,14 @@ preserving all editions, so the output can be larger than the source ISO.
 | `viorng` | no | yes | random source (`1af4:1044`) |
 | `viosnd` | no | if found | possible future sound device |
 
-The five current drivers are required and must come from
-`w11\amd64` directories.  Broad recursive injection and `ForceUnsigned` are
-deliberately avoided.  `viosnd` is optional because upstream virtio-win does
-not currently ship a Windows virtio-snd driver; the script will pick up a
-future signed package if one appears under the expected layout.
+The five current drivers are required and must all come from the selected OS
+directory and `amd64`/`x64` architecture.  Mixing driver families is unsafe:
+for example, current `w11` NetKVM fails to load on Windows 10 with Code 39
+because it imports an unavailable entry point.  Broad recursive injection and
+`ForceUnsigned` are deliberately avoided.  `viosnd` is optional because
+upstream virtio-win does not currently ship a Windows virtio-snd driver; the
+script will pick up a future signed package if one appears under the expected
+layout.
 
 The private OpenBSD vmm control device (`0b5d:0777`) has no Windows driver and
 will remain unidentified.  Firmware ramfb is not a virtio-gpu PCI device, so a
@@ -75,6 +91,8 @@ virtio-gpu driver is not injected.
 The `vioinput` driver has been runtime-tested with vmd's absolute tablet in an
 installed Windows 10 guest.  Pointer motion, buttons, dragging and wheel input
 work through the local RFB display without relative-pointer capture or warping.
+NetKVM from `w10\amd64` has also been runtime-tested in that guest; it attaches
+and provides working networking.
 
 ## Output and cleanup
 

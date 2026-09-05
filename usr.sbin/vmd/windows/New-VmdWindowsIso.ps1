@@ -3,15 +3,15 @@
 
 <#
 .SYNOPSIS
-Build a Windows 11 installation ISO with the VirtIO drivers used by OpenBSD vmd.
+Build a Windows installation ISO with the VirtIO drivers used by OpenBSD vmd.
 
 .DESCRIPTION
-New-VmdWindowsIso.ps1 copies an original Windows 11 ISO, injects signed
+New-VmdWindowsIso.ps1 copies an original Windows ISO, injects signed
 virtio-win drivers into its offline Windows images, and rebuilds a dual
 BIOS/UEFI bootable ISO.
 
 The boot images receive the boot-critical vioscsi and viostor drivers plus
-vioinput, so the next vmd absolute-input device can work in Windows Setup.
+vioinput, so vmd's absolute-input device works in Windows Setup.
 
 The install images receive vioscsi, viostor, NetKVM, viorng and vioinput, plus
 optional viosnd when found.  The upstream virtio-win suite did not contain a
@@ -24,10 +24,16 @@ official signed virtio-win ISO; the script deliberately does not use DISM's
 ForceUnsigned option.
 
 .PARAMETER WindowsIso
-Path to an original Windows 11 x64 ISO.
+Path to an original Windows 10, Windows 11, or Windows Server x64 ISO.
 
 .PARAMETER VirtioIso
-Path to a virtio-win ISO containing w11\amd64 driver directories.
+Path to a virtio-win ISO containing drivers for the target Windows release.
+
+.PARAMETER VirtioDriverOs
+The virtio-win OS directory from which drivers are selected.  The default,
+Auto, detects w10, w11, 2k16, 2k19, 2k22, or 2k25 from the selected install
+images.  Specify a directory such as w10 or w11 to override detection.  All
+drivers must come from the same OS directory and the amd64/x64 architecture.
 
 .PARAMETER OutputIso
 Path of the modified ISO to create.  Existing files are refused unless -Force
@@ -75,6 +81,12 @@ PowerShell.exe -ExecutionPolicy Bypass -File .\New-VmdWindowsIso.ps1 `
     -VirtioIso C:\ISO\virtio-win.iso `
     -OutputIso C:\ISO\Win11-Pro-vmd.iso -InstallIndex 6 `
     -KeepWorkDirectory
+
+.EXAMPLE
+.\New-VmdWindowsIso.ps1 -WindowsIso C:\ISO\Win10.iso `
+    -VirtioIso C:\ISO\virtio-win.iso `
+    -VirtioDriverOs w10 `
+    -OutputIso C:\ISO\Win10-vmd.iso
 #>
 
 [CmdletBinding()]
@@ -86,6 +98,9 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string] $VirtioIso,
+
+    [ValidateNotNullOrEmpty()]
+    [string] $VirtioDriverOs = 'Auto',
 
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -194,7 +209,7 @@ function Get-WindowsImageVersion {
         [int]$revision)
 }
 
-function Assert-Windows11X64Images {
+function Assert-WindowsX64Images {
     param([object[]] $Images, [string] $ImagePath)
 
     $maximumBuild = 0
@@ -209,12 +224,96 @@ function Assert-Windows11X64Images {
         }
 
         $version = Get-WindowsImageVersion $details
-        if ($version.Major -ne 10 -or $version.Build -lt 22000) {
-            throw "$([IO.Path]::GetFileName($ImagePath)) index $($image.ImageIndex) is Windows $version, not Windows 11."
+        if ($version.Major -ne 10) {
+            throw "$([IO.Path]::GetFileName($ImagePath)) index $($image.ImageIndex) is Windows $version; only Windows 10, Windows 11, and their Server releases are supported."
         }
         $maximumBuild = [Math]::Max($maximumBuild, $version.Build)
     }
     return $maximumBuild
+}
+
+function Get-AutomaticVirtioDriverOs {
+    param([object[]] $Images, [string] $ImagePath)
+
+    $families = @()
+    foreach ($image in $Images) {
+        $details = Get-WindowsImage -ImagePath $ImagePath `
+            -Index $image.ImageIndex
+        $version = Get-WindowsImageVersion $details
+        $metadata = @(
+            (Get-ObjectProperty $details 'ImageName'),
+            (Get-ObjectProperty $details 'ImageDescription'),
+            (Get-ObjectProperty $details 'EditionId'),
+            (Get-ObjectProperty $details 'InstallationType'),
+            (Get-ObjectProperty $details 'ProductName')
+        ) -join ' '
+        $isServer = $metadata -match '(?i)\bserver\b'
+
+        if ($isServer) {
+            if ($version.Build -ge 26100) {
+                $family = '2k25'
+            }
+            elseif ($version.Build -ge 20348) {
+                $family = '2k22'
+            }
+            elseif ($version.Build -ge 17763) {
+                $family = '2k19'
+            }
+            elseif ($version.Build -ge 14393) {
+                $family = '2k16'
+            }
+            else {
+                throw "Cannot select a virtio-win driver directory for Windows Server $version in image index $($image.ImageIndex); use -VirtioDriverOs."
+            }
+        }
+        elseif ($version.Major -eq 10 -and $version.Build -ge 22000) {
+            $family = 'w11'
+        }
+        elseif ($version.Major -eq 10 -and $version.Build -ge 10240) {
+            $family = 'w10'
+        }
+        else {
+            throw "Cannot select a virtio-win driver directory for Windows $version in image index $($image.ImageIndex); use -VirtioDriverOs."
+        }
+
+        Write-Host "  index $($image.ImageIndex) ($($image.ImageName)): Windows $version -> $family\amd64"
+        $families += $family
+    }
+
+    $families = @($families | Sort-Object -Unique)
+    if ($families.Count -ne 1) {
+        throw "Selected install images require different virtio-win driver directories: $($families -join ', '). Select compatible indexes or use -VirtioDriverOs."
+    }
+    return $families[0]
+}
+
+function Resolve-VirtioDriverOs {
+    param(
+        [string] $Requested,
+        [object[]] $Images,
+        [string] $ImagePath
+    )
+
+    $requestedLower = $Requested.Trim().ToLowerInvariant()
+    switch ($requestedLower) {
+        'auto' {
+            return (Get-AutomaticVirtioDriverOs -Images $Images `
+                -ImagePath $ImagePath)
+        }
+        'win10' { return 'w10' }
+        'windows10' { return 'w10' }
+        'win11' { return 'w11' }
+        'windows11' { return 'w11' }
+        'server2016' { return '2k16' }
+        'server2019' { return '2k19' }
+        'server2022' { return '2k22' }
+        'server2025' { return '2k25' }
+    }
+    if ($requestedLower -in @('.', '..') -or
+        $requestedLower -notmatch '^[a-z0-9][a-z0-9._-]*$') {
+        throw "VirtioDriverOs must be Auto or one virtio-win directory name, not '$Requested'."
+    }
+    return $requestedLower
 }
 
 function Publish-Iso {
@@ -295,19 +394,18 @@ function Mount-IsoReadOnly {
 function Find-VirtioInf {
     param(
         [string] $Root,
+        [string] $OsDirectory,
         [string[]] $Families,
         [string[]] $InfNames
     )
 
     foreach ($family in $Families) {
         foreach ($infName in $InfNames) {
-            foreach ($osDirectory in @('w11', 'Win11')) {
-                foreach ($archDirectory in @('amd64', 'x64')) {
-                    $candidate = Join-Path $Root `
-                        "$family\$osDirectory\$archDirectory\$infName"
-                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                        return (Get-Item -LiteralPath $candidate).FullName
-                    }
+            foreach ($archDirectory in @('amd64', 'x64')) {
+                $candidate = Join-Path $Root `
+                    "$family\$OsDirectory\$archDirectory\$infName"
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    return (Get-Item -LiteralPath $candidate).FullName
                 }
             }
         }
@@ -316,12 +414,13 @@ function Find-VirtioInf {
     # Accommodate repacked virtio-win media while refusing drivers for a
     # different Windows release or architecture.
     $matches = @()
+    $escapedOsDirectory = [Regex]::Escape($OsDirectory.ToLowerInvariant())
     foreach ($infName in $InfNames) {
         $matches += @(Get-ChildItem -LiteralPath $Root -Filter $infName `
             -File -Recurse -ErrorAction SilentlyContinue | Where-Object {
                 $path = $_.FullName.ToLowerInvariant()
-                ($path -match '\\(w11|win11)\\(amd64|x64)\\') -or
-                ($path -match '\\(amd64|x64)\\(w11|win11)\\')
+                ($path -match "\\$escapedOsDirectory\\(amd64|x64)\\") -or
+                ($path -match "\\(amd64|x64)\\$escapedOsDirectory\\")
             })
     }
     $matches = @($matches | Sort-Object FullName -Unique)
@@ -533,35 +632,6 @@ try {
     $windowsMount = Mount-IsoReadOnly $windowsIsoPath
     $virtioMount = Mount-IsoReadOnly $virtioIsoPath
 
-    Write-Step 'Resolving Windows 11 amd64 VirtIO drivers'
-    $drivers = @()
-    $missingRequired = @()
-    foreach ($spec in $driverSpecs) {
-        $inf = Find-VirtioInf -Root $virtioMount.Root `
-            -Families $spec.Families -InfNames $spec.InfNames
-        if ($null -eq $inf) {
-            if ($spec.Required) {
-                $missingRequired += $spec.Name
-                Write-Host "  ! $($spec.Name): REQUIRED, not found" `
-                    -ForegroundColor Red
-            }
-            else {
-                Write-Host "  - $($spec.Name): not present; skipped"
-            }
-            continue
-        }
-        Write-Host "  + $($spec.Name): $inf"
-        $drivers += [PSCustomObject]@{
-            Name = $spec.Name
-            Path = $inf
-            Boot = $spec.Boot
-            Install = $spec.Install
-        }
-    }
-    if ($missingRequired.Count -ne 0) {
-        throw "The virtio-win ISO lacks required w11\amd64 drivers: $($missingRequired -join ', ')"
-    }
-
     Write-Step 'Copying the Windows installation media'
     Invoke-Robocopy -Source $windowsMount.Root -Destination $mediaPath
     & attrib.exe -R (Join-Path $mediaPath '*') /S /D
@@ -574,16 +644,6 @@ try {
         throw "The Windows ISO does not contain sources\boot.wim."
     }
     (Get-Item -LiteralPath $bootWim).IsReadOnly = $false
-
-    $bootDrivers = @($drivers | Where-Object { $_.Boot })
-    $bootImages = @(Get-WindowsImage -ImagePath $bootWim)
-    $targetBuild = Assert-Windows11X64Images -Images $bootImages `
-        -ImagePath $bootWim
-    foreach ($image in $bootImages) {
-        Service-WindowsImage -ImagePath $bootWim `
-            -Index $image.ImageIndex -MountPath $mountPath `
-            -Drivers $bootDrivers
-    }
 
     $installWim = Join-Path $mediaPath 'sources\install.wim'
     $installEsd = Join-Path $mediaPath 'sources\install.esd'
@@ -611,14 +671,8 @@ try {
     (Get-Item -LiteralPath $installImagePath).IsReadOnly = $false
 
     $availableInstallImages = @(Get-WindowsImage -ImagePath $installImagePath)
-    $targetBuild = [Math]::Max($targetBuild,
-        (Assert-Windows11X64Images -Images $availableInstallImages `
-            -ImagePath $installImagePath))
-    $hostBuild = [int](Get-ItemProperty -LiteralPath `
-        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
-    if ($hostBuild -lt $targetBuild) {
-        Write-Warning "The technician OS build ($hostBuild) is older than the target image ($targetBuild). If DISM rejects the image, run this script on the same or a newer Windows 11 build."
-    }
+    $targetBuild = Assert-WindowsX64Images -Images $availableInstallImages `
+        -ImagePath $installImagePath
     Write-Step 'Available Windows install images'
     $availableInstallImages | Select-Object ImageIndex, ImageName | `
         Format-Table -AutoSize | Out-Host
@@ -633,6 +687,61 @@ try {
                 throw "InstallIndex $index does not exist in $([IO.Path]::GetFileName($installImagePath))."
             }
         }
+    }
+
+    $selectedImages = @($availableInstallImages | Where-Object {
+        [int]$_.ImageIndex -in $selectedIndexes
+    })
+    Write-Step 'Selecting the virtio-win driver OS directory'
+    $driverOs = Resolve-VirtioDriverOs -Requested $VirtioDriverOs `
+        -Images $selectedImages -ImagePath $installImagePath
+    Write-Host "  using $driverOs\amd64"
+
+    Write-Step "Resolving $driverOs\amd64 VirtIO drivers"
+    $drivers = @()
+    $missingRequired = @()
+    foreach ($spec in $driverSpecs) {
+        $inf = Find-VirtioInf -Root $virtioMount.Root `
+            -OsDirectory $driverOs -Families $spec.Families `
+            -InfNames $spec.InfNames
+        if ($null -eq $inf) {
+            if ($spec.Required) {
+                $missingRequired += $spec.Name
+                Write-Host "  ! $($spec.Name): REQUIRED, not found" `
+                    -ForegroundColor Red
+            }
+            else {
+                Write-Host "  - $($spec.Name): not present; skipped"
+            }
+            continue
+        }
+        Write-Host "  + $($spec.Name): $inf"
+        $drivers += [PSCustomObject]@{
+            Name = $spec.Name
+            Path = $inf
+            Boot = $spec.Boot
+            Install = $spec.Install
+        }
+    }
+    if ($missingRequired.Count -ne 0) {
+        throw "The virtio-win ISO lacks required $driverOs\amd64 drivers: $($missingRequired -join ', ')"
+    }
+
+    $bootDrivers = @($drivers | Where-Object { $_.Boot })
+    $bootImages = @(Get-WindowsImage -ImagePath $bootWim)
+    $targetBuild = [Math]::Max($targetBuild,
+        (Assert-WindowsX64Images -Images $bootImages `
+            -ImagePath $bootWim))
+    foreach ($image in $bootImages) {
+        Service-WindowsImage -ImagePath $bootWim `
+            -Index $image.ImageIndex -MountPath $mountPath `
+            -Drivers $bootDrivers
+    }
+
+    $hostBuild = [int](Get-ItemProperty -LiteralPath `
+        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
+    if ($hostBuild -lt $targetBuild) {
+        Write-Warning "The technician OS build ($hostBuild) is older than the target image ($targetBuild). If DISM rejects the image, run this script on the same or a newer Windows build."
     }
 
     if ([IO.Path]::GetExtension($installImagePath) -ieq '.esd') {
@@ -691,14 +800,14 @@ try {
         $VolumeLabel = $windowsMount.Label
     }
     if ([string]::IsNullOrWhiteSpace($VolumeLabel)) {
-        $VolumeLabel = 'VMD_WIN11'
+        $VolumeLabel = 'VMD_WINDOWS'
     }
     $VolumeLabel = ($VolumeLabel -replace '[^A-Za-z0-9_]', '_')
     if ($VolumeLabel.Length -gt 32) {
         $VolumeLabel = $VolumeLabel.Substring(0, 32)
     }
     if ([string]::IsNullOrWhiteSpace($VolumeLabel)) {
-        $VolumeLabel = 'VMD_WIN11'
+        $VolumeLabel = 'VMD_WINDOWS'
     }
 
     $orderCandidates = @(
