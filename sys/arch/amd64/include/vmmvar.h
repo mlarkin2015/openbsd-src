@@ -1038,6 +1038,7 @@ struct vcpu {
 	uint16_t vc_intr;			/* [v] */
 	u_int vc_intr_latch;			/* [a] */
 	uint8_t vc_irqready;			/* [v] */
+	uint8_t vc_cr8_threshold;		/* [v] */
 
 	uint8_t vc_fpuinited;			/* [v] */
 

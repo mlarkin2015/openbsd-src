@@ -67,10 +67,17 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   matched the host SHA-256
   `ab4de566f077ab6e780b24bc399898e9616ed2b8acb2e75e26acb13eacb669f3`.
   NetBSD CD-ROM operation was also independently confirmed.
+- The LAPIC regression covers the SVM CR8 unmask threshold used to avoid
+  returning to vmd for every Windows IRQL lowering when no software-LAPIC
+  vector can become deliverable.
 - OVMF enumerates the virtio-scsi optical device after REQUEST SENSE support.
   A complete 830,011,392-byte OpenBSD 8.0 ISO boots through vioscsi to the
   installer prompt; no unsupported-SCSI or guest-memory access errors occur.
-- No Windows-specific tests
+- Manual Windows 8 checked and Windows 11 graphical boot/input tests pass.
+  A driver-injected Windows 10 ISO reads through vioscsi, installs to vioblk,
+  survives two clean EFI reboot cycles and reaches OOBE.  The configured EFI
+  variable store is updated both during Setup and after booting the installed
+  disk.  NetKVM enumeration, final login and shutdown remain to validate.
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
 
@@ -396,6 +403,14 @@ storage-driver discovery is intentionally deferred to M0b.
    complete an installation to qcow2/raw storage.
 3. Reboot from the installed disk and confirm display, input, MSI-X, SMP,
    networking (when NetKVM is present), S5 shutdown and warm reset.
+
+Current manual result: Windows 10 Setup with injected virtio drivers sees the
+target vioblk disk, reads installation media through vioscsi, completes its
+copy/specialization phases, performs two clean EFI reboots from the installed
+disk and reaches OOBE.  The full OVMF flash device must be absent from fw_cfg
+E820 so `FvbServicesRuntimeDxe` can mark it as runtime MMIO; otherwise Windows
+faults while writing the physical VARS address.  Final login, NetKVM, SMP and
+shutdown validation remain.
 
 Secure Boot and TPM are later tests and are not prerequisites for the Windows
 10 M0b bring-up.  They are, however, independent requirements for an

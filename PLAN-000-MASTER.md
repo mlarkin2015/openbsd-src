@@ -74,6 +74,16 @@ being overrun and allowing READ(6) payloads to span multiple descriptors.
 NetBSD CD-ROM probing and full-image reads at 2 KiB and 64 KiB request sizes
 are runtime-validated without corruption.
 
+Windows bring-up exposed a software-LAPIC synchronization bottleneck on AMD:
+the guest writes CR8 for ordinary IRQL transitions at very high frequency.
+SVM still intercepts CR8 writes while xAPIC is handled in vmd, but vmd now
+passes the priority class of its highest TPR-masked IRR vector into vmm.  A CR8
+lowering returns to vmd only when it crosses that exact threshold; assertions
+of new software-LAPIC vectors still kick the vCPU and refresh the state.  This
+removes the empty-LAPIC exit storm without weakening interrupt delivery and is
+covered by the focused LAPIC regression.  Windows 8 checked SMP and Windows 11
+Setup exercise the path, and Windows 10 completes installation with it active.
+
 ## Deferred cleanup
 
 - **MSR handling cleanup**: replace the temporary chained facility dispatch in
@@ -198,8 +208,10 @@ Everything else depends on these. Order within the phase:
 2. **OVMF as ROM — complete** (userspace): OVMF boots OpenBSD from an EFI disk
    and installer image; `firmware uefi|bios`, persistent per-VM `efivars`,
    ephemeral variables, fw_cfg ACPI handoff, reset and firmware-setup behavior
-   are implemented and runtime-tested.  Graphical output is deliberately the
-   next layer rather than part of firmware loading.
+   are implemented and runtime-tested.  The full UEFI flash window is omitted
+   from E820 so OVMF can publish it as runtime MMIO; this fixes Windows runtime
+   variable access and permits clean Setup reboots from an installed disk.
+   Graphical output is deliberately a separate layer from firmware loading.
 3. **SMBIOS generation — complete** (userspace, `smbios.c`): types 0,1,2,3,4,
    16,17,19,20,32 and the end marker are exposed via fw_cfg.  Type 4 describes
    the single virtual package with one core/thread per vCPU, matching the CPUID
@@ -229,10 +241,13 @@ Everything else depends on these. Order within the phase:
    Windows 11 installer reaches graphical Setup and accepts PS/2 keyboard
    input.  Absolute pointer input remains before M0a is complete.  Setup need
    not discover the virtio installation disk yet.
-8. **Windows installation-media workflow**: provide a reproducible Windows
-   PowerShell/ADK procedure to inject `vioscsi` and/or `viostor` into every
-   relevant `boot.wim` index and selected `install.wim` editions.  Add NetKVM,
-   `vioinput`, and `viogpu` to `install.wim` as those devices land.
+8. **Windows installation-media workflow — implemented**: the reproducible
+   PowerShell/ADK procedure injects `vioscsi`, `viostor` and `vioinput` into
+   every `boot.wim` index and the storage, NetKVM, RNG and input drivers into
+   selected/all `install.wim` editions.  A generated Windows 10 ISO has
+   completed installation through vioscsi to a vioblk disk and reached OOBE
+   after two clean EFI reboots.  Diagnose the presently absent NetKVM network
+   interface after login; add `viogpu` when that device lands.
 9. **Virtio-gpu 2D**: implement one scanout with explicit transfer/flush damage
    and reuse the display worker.  Defer 3D/VirGL.
 10. **ACPI foundation** (PLAN-004 subset): real DSDT authored in ASL (PCI0 with
@@ -245,7 +260,9 @@ graphical Setup screen; keyboard and absolute pointer input work.  Storage may
 still be absent.
 
 **Milestone M0b**: Setup media with injected virtio drivers reaches the
-partitioning screen, sees the installation disk, and can power off cleanly.
+partitioning screen, sees the installation disk, completes installation and
+can power off cleanly.  Windows 10 now reaches OOBE from the installed vioblk
+disk; final login, NetKVM and shutdown validation remain.
 
 ### Phase 1 — Enlighten the guest (Hyper-V TLFS, corrected PLAN-002)
 
