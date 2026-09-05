@@ -1,8 +1,8 @@
 # Windows installation media for vmd
 
 `New-VmdWindowsIso.ps1` builds a Windows 11 x64 installation ISO containing
-the signed VirtIO drivers needed by the current vmd device model and the
-planned absolute-input device.
+the signed VirtIO drivers needed by the current vmd device model, including
+the absolute-input device.
 
 ## Requirements
 
@@ -57,12 +57,12 @@ preserving all editions, so the output can be larger than the source ISO.
 |---|---:|---:|---|
 | `vioscsi` | yes | yes | installer CD-ROM (`1af4:1048`) |
 | `viostor` | yes | yes | target disk (`1af4:1042`) |
-| `vioinput` | yes | yes | planned absolute pointer (`1af4:1052`) |
+| `vioinput` | yes | yes | absolute pointer (`1af4:1052`) |
 | `NetKVM` | no | yes | network (`1af4:1041`) |
 | `viorng` | no | yes | random source (`1af4:1044`) |
 | `viosnd` | no | if found | possible future sound device |
 
-The five current/planned drivers are required and must come from
+The five current drivers are required and must come from
 `w11\amd64` directories.  Broad recursive injection and `ForceUnsigned` are
 deliberately avoided.  `viosnd` is optional because upstream virtio-win does
 not currently ship a Windows virtio-snd driver; the script will pick up a
@@ -71,6 +71,10 @@ future signed package if one appears under the expected layout.
 The private OpenBSD vmm control device (`0b5d:0777`) has no Windows driver and
 will remain unidentified.  Firmware ramfb is not a virtio-gpu PCI device, so a
 virtio-gpu driver is not injected.
+
+The `vioinput` driver has been runtime-tested with vmd's absolute tablet in an
+installed Windows 10 guest.  Pointer motion, buttons, dragging and wheel input
+work through the local RFB display without relative-pointer capture or warping.
 
 ## Output and cleanup
 

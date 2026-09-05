@@ -37,6 +37,17 @@ i8042_key_event(uint32_t keysym, int down)
 }
 
 void
+viinput_pointer_event(uint8_t buttons, uint32_t x, uint32_t y,
+    uint32_t width, uint32_t height)
+{
+	(void)buttons;
+	(void)x;
+	(void)y;
+	(void)width;
+	(void)height;
+}
+
+void
 log_procinit(const char *fmt, ...)
 {
 }
