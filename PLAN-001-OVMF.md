@@ -68,13 +68,16 @@ vmd's actual platform resources:
 - PM1A control at I/O port `0xb008`; and
 - PCI interrupt routing already assigned by vmd.
 
-vmd's E820 map is intentionally not changed.  It accurately describes the
-reserved conventional-memory hole below 1 MB and a separate RAM extent above
-1 MB.  Generic OVMF's QEMU path assumes that the first base-zero E820 RAM
-record also describes all low memory.  The vmd platform path instead scans
+vmd's conventional-memory E820 layout is intentionally not flattened.  It
+accurately describes the reserved hole below 1 MB and a separate RAM extent
+above 1 MB.  Generic OVMF's QEMU path assumes that the first base-zero E820
+RAM record also describes all low memory.  The vmd platform path instead scans
 usable E820 records for the highest RAM end below 4 GB.  This keeps the guest
 memory map truthful while giving OVMF the value it needs for PEI memory
-detection.
+detection.  The complete 4 MB UEFI flash window is absent from E820: OVMF's
+FVB runtime driver removes and re-adds that whole device as runtime MMIO.  vmm
+still maps the CODE extent as reserved guest memory and vmd handles the VARS
+extent as CFI flash MMIO.
 
 vmd does not currently emulate a free-running ACPI PM timer, so this initial
 OVMF build uses EDK2's CPU/APIC timer library.  That is sufficient for firmware
@@ -111,6 +114,16 @@ vmd.
 - OVMF boot variables written to a configured `efivars` file survive VM
   shutdown and a subsequent start.  VMs without the setting receive a fresh,
   ephemeral variable store.
+- A signed-driver-injected Windows 10 installer reads its ISO through
+  virtio-scsi, installs to a virtio-blk disk, completes two clean reboot
+  cycles from that disk, and reaches OOBE.  Windows runtime variable writes
+  update the configured `efivars` backing file before and after reboot.
+- Windows exposed a firmware-map bug that simpler firmware and Unix tests did
+  not: advertising the CODE portion of flash as E820 reserved caused OVMF's
+  full-device runtime-MMIO conversion to fail silently.  Windows later faulted
+  in `FvbServicesRuntimeDxe` while writing the unmapped physical VARS address.
+  Omitting the complete flash device from E820 fixes the runtime mapping and
+  the repeatable `KMODE_EXCEPTION_NOT_HANDLED` Setup crash.
 - OVMF's EFI Shell `reset -s` enters vmd's ACPI S5 path and terminates the VM
   without leaving a spinning vmd process.
 - OVMF's EFI Shell `reset -w` uses the conventional i8042 reset command and

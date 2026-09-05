@@ -1009,6 +1009,40 @@ i82489dx_set_cr8(uint32_t vcpu_id, uint8_t cr8)
 	pthread_mutex_unlock(&lapic->mtx);
 }
 
+/*
+ * Return the CR8 priority class below which a vector currently masked only
+ * by TPR becomes deliverable.  Zero means that CR8 cannot unblock the IRR:
+ * either it is empty, an in-service vector has priority, or the highest IRR
+ * vector is already deliverable.
+ */
+uint8_t
+i82489dx_cr8_threshold(uint32_t vcpu_id)
+{
+	struct i82489dx *lapic;
+	uint8_t threshold = 0;
+	int irr, isr;
+
+	if (vcpu_id >= LAPIC_MAX_VCPUS || vcpu_id >= (uint32_t)lapic_ncpus)
+		return 0;
+
+	lapic = &lapics[vcpu_id];
+	pthread_mutex_lock(&lapic->mtx);
+	if (!(lapic->svr & LAPIC_SVR_ENABLE))
+		goto out;
+
+	irr = i82489dx_highest_in_map(lapic->irr);
+	isr = i82489dx_highest_in_map(lapic->isr);
+	if (irr != 0xffff &&
+	    (isr == 0xffff || (irr & LAPIC_TPRI_INT_MASK) >
+	    (isr & LAPIC_TPRI_INT_MASK)) &&
+	    (irr & LAPIC_TPRI_INT_MASK) <=
+	    (lapic->tpr & LAPIC_TPRI_INT_MASK))
+		threshold = (irr & LAPIC_TPRI_INT_MASK) >> 4;
+out:
+	pthread_mutex_unlock(&lapic->mtx);
+	return threshold;
+}
+
 static int
 i82489dx_highest_pending(struct i82489dx *lapic)
 {
@@ -1091,7 +1125,7 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
     int level)
 {
 	struct i82489dx *lapic;
-	int error, hw_accel, pending;
+	int error, hw_accel;
 
 	(void)destmode;
 
@@ -1156,15 +1190,18 @@ i82489dx_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 	 * Without this wake a halted target can retain a deliverable vector in
 	 * its software IRR indefinitely.
 	 */
-	pending = intr_pending(dest_vcpu);
-	if (pending) {
-		error = vcpu_intr(current_vm->vm_vmmid, dest_vcpu, 1);
-		if (error != 0)
-			fatalx("%s: can't assert vector %u on vcpu %u: %s",
-			    __func__, vector, dest_vcpu, strerror(error));
-		vcpu_unhalt(dest_vcpu);
-		vcpu_signal_run(dest_vcpu);
-	}
+	/*
+	 * Always kick a software-LAPIC target.  Its cached TPR may lag MOV CR8
+	 * operations completed in vmm, so using intr_pending() here could mistake
+	 * a newly deliverable vector for a masked one and leave it stranded.  The
+	 * ensuing exit synchronizes CR8 before vmd tests the IRR again.
+	 */
+	error = vcpu_intr(current_vm->vm_vmmid, dest_vcpu, 1);
+	if (error != 0)
+		fatalx("%s: can't assert vector %u on vcpu %u: %s",
+		    __func__, vector, dest_vcpu, strerror(error));
+	vcpu_unhalt(dest_vcpu);
+	vcpu_signal_run(dest_vcpu);
 
 	return (1);
 }

@@ -110,6 +110,7 @@ struct vm_run_params {
 	uint32_t	vrp_vcpu_id;
 	struct vcpu_inject_event	vrp_inject;
 	uint8_t		vrp_intr_pending;	/* Additional intrs pending? */
+	uint8_t		vrp_cr8_threshold;	/* TPR class which unmasks IRR */
 
 	/* Input/output parameter to VMM_IOC_RUN */
 	struct vm_exit	*vrp_exit;		/* updated exit data */
