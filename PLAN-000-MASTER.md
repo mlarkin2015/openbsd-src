@@ -245,8 +245,10 @@ Everything else depends on these. Order within the phase:
    every `boot.wim` index and the storage, NetKVM, RNG and input drivers into
    selected/all `install.wim` editions.  A generated Windows 10 ISO has
    completed installation through vioscsi to a vioblk disk and reached OOBE
-   after two clean EFI reboots.  Diagnose the presently absent NetKVM network
-   interface after login; add `viogpu` when that device lands.
+   after two clean EFI reboots.  NetKVM networking works when the installation
+   image receives the matching virtio-win OS driver family; the media builder
+   now detects that family or accepts an explicit override.  Add `viogpu` when
+   that device lands.
 9. **Virtio-gpu 2D**: implement one scanout with explicit transfer/flush damage
    and reuse the display worker.  Defer 3D/VirGL.
 10. **ACPI foundation** (PLAN-004 subset): real DSDT authored in ASL (PCI0 with
@@ -261,7 +263,8 @@ still be absent.
 **Milestone M0b**: Setup media with injected virtio drivers reaches the
 partitioning screen, sees the installation disk, completes installation and
 can power off cleanly.  Windows 10 now reaches OOBE from the installed vioblk
-disk; final login, NetKVM and shutdown validation remain.
+disk with working NetKVM networking; final login and shutdown validation
+remain.
 
 ### Phase 1 — Enlighten the guest (Hyper-V TLFS, corrected PLAN-002)
 

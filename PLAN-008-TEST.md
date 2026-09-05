@@ -77,7 +77,9 @@ Create comprehensive test infrastructure to verify Windows VM compatibility and 
   A driver-injected Windows 10 ISO reads through vioscsi, installs to vioblk,
   survives two clean EFI reboot cycles and reaches OOBE.  The configured EFI
   variable store is updated both during Setup and after booting the installed
-  disk.  NetKVM enumeration, final login and shutdown remain to validate.
+  disk.  The matching Windows 10 NetKVM driver enumerates and provides working
+  networking; using the Windows 11 NetKVM binary instead fails at driver load
+  with Code 39.  Final login and shutdown remain to validate.
 - No automated VM boot testing (all manual)
 - No guest-side test infrastructure
 
@@ -413,8 +415,9 @@ target vioblk disk, reads installation media through vioscsi, completes its
 copy/specialization phases, performs two clean EFI reboots from the installed
 disk and reaches OOBE.  The full OVMF flash device must be absent from fw_cfg
 E820 so `FvbServicesRuntimeDxe` can mark it as runtime MMIO; otherwise Windows
-faults while writing the physical VARS address.  Final login, NetKVM, SMP and
-shutdown validation remain.
+faults while writing the physical VARS address.  NetKVM from the matching
+`w10\amd64` package enumerates and provides working networking.  Final login,
+SMP and shutdown validation remain.
 
 Secure Boot and TPM are later tests and are not prerequisites for the Windows
 10 M0b bring-up.  They are, however, independent requirements for an
