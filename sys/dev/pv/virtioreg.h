@@ -81,6 +81,7 @@
 #define PCI_PRODUCT_VIRTIO_9P		9
 #define PCI_PRODUCT_VIRTIO_MAC80211	10
 #define PCI_PRODUCT_VIRTIO_GPU		16
+#define PCI_PRODUCT_VIRTIO_INPUT	18
 #define PCI_PRODUCT_VIRTIO_VMMCI	65535	/* private id */
 
 /* device-independent feature bits */

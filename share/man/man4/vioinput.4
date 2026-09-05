@@ -1,0 +1,45 @@
+.\"     $OpenBSD$
+.\"
+.\" Copyright (c) 2026 Mike Larkin <mlarkin@openbsd.org>
+.\"
+.\" Permission to use, copy, modify, and distribute this software for any
+.\" purpose with or without fee is hereby granted, provided that the above
+.\" copyright notice and this permission notice appear in all copies.
+.\"
+.\" THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+.\" WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+.\" MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+.\" ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+.\" WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+.\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+.\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+.\"
+.Dd $Mdocdate$
+.Dt VIOINPUT 4
+.Os
+.Sh NAME
+.Nm vioinput
+.Nd VirtIO absolute pointing device
+.Sh SYNOPSIS
+.Cd "vioinput* at virtio?"
+.Cd "wsmouse* at vioinput?"
+.Sh DESCRIPTION
+The
+.Nm
+driver provides support for VirtIO input devices that advertise absolute X
+and Y axes.
+Input events are exposed through the
+.Xr wsmouse 4
+interface as absolute pointer coordinates, buttons, and vertical wheel motion.
+.Pp
+The driver supports the VirtIO event and status queues.
+The status queue is currently unused because keyboard LEDs and force feedback
+are not part of the supported absolute-tablet profile.
+.Sh SEE ALSO
+.Xr virtio 4 ,
+.Xr wsmouse 4
+.Sh HISTORY
+The
+.Nm
+device driver first appeared in
+.Ox 8.0 .
