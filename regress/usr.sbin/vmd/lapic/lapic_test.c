@@ -23,6 +23,7 @@ static unsigned int vector_count;
 static unsigned int init_count;
 static unsigned int sipi_count;
 static unsigned int avic_vector_count;
+static unsigned int intr_count;
 static unsigned int unhalt_count;
 static unsigned int signal_count;
 static uint32_t vector_targets[VMM_MAX_VCPUS_PER_VM];
@@ -186,10 +187,11 @@ main(void)
 	    lapic_state) == 0);
 	assert(lapic_state[LAPIC_ID >> 4] ==
 	    (2U << LAPIC_ID_SHIFT));
+	i = unhalt_count;
 	i82489dx_vector_irq(2, 0, 0x51, 0);
 	assert(avic_vector_count == 1);
-	assert(unhalt_count == 1);
-	assert(signal_count == 1);
+	assert(unhalt_count == i + 1);
+	assert(signal_count == i + 1);
 	assert(i82489dx_avic_deactivate(2, VMM_AVIC_XAPIC,
 	    lapic_state) == 0);
 
@@ -202,11 +204,12 @@ main(void)
 	assert(last_vector == 0x52);
 
 	/* Hardware has queued a stopped-target IPI; userspace only wakes it. */
+	i = unhalt_count;
 	i82489dx_avic_ipi(0, 3U << LAPIC_ID_SHIFT,
 	    LAPIC_DLMODE_FIXED | 0x53,
 	    I82489DX_AVIC_IPI_TARGET_NOT_RUNNING, 3, 0);
-	assert(unhalt_count == 2);
-	assert(signal_count == 2);
+	assert(unhalt_count == i + 1);
+	assert(signal_count == i + 1);
 
 	/* x2APIC exposes unshifted physical and derived logical IDs. */
 	assert(read_x2apic(3, 0x02) == 3);
@@ -294,6 +297,16 @@ main(void)
 	assert(i82489dx_get_cr8(1) == 2);
 	i82489dx_set_cr8(1, 4);
 	assert(read_reg(1, LAPIC_TPRI) == 0x40);
+
+	/* A masked IRR vector supplies the exact CR8 unmask threshold. */
+	i = intr_count;
+	i82489dx_vector_irq(1, 0, 0x35, 0);
+	assert(intr_count == i + 1);
+	assert(i82489dx_cr8_threshold(1) == 3);
+	i82489dx_set_cr8(1, 2);
+	assert(i82489dx_cr8_threshold(1) == 0);
+	assert(i82489dx_ack(1) == 0x35);
+	eoi(1);
 	write_reg(1, LAPIC_TPRI, 0);
 
 	/* Cluster logical mode matches both cluster and local-ID mask. */
@@ -333,6 +346,7 @@ vcpu_intr(uint32_t vmid, uint32_t target, uint8_t level)
 	(void)vmid;
 	(void)target;
 	(void)level;
+	intr_count++;
 	return (0);
 }
 
@@ -374,14 +388,14 @@ vcpu_intr_vector(uint32_t vmid, uint32_t target, uint8_t vector, int level)
 void
 vcpu_unhalt(uint32_t target)
 {
-	assert(target == 2 || target == 3);
+	assert(target < test_vm.vm_params.vmc_ncpus);
 	unhalt_count++;
 }
 
 void
 vcpu_signal_run(uint32_t target)
 {
-	assert(target == 2 || target == 3);
+	assert(target < test_vm.vm_params.vmc_ncpus);
 	signal_count++;
 }
 

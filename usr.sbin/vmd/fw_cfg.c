@@ -103,6 +103,7 @@ fw_cfg_init(struct vmop_create_params *vmc)
 {
 	unsigned int sd = 0;
 	size_t i, j, e820_len = 0;
+	uint64_t uefi_flash_base = GB(4) - VM_UEFI_FIRMWARE_SIZE;
 	char bootorder[64];
 	const char *bootfmt;
 	int bootidx = -1;
@@ -121,6 +122,18 @@ fw_cfg_init(struct vmop_create_params *vmc)
 			/* Create a hole for MMIO regions. */
 			continue;
 		}
+		/*
+		 * OVMF's flash driver claims the complete firmware device as
+		 * runtime MMIO, including both the variable and code regions.
+		 * Leave that range absent from E820 so its GCD remove/add operation
+		 * does not span non-existent and reserved descriptors.  The CODE
+		 * region remains VM_MEM_RESERVED in vmm's memory map so it is still
+		 * directly mapped into the guest.
+		 */
+		if (vmc->vmc_firmware == VMFW_UEFI &&
+		    range->vmr_gpa >= uefi_flash_base &&
+		    range->vmr_gpa < GB(4))
+			continue;
 		bios_memmap_t *entry = &e820[j++];
 		entry->addr = range->vmr_gpa;
 		entry->size = range->vmr_size;

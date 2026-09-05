@@ -56,6 +56,7 @@ int i82489dx_avic_deactivate(uint32_t, uint8_t, uint32_t *);
 int i82489dx_hw_accel(int);
 uint8_t i82489dx_get_cr8(uint32_t);
 void i82489dx_set_cr8(uint32_t, uint8_t);
+uint8_t i82489dx_cr8_threshold(uint32_t);
 int i82489dx_is_pending(int);
 int i82489dx_ack(int);
 int i82489dx_enabled(int);

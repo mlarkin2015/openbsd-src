@@ -2975,6 +2975,7 @@ vcpu_reset_regs(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 		vcpu->vc_intr = 0;
 		atomic_swap_uint(&vcpu->vc_intr_latch, 0);
 		vcpu->vc_irqready = 0;
+		vcpu->vc_cr8_threshold = 0;
 		mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
 		vcpu->vc_svm_avic_hlt_event = 0;
 		vcpu->vc_svm_avic_hlt_kick = 0;
@@ -5263,8 +5264,14 @@ svm_handle_cr8_write(struct vcpu *vcpu, int *completed)
 	vcpu->vc_gueststate.vg_rip = nrip;
 	*completed = 1;
 
-	/* A lower TPR can make a software-LAPIC interrupt deliverable now. */
-	return (value < old ? EAGAIN : 0);
+	/*
+	 * Return to vmd only when this lowering unmasks a vector already in the
+	 * software LAPIC's IRR.  Ordinary IRQL lowering is extremely frequent on
+	 * Windows; synchronizing an empty LAPIC on every MOV CR8 can otherwise
+	 * dominate execution.  New vectors asserted while the guest is running
+	 * kick the vCPU, refresh vmd's TPR, and supply a new threshold.
+	 */
+	return (value < old && value < vcpu->vc_cr8_threshold ? EAGAIN : 0);
 }
 
 /*
@@ -8241,6 +8248,7 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 		vmcb->v_tpr = vcpu->vc_exit.vrs.vrs_crs[VCPU_REGS_CR8] & 0xf;
 		svm_set_dirty(vcpu, SVM_CLEANBITS_TPR);
 	}
+	vcpu->vc_cr8_threshold = vrp->vrp_cr8_threshold;
 
 	/* See vcpu_run_vmx(): preserve assertions racing VMM_IOC_RUN entry. */
 	vcpu->vc_intr = vrp->vrp_intr_pending |

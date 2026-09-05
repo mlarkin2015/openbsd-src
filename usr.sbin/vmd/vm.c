@@ -23,7 +23,7 @@
 #include <sys/resource.h>
 
 #include "../../sys/arch/amd64/include/vmmvar.h"
-#include <dev/vmm/vmm.h>
+#include "../../sys/dev/vmm/vmm.h"
 
 #include <machine/i82489reg.h>
 
@@ -1335,9 +1335,12 @@ vcpu_run_loop(void *arg)
 
 		/* Still more interrupts pending? */
 		vrp->vrp_intr_pending = intr_pending(n);
-		if (!i82489dx_hw_accel(n))
+		if (!i82489dx_hw_accel(n)) {
+			vrp->vrp_cr8_threshold = i82489dx_cr8_threshold(n);
 			vrp->vrp_exit->vrs.vrs_crs[VCPU_REGS_CR8] =
 			    i82489dx_get_cr8(n);
+		} else
+			vrp->vrp_cr8_threshold = 0;
 
 		/* Pair a later HLT exit with wakeups racing this guest entry. */
 		mutex_lock(&vcpu_run_mtx[n]);

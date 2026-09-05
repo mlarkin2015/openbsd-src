@@ -43,9 +43,11 @@ static uint64_t mem_write_value;
 static size_t mem_write_len;
 
 static int
-test_mmio(uint32_t vcpu_id, int dir, uint64_t addr, uint64_t *data)
+test_mmio(uint32_t vcpu_id, int dir, paddr_t addr, uint8_t size,
+    uint64_t *data)
 {
 	(void)vcpu_id;
+	(void)size;
 	mmio_last_dir = dir;
 	mmio_last_addr = addr;
 

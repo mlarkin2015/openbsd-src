@@ -356,6 +356,16 @@ vioblk_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 				used_len += id_len;
 			}
 			break;
+		case VIRTIO_BLK_T_FLUSH:
+		case VIRTIO_BLK_T_FLUSH_OUT:
+			/*
+			 * No volatile write cache is exposed to the guest.  Some
+			 * drivers issue flush requests even when the corresponding
+			 * feature was not negotiated; acknowledge those requests once
+			 * all preceding writes have completed.
+			 */
+			ds = VIRTIO_BLK_S_OK;
+			break;
 		default:
 			log_warnx("%s: unsupported vioblk command %d", __func__,
 			    cmd->type);
