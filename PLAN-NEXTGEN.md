@@ -111,6 +111,22 @@ Acceptance criteria:
 - malformed RFB, fw_cfg and worker messages cannot make the parent open new
   paths or network sockets.
 
+**Completed 2026-09-09.**  The DSDT is now read through its fixed unveil before
+pledge, bounded to the 4 KB guest-physical slot reserved for it, and copied to
+guest memory only after the VM memory map exists.  Pledge is restored in the
+parent, control, vmm, VM, agentx, vioblk and vionet processes; vioscsi already
+retained its restrictions.  Because tap(4)'s `TUNSCAP` ioctl is outside the
+pledge ioctl allowlist, vionet performs only that ioctl on the parent-opened tap
+descriptor before pledging, after receiving the fixed-size trusted device
+message and before mapping or processing guest-controlled memory.  Path and
+display-socket creation remain confined to the privileged parent.
+
+The complete vmd regression suite passed.  Live smoke tests reached a login
+prompt with four-vCPU BIOS and UEFI OpenBSD guests using VirtIO disks and
+networking.  The UEFI test also exercised persistent efivars and the display
+worker; its display socket was mode 0600, owned by the configured VM owner, and
+removed when the VM stopped.
+
 ### 3.2 Make LAPIC acceleration vendor-neutral at the vmd boundary
 
 `i82489dx.c` now contains x2APIC plus functions named for AMD AVIC.  The
