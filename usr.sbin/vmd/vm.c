@@ -366,6 +366,8 @@ vm_main(int fd, int fd_vmm)
 	 */
 	if (unveil(env->vmd_execpath, "x") == -1)
 		fatal("unveil %s", env->vmd_execpath);
+	if (unveil("/etc/firmware/vmm.dsdt", "r") == -1 && errno != ENOENT)
+		fatal("unveil /etc/firmware/vmm.dsdt");
 	if (unveil(NULL, NULL) == -1)
 		fatal("unveil lock");
 

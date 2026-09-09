@@ -3349,7 +3349,7 @@ svm_avic_hlt_wait(struct vcpu *vcpu)
 	mtx_enter(&vcpu->vc_svm_avic_hlt_mtx);
 	vcpu->vc_svm_avic_hlt_blocked = 1;
 	for (;;) {
-		if (vcpu->vc_svm_avic_hlt_kick || vcpu_must_stop(vcpu)) {
+		if (vcpu->vc_svm_avic_hlt_kick || vcpu_must_yield(vcpu)) {
 			vcpu->vc_svm_avic_hlt_kick = 0;
 			vcpu->vc_svm_avic_hlt_event = 0;
 			break;
@@ -5278,8 +5278,11 @@ svm_handle_cr8_write(struct vcpu *vcpu, int *completed)
 	}
 
 	/* Bits 63:4 are reserved in CR8. */
-	if (value & ~0xfULL)
-		return (vmm_inject_gp(vcpu));
+	if (value & ~0xfULL) {
+		vmm_inject_gp(vcpu);
+		return (0);
+	}
+
 	nrip = vmcb->v_nrip;
 	if (nrip <= vmcb->v_rip || nrip - vmcb->v_rip > 15)
 		return (EINVAL);
@@ -7087,7 +7090,9 @@ vmm_x2apic_msr(struct vcpu *vcpu, uint32_t msr, int write, uint64_t data)
 	return (EAGAIN);
 
 fault:
-	return (vmm_inject_gp(vcpu));
+	vmm_inject_gp(vcpu);
+
+	return (0);
 }
 
 /*
@@ -7263,6 +7268,7 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 	uint64_t insn_length, val;
 	uint64_t *rax, *rdx;
 	uint64_t *rcx;
+	int ret = 0;
 
 	if (vmread(VMCS_INSTRUCTION_LENGTH, &insn_length)) {
 		printf("%s: can't obtain instruction length\n", __func__);
@@ -7476,6 +7482,7 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 {
 	uint64_t insn_length, val;
 	uint64_t *rax, *rdx, *rcx;
+	int ret = 0;
 
 	if (vmread(VMCS_INSTRUCTION_LENGTH, &insn_length)) {
 		printf("%s: can't obtain instruction length\n", __func__);
@@ -7564,7 +7571,7 @@ svm_handle_msr(struct vcpu *vcpu)
 	uint64_t insn_length, val;
 	uint64_t *rax, *rcx, *rdx;
 	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
-	int ret;
+	int ret = 0;
 
 	/* XXX: Validate RDMSR / WRMSR insn_length */
 	insn_length = 2;
@@ -7578,11 +7585,6 @@ svm_handle_msr(struct vcpu *vcpu)
 		val = (*rdx << 32) | (*rax & 0xFFFFFFFFULL);
 
 		switch (*rcx) {
-		case MSR_APICBASE:
-			ret = vmm_write_apicbase(vcpu, val);
-			if (ret < 0)
-				return (0);
-			break;
 		case MSR_CR_PAT:
 			if (!vmm_pat_is_valid(val)) {
 				vmm_inject_gp(vcpu);
@@ -7591,7 +7593,8 @@ svm_handle_msr(struct vcpu *vcpu)
 			vcpu->vc_shadow_pat = val;
 			break;
 		case MSR_APICBASE:
-			if (vmm_write_apicbase(vcpu, val))
+			ret = vmm_write_apicbase(vcpu, val);
+			if (ret < 0)
 				return (0);
 			break;
 		case MSR_EFER:

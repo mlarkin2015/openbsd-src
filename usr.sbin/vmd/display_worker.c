@@ -154,7 +154,7 @@ display_start(struct vmd_vm *vm)
 			goto child_fail;
 		error_fd = DISPLAY_STATUS_FD;
 		closefrom(DISPLAY_STATUS_FD + 1);
-		argv[0] = env->argv0;
+		argv[0] = env->vmd_execpath;
 		argv[1] = "-G";
 		argv[2] = "-p";
 		argv[3] = vm->vm_params.vmc_name;
