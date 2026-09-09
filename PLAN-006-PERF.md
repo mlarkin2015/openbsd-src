@@ -1,5 +1,7 @@
 # PLAN-006-PERF: Performance and Optimization
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Review Findings (2026-08 source audit) — CORRECTIONS TO THIS PLAN
 
 1. MSR numbers used throughout must match the corrected TLFS list in

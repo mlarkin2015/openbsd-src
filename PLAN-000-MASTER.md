@@ -1,5 +1,8 @@
 # PLAN-000-MASTER: Bringing vmm/vmd to Windows Guest Support
 
+> **Historical plan.**  The achieved baseline and all remaining/future work
+> are consolidated in `PLAN-NEXTGEN.md`.
+
 **Status**: implementation in progress. **Date**: 2026-09-01.
 **Scope**: OpenBSD hypervisor (kernel `vmm(4)` + userspace `vmd(8)`) capable of
 installing and running Microsoft Windows 10/11 as guests.

@@ -1,5 +1,7 @@
 # PLAN-008-TEST: Testing and Verification
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Review Findings (2026-08 source audit) — CORRECTIONS TO THIS PLAN
 
 1. Existing regress assets to build on (not mentioned in the plan):
