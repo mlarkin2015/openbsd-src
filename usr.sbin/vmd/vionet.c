@@ -286,15 +286,6 @@ vionet_main(int fd, int fd_vmm)
 	unsigned int		 i;
 	int			 ret;
 
-	/*
-	 * stdio - needed for read/write to disk fds and channels to the vm.
-	 * vmm + proc - needed to create shared vm mappings.
-	 */
-	/* DSDT DEBUG: pledge disabled
-	if (pledge("stdio vmm proc", NULL) == -1)
-		fatal("pledge");
-	*/
-
 	/* Initialize iovec arrays. */
 	memset(iov_rx, 0, sizeof(iov_rx));
 	memset(tx_workers, 0, sizeof(tx_workers));
@@ -330,6 +321,17 @@ vionet_main(int fd, int fd_vmm)
 		if (ioctl(vionet->data_fd, TUNSCAP, &cap) == -1)
 			fatal("%s: TUNSCAP", __func__);
 	}
+
+	/*
+	 * TUNSCAP is not available under pledge.  No guest-controlled data is
+	 * processed before this point: dev is a fixed-size message from the VM
+	 * process and the tap descriptor was opened by the privileged parent.
+	 *
+	 * stdio - needed for read/write to tap and channels to the vm.
+	 * vmm + proc - needed to create shared vm mappings.
+	 */
+	if (pledge("stdio vmm proc", NULL) == -1)
+		fatal("pledge");
 
 	/* Receive our vm information from the vm process. */
 	memset(&vm, 0, sizeof(vm));

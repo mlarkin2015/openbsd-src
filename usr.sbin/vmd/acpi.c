@@ -28,6 +28,7 @@
 #include <sys/types.h>
 
 #include "acpi.h"
+#include "atomicio.h"
 #include "fw_cfg.h"
 #include "hpet.h"
 #include "vmd.h"
@@ -44,6 +45,9 @@ struct acpi_pm1 {
 static struct acpi_pm1 acpi_pm1 = {
 	.mtx = PTHREAD_MUTEX_INITIALIZER
 };
+
+static void *acpi_dsdt;
+static size_t acpi_dsdt_size;
 
 #define VMD_PM1_ENABLE_MASK	(ACPI_PM1_TMR_EN | ACPI_PM1_GBL_EN | \
 	ACPI_PM1_PWRBTN_EN | ACPI_PM1_SLPBTN_EN | ACPI_PM1_RTC_EN | \
@@ -226,21 +230,20 @@ acpi_verify_checksum(uint8_t *tbl, size_t len)
 }
 
 /*
- * acpi_load_table
+ * acpi_load_dsdt
  *
- * Load an ACPI table from the specified file path into memory at 'pa'.
- * Returns the size of the loaded table on success, or -1 on failure.
+ * Read the DSDT before the vm process restricts filesystem access.  It is
+ * copied into guest memory later, after the VM's memory map exists.
  */
-static ssize_t
-acpi_load_table(const char *path, paddr_t pa)
+int
+acpi_load_dsdt(const char *path)
 {
 	int fd;
-	ssize_t n;
-	size_t total = 0;
+	size_t n;
 	struct stat sb;
-	void *buf = NULL;
+	void *buf;
 
-	fd = open(path, O_RDONLY);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd == -1) {
 		log_warn("%s: cannot open %s", __func__, path);
 		return (-1);
@@ -252,42 +255,54 @@ acpi_load_table(const char *path, paddr_t pa)
 		return (-1);
 	}
 
-	if (sb.st_size == 0 || sb.st_size > 1024 * 1024) {
-		/* Reject empty or unreasonably large tables */
+	if (sb.st_size <= 0 || sb.st_size > VMD_DSDT_MAX_SIZE) {
 		log_warnx("%s: unreasonable table size %lld", __func__,
 		    (long long)sb.st_size);
 		close(fd);
 		return (-1);
 	}
 
-	buf = malloc(sb.st_size);
+	buf = malloc((size_t)sb.st_size);
 	if (buf == NULL) {
 		log_warn("%s: malloc", __func__);
 		close(fd);
 		return (-1);
 	}
 
-	n = read(fd, buf, sb.st_size);
+	n = atomicio(read, fd, buf, (size_t)sb.st_size);
 	close(fd);
 
-	if (n != sb.st_size) {
+	if (n != (size_t)sb.st_size) {
 		log_warn("%s: short read from %s", __func__, path);
 		free(buf);
 		return (-1);
 	}
 
-	/* Write to guest memory */
-	if (write_mem(pa, buf, n)) {
-		log_warnx("%s: could not write table to %lx", __func__, pa);
-		free(buf);
+	free(acpi_dsdt);
+	acpi_dsdt = buf;
+	acpi_dsdt_size = n;
+	return (0);
+}
+
+/* Copy the preloaded DSDT into guest memory. */
+static ssize_t
+acpi_install_dsdt(paddr_t pa)
+{
+	ssize_t size;
+
+	if (acpi_dsdt == NULL)
 		return (-1);
+
+	size = (ssize_t)acpi_dsdt_size;
+	if (write_mem(pa, acpi_dsdt, acpi_dsdt_size)) {
+		log_warnx("%s: could not write DSDT to %lx", __func__, pa);
+		size = -1;
 	}
+	free(acpi_dsdt);
+	acpi_dsdt = NULL;
+	acpi_dsdt_size = 0;
 
-	total = n;
-	free(buf);
-
-	log_warnx("%s: loaded %s (%zd bytes) to %lx", __func__, path, total, pa);
-	return (total);
+	return (size);
 }
 
 /*
@@ -619,8 +634,8 @@ acpi_init(size_t numcpu)
 
 	numtables = 0;
 
-	/* Load DSDT from file - must be loaded before FADT creation */
-	dsdt_size = acpi_load_table("/etc/firmware/vmm.dsdt", VMD_DSDT_PADDR);
+	/* Install the preloaded DSDT before creating the FADT. */
+	dsdt_size = acpi_install_dsdt(VMD_DSDT_PADDR);
 	if (dsdt_size != -1) {
 		have_dsdt = 1;
 		log_warnx("%s: DSDT loaded successfully (%zd bytes)", __func__,

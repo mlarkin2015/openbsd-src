@@ -42,6 +42,7 @@ struct vm_run_params;
 #define VMD_FADT_PADDR		0x92000
 #define VMD_DSDT_PADDR		0x93000
 #define VMD_FACS_PADDR		0x94000
+#define VMD_DSDT_MAX_SIZE	(VMD_FACS_PADDR - VMD_DSDT_PADDR)
 #define VMD_HPET_PADDR		0x95000
 #define VMD_RSDP_PADDR		0x9D000
 
@@ -58,6 +59,7 @@ struct vm_run_params;
 #define VMD_HPET_OEM_TABLEID	"VMD HPET"
 
 uint8_t acpi_calculate_checksum(uint8_t *, size_t);
+int acpi_load_dsdt(const char *);
 void acpi_populate_header(struct acpi_table_header *, uint8_t *);
 void acpi_create_facs(paddr_t);
 void acpi_create_fadt(paddr_t, paddr_t, paddr_t);
