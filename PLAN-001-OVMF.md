@@ -1,5 +1,7 @@
 # PLAN-001-OVMF: UEFI Firmware Support
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Scope and decisions
 
 The first UEFI milestone is an X64 OVMF firmware image that builds on

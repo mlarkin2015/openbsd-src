@@ -1,5 +1,7 @@
 # PLAN-004-ACPI: Enhanced ACPI Tables for Windows
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Review Findings (2026-08 source audit) — CORRECTIONS TO THIS PLAN
 
 1. **Current State is wrong about DSDT**: it is loaded from

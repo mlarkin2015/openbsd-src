@@ -1,5 +1,7 @@
 # PLAN-007-MGMT: Management and Tooling
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Review Findings (2026-08 source audit) — CORRECTIONS TO THIS PLAN
 
 1. **Guest detection (§7.3) cannot work as written**: it inspects CPUID/register

@@ -1,5 +1,7 @@
 # PLAN-003-DEVICE: Device Emulation
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Review Findings (2026-08 source audit) — CORRECTIONS TO THIS PLAN
 
 1. **`i82093aa.c` is NOT a PIIX4 IDE controller — it is the Intel 82093AA IOAPIC**

@@ -1,5 +1,7 @@
 # PLAN-002-HYPERV: Hyper-V Paravirtualization Interface
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Review Findings (2026-08 source audit) — CORRECTIONS TO THIS PLAN
 
 Most MSR numbers and several CPUID leaf layouts in this plan are **wrong**. Use the

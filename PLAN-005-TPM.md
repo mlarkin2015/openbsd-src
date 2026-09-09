@@ -1,5 +1,7 @@
 # PLAN-005-TPM: TPM 2.0 Support (Windows 11)
 
+> **Historical plan.**  Remaining work is consolidated in `PLAN-NEXTGEN.md`.
+
 ## Review Findings (2026-08 source audit) — CORRECTIONS TO THIS PLAN
 
 1. **Interface (§5.2) is wrong.** Windows does not discover a vTPM via a PCI device
