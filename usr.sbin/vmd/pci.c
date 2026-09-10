@@ -31,7 +31,7 @@
 #include "vmd.h"
 #include "pci.h"
 #include "atomicio.h"
-#include "i82489dx.h"
+#include "lapic.h"
 #include "mmio.h"
 
 struct pci pci;
@@ -410,12 +410,12 @@ pci_msi_deliver(uint64_t address, uint32_t data)
 	dest = (address >> PCI_MSI_ADDR_DEST_SHIFT) &
 	    PCI_MSI_ADDR_DEST_MASK;
 	vector = data & PCI_MSI_DATA_VECTOR_MASK;
-	targets = i82489dx_targets(dest,
+	targets = lapic_targets(dest,
 	    (address & PCI_MSI_ADDR_DESTMODE) != 0);
 	if (delivery == PCI_MSI_DELIVERY_LOPRI) {
 		/* Lowest priority selects one eligible LAPIC, not a multicast. */
 		pthread_mutex_lock(&pci_msi_mtx);
-		target = i82489dx_lowest_priority(targets, pci_msi_arb_next);
+		target = lapic_lowest_priority(targets, pci_msi_arb_next);
 		if (target != -1) {
 			pci_msi_arb_next = target + 1;
 			if (pci_msi_arb_next >=

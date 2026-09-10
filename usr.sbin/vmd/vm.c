@@ -48,7 +48,7 @@
 #include "pci.h"
 #include "virtio.h"
 #include "vmd.h"
-#include "i82489dx.h"
+#include "lapic.h"
 #if defined(__amd64__) || defined(__i386__)
 #include "x86_vm.h"
 #endif
@@ -130,7 +130,7 @@ enum vm_stat_counter {
 
 static uint64_t vm_stats[VMM_MAX_VCPUS_PER_VM][VMSTAT_COUNT];
 static uint64_t vm_stats_prev[VMM_MAX_VCPUS_PER_VM][VMSTAT_COUNT];
-static struct i82489dx_stats lapic_stats_prev;
+static struct lapic_stats lapic_stats_prev;
 static struct virtio_net_stats virtio_net_stats_prev;
 static struct event vm_stats_event;
 
@@ -163,10 +163,10 @@ vm_stats_count_exit(struct vm_run_params *vrp)
 	else if (reason == SVM_AVIC_INCOMPLETE_IPI) {
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC);
 		switch (vea->vea_ipi_failure) {
-		case I82489DX_AVIC_IPI_TARGET_NOT_RUNNING:
+		case LAPIC_AVIC_IPI_TARGET_NOT_RUNNING:
 			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_IPI_NOTRUN);
 			break;
-		case I82489DX_AVIC_IPI_INVALID_TYPE:
+		case LAPIC_AVIC_IPI_INVALID_TYPE:
 			vm_stats_inc(vcpu_id,
 			    VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE);
 			break;
@@ -200,7 +200,7 @@ stats_delta(uint64_t current, uint64_t *previous)
 static void
 vm_stats_report(int fd, short event, void *arg)
 {
-	struct i82489dx_stats lapic, lapic_delta;
+	struct lapic_stats lapic, lapic_delta;
 	struct virtio_net_stats net, net_delta;
 	struct timeval tv = { VM_STATS_INTERVAL, 0 };
 	uint64_t delta[VMSTAT_COUNT], current, avg_wait = 0, avg_hold = 0;
@@ -253,7 +253,7 @@ vm_stats_report(int fd, short event, void *arg)
 		}
 	}
 
-	i82489dx_stats_snapshot(&lapic);
+	lapic_stats_snapshot(&lapic);
 #define LAPIC_DELTA(_field) \
 	lapic_delta._field = stats_delta(lapic._field, \
 	    &lapic_stats_prev._field)
@@ -1166,7 +1166,7 @@ lapic_timer_thread(void *arg)
 		for (i = 0; i < ncpus; i++) {
 			if (vcpu_done[i])
 				continue;
-			vector = i82489dx_timer_check(i);
+			vector = lapic_timer_check(i);
 			if (vector != 0xffff)
 				vcpu_assert_vector(current_vm->vm_vmmid, i,
 				    vector);
@@ -1336,10 +1336,10 @@ vcpu_run_loop(void *arg)
 
 		/* Still more interrupts pending? */
 		vrp->vrp_intr_pending = intr_pending(n);
-		if (!i82489dx_hw_accel(n)) {
-			vrp->vrp_cr8_threshold = i82489dx_cr8_threshold(n);
+		if (!lapic_hw_accel(n)) {
+			vrp->vrp_cr8_threshold = lapic_cr8_threshold(n);
 			vrp->vrp_exit->vrs.vrs_crs[VCPU_REGS_CR8] =
-			    i82489dx_get_cr8(n);
+			    lapic_get_cr8(n);
 		} else
 			vrp->vrp_cr8_threshold = 0;
 
@@ -1355,8 +1355,8 @@ vcpu_run_loop(void *arg)
 			    __func__, current_vm->vm_vmid, n);
 			break;
 		}
-		if (!i82489dx_hw_accel(n))
-			i82489dx_set_cr8(n,
+		if (!lapic_hw_accel(n))
+			lapic_set_cr8(n,
 			    vrp->vrp_exit->vrs.vrs_crs[VCPU_REGS_CR8]);
 		vm_stats_count_exit(vrp);
 
@@ -1789,7 +1789,7 @@ vcpu_assert_init(uint32_t vcpu_id)
 
 	mutex_lock(&vcpu_run_mtx[vcpu_id]);
 	/* Serialize the LAPIC reset against a closely following SIPI. */
-	i82489dx_reset(vcpu_id);
+	lapic_reset(vcpu_id);
 	vcpu_runstate[vcpu_id] = VCPU_RUNSTATE_INIT;
 	vcpu_hlt[vcpu_id] = 0;
 	ret = pthread_cond_signal(&vcpu_run_cond[vcpu_id]);

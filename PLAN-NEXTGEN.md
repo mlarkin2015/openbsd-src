@@ -176,7 +176,7 @@ remained mode 0600 and owned by the configured VM owner.
 
 ### 3.3 Make LAPIC acceleration vendor-neutral at the vmd boundary
 
-`i82489dx.c` now contains x2APIC plus functions named for AMD AVIC.  The
+`lapic.c` now contains x2APIC plus functions named for AMD AVIC.  The
 problem is more than the historical Intel filename: a userland architectural
 LAPIC model has learned the name and transfer details of one kernel backend.
 
@@ -210,7 +210,7 @@ are already separable:
 
 The first audit list includes `vcpu_reset_regs_vmx`, `vcpu_run_vmx`,
 `vcpu_run_svm`, `vmm_handle_cpuid`, `vionet_tx`, `virtio_io_cfg_field`,
-`virtio_init`, `run_vm`, `vcpu_run_loop` and `i82489dx_mmio`.  Function length
+`virtio_init`, `run_vm`, `vcpu_run_loop` and `lapic_mmio`.  Function length
 alone is not a reason to split code; multiple state transitions or unrelated
 failure unwinds are.
 
