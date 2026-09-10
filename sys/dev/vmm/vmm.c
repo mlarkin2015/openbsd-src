@@ -370,7 +370,8 @@ vm_create(struct vm_create_params *vcp, struct proc *p)
 	if (vcp->vcp_ncpus == 0 ||
 	    vcp->vcp_ncpus > VMM_MAX_VCPUS_PER_VM)
 		return (EINVAL);
-	vcp->vcp_avic = 0;
+	vcp->vcp_lapic_backend = VMM_LAPIC_BACKEND_NONE;
+	vcp->vcp_lapic_caps = VMM_LAPIC_ACCEL_NONE;
 
 	/*
 	 * Increment global counts early to see if the capacity limits

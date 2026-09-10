@@ -113,13 +113,13 @@ enum vm_stat_counter {
 	VMSTAT_EXIT_MMIO,
 	VMSTAT_EXIT_INTRWIN,
 	VMSTAT_EXIT_CR8,
-	VMSTAT_EXIT_AVIC,
-	VMSTAT_EXIT_AVIC_IPI_NOTRUN,
-	VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE,
-	VMSTAT_EXIT_AVIC_IPI_OTHER,
-	VMSTAT_EXIT_AVIC_EOI,
-	VMSTAT_EXIT_AVIC_NOACCEL_OTHER,
-	VMSTAT_EXIT_X2APIC,
+	VMSTAT_EXIT_LAPIC_ACCEL,
+	VMSTAT_EXIT_LAPIC_ACCEL_IPI_NOTRUN,
+	VMSTAT_EXIT_LAPIC_ACCEL_IPI_EMULATE,
+	VMSTAT_EXIT_LAPIC_ACCEL_IPI_OTHER,
+	VMSTAT_EXIT_LAPIC_ACCEL_EOI,
+	VMSTAT_EXIT_LAPIC_ACCEL_OTHER,
+	VMSTAT_EXIT_LAPIC,
 	VMSTAT_EXIT_HLT,
 	VMSTAT_EXIT_OTHER,
 	VMSTAT_INJECT,
@@ -145,7 +145,7 @@ vm_stats_inc(uint32_t vcpu_id, enum vm_stat_counter counter)
 static void
 vm_stats_count_exit(struct vm_run_params *vrp)
 {
-	struct vm_exit_avic *vea = &vrp->vrp_exit->vea;
+	struct vm_exit_lapic_accel *vla = &vrp->vrp_exit->vla;
 	uint32_t vcpu_id = vrp->vrp_vcpu_id;
 	uint16_t reason = vrp->vrp_exit_reason;
 
@@ -160,28 +160,30 @@ vm_stats_count_exit(struct vm_run_params *vrp)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_INTRWIN);
 	else if (reason == VM_EXIT_CR8)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_CR8);
-	else if (reason == SVM_AVIC_INCOMPLETE_IPI) {
-		vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC);
-		switch (vea->vea_ipi_failure) {
-		case LAPIC_AVIC_IPI_TARGET_NOT_RUNNING:
-			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_IPI_NOTRUN);
-			break;
-		case LAPIC_AVIC_IPI_INVALID_TYPE:
-			vm_stats_inc(vcpu_id,
-			    VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE);
-			break;
-		default:
-			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_IPI_OTHER);
-			break;
-		}
-	} else if (reason == SVM_AVIC_NOACCEL) {
-		vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC);
-		if (vea->vea_offset == LAPIC_EOI)
-			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_EOI);
+	else if (reason == VM_EXIT_LAPIC_ACCEL) {
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_LAPIC_ACCEL);
+		if (vla->vla_op == VMM_LAPIC_ACCEL_EXIT_IPI) {
+			switch (vla->vla_ipi_status) {
+			case VMM_LAPIC_IPI_TARGET_NOT_RUNNING:
+				vm_stats_inc(vcpu_id,
+				    VMSTAT_EXIT_LAPIC_ACCEL_IPI_NOTRUN);
+				break;
+			case VMM_LAPIC_IPI_EMULATE:
+				vm_stats_inc(vcpu_id,
+				    VMSTAT_EXIT_LAPIC_ACCEL_IPI_EMULATE);
+				break;
+			default:
+				vm_stats_inc(vcpu_id,
+				    VMSTAT_EXIT_LAPIC_ACCEL_IPI_OTHER);
+				break;
+			}
+		} else if (vla->vla_op == VMM_LAPIC_ACCEL_EXIT_WRITE &&
+		    vla->vla_offset == LAPIC_EOI)
+			vm_stats_inc(vcpu_id, VMSTAT_EXIT_LAPIC_ACCEL_EOI);
 		else
-			vm_stats_inc(vcpu_id, VMSTAT_EXIT_AVIC_NOACCEL_OTHER);
-	} else if (reason == VM_EXIT_X2APIC)
-		vm_stats_inc(vcpu_id, VMSTAT_EXIT_X2APIC);
+			vm_stats_inc(vcpu_id, VMSTAT_EXIT_LAPIC_ACCEL_OTHER);
+	} else if (reason == VM_EXIT_LAPIC)
+		vm_stats_inc(vcpu_id, VMSTAT_EXIT_LAPIC);
 	else if (reason == VMX_EXIT_HLT || reason == SVM_VMEXIT_HLT)
 		vm_stats_inc(vcpu_id, VMSTAT_EXIT_HLT);
 	else if (reason != VM_EXIT_TERMINATED)
@@ -219,8 +221,8 @@ vm_stats_report(int fd, short event, void *arg)
 		}
 		if (enabled) {
 			log_info("stats %ds vcpu%zu: run=%llu none=%llu io=%llu "
-			    "mmio=%llu intrwin=%llu cr8-lower=%llu avic=%llu "
-			    "x2apic=%llu "
+			    "mmio=%llu intrwin=%llu cr8-lower=%llu "
+			    "lapic-accel=%llu lapic=%llu "
 			    "hlt=%llu other=%llu "
 			    "inject=%llu intr-assert=%llu intr-deassert=%llu",
 			    VM_STATS_INTERVAL, i,
@@ -230,26 +232,27 @@ vm_stats_report(int fd, short event, void *arg)
 			    (unsigned long long)delta[VMSTAT_EXIT_MMIO],
 			    (unsigned long long)delta[VMSTAT_EXIT_INTRWIN],
 			    (unsigned long long)delta[VMSTAT_EXIT_CR8],
-			    (unsigned long long)delta[VMSTAT_EXIT_AVIC],
-			    (unsigned long long)delta[VMSTAT_EXIT_X2APIC],
+			    (unsigned long long)delta[VMSTAT_EXIT_LAPIC_ACCEL],
+			    (unsigned long long)delta[VMSTAT_EXIT_LAPIC],
 			    (unsigned long long)delta[VMSTAT_EXIT_HLT],
 			    (unsigned long long)delta[VMSTAT_EXIT_OTHER],
 			    (unsigned long long)delta[VMSTAT_INJECT],
 			    (unsigned long long)delta[VMSTAT_INTR_ASSERT],
 			    (unsigned long long)delta[VMSTAT_INTR_DEASSERT]);
-			log_info("stats %ds vcpu%zu-avic: "
-			    "ipi-not-running=%llu ipi-invalid-type=%llu "
-			    "ipi-other=%llu eoi=%llu noaccel-other=%llu",
+			log_info("stats %ds vcpu%zu-lapic-accel: "
+			    "ipi-not-running=%llu ipi-emulate=%llu "
+			    "ipi-other=%llu eoi=%llu other=%llu",
 			    VM_STATS_INTERVAL, i,
 			    (unsigned long long)
-			    delta[VMSTAT_EXIT_AVIC_IPI_NOTRUN],
+			    delta[VMSTAT_EXIT_LAPIC_ACCEL_IPI_NOTRUN],
 			    (unsigned long long)
-			    delta[VMSTAT_EXIT_AVIC_IPI_INVALID_TYPE],
+			    delta[VMSTAT_EXIT_LAPIC_ACCEL_IPI_EMULATE],
 			    (unsigned long long)
-			    delta[VMSTAT_EXIT_AVIC_IPI_OTHER],
-			    (unsigned long long)delta[VMSTAT_EXIT_AVIC_EOI],
+			    delta[VMSTAT_EXIT_LAPIC_ACCEL_IPI_OTHER],
 			    (unsigned long long)
-			    delta[VMSTAT_EXIT_AVIC_NOACCEL_OTHER]);
+			    delta[VMSTAT_EXIT_LAPIC_ACCEL_EOI],
+			    (unsigned long long)
+			    delta[VMSTAT_EXIT_LAPIC_ACCEL_OTHER]);
 		}
 	}
 
@@ -741,7 +744,7 @@ pause_vm(struct vmd_vm *vm)
 			    __func__, (int)ret);
 			return;
 		}
-		if ((vm->vm_avic & VMM_AVIC_X2APIC) != 0 &&
+		if ((vm->vm_lapic_caps & VMM_LAPIC_ACCEL_X2APIC) != 0 &&
 		    (ret = vcpu_kick(vm->vm_vmmid, n)) != 0) {
 			log_warnx("%s: can't kick vcpu %u: %s", __func__, n,
 			    strerror(ret));
@@ -839,6 +842,7 @@ vmm_create_vm(struct vmd_vm *vm)
 {
 	struct vm_create_params		 vcp;
 	struct vmop_create_params	*vmc = &vm->vm_params;
+	const char			*lapic_backend;
 	size_t				 i;
 
 	/* Sanity check arguments */
@@ -869,11 +873,31 @@ vmm_create_vm(struct vmd_vm *vm)
 		return (errno);
 
 	vm->vm_vmmid = vcp.vcp_id;
-	vm->vm_avic = vcp.vcp_avic;
-	if (vm->vm_avic & VMM_AVIC_XAPIC)
-		log_debug("%s: AMD xAPIC AVIC available", __func__);
-	if (vm->vm_avic & VMM_AVIC_X2APIC)
-		log_debug("%s: AMD x2AVIC available", __func__);
+	vm->vm_lapic_backend = vcp.vcp_lapic_backend;
+	vm->vm_lapic_caps = vcp.vcp_lapic_caps;
+	switch (vm->vm_lapic_backend) {
+	case VMM_LAPIC_BACKEND_NONE:
+		lapic_backend = NULL;
+		break;
+	case VMM_LAPIC_BACKEND_AVIC:
+		lapic_backend = "AVIC";
+		break;
+	case VMM_LAPIC_BACKEND_APICV:
+		lapic_backend = "APICv";
+		break;
+	default:
+		log_warnx("%s: unsupported LAPIC acceleration backend %u",
+		    __func__, vm->vm_lapic_backend);
+		vm->vm_lapic_caps = VMM_LAPIC_ACCEL_NONE;
+		lapic_backend = NULL;
+		break;
+	}
+	if (lapic_backend != NULL) {
+		log_debug("%s: %s LAPIC acceleration available (modes%s%s)",
+		    __func__, lapic_backend,
+		    vm->vm_lapic_caps & VMM_LAPIC_ACCEL_XAPIC ? " xAPIC" : "",
+		    vm->vm_lapic_caps & VMM_LAPIC_ACCEL_X2APIC ? " x2APIC" : "");
+	}
 	for (i = 0; i < vcp.vcp_ncpus; i++)
 		vm->vm_sev_asid[i] = vcp.vcp_asid[i];
 	for (i = 0; i < vmc->vmc_nmemranges; i++)
@@ -1336,7 +1360,7 @@ vcpu_run_loop(void *arg)
 
 		/* Still more interrupts pending? */
 		vrp->vrp_intr_pending = intr_pending(n);
-		if (!lapic_hw_accel(n)) {
+		if (!lapic_accel_mode(n)) {
 			vrp->vrp_cr8_threshold = lapic_cr8_threshold(n);
 			vrp->vrp_exit->vrs.vrs_crs[VCPU_REGS_CR8] =
 			    lapic_get_cr8(n);
@@ -1355,7 +1379,7 @@ vcpu_run_loop(void *arg)
 			    __func__, current_vm->vm_vmid, n);
 			break;
 		}
-		if (!lapic_hw_accel(n))
+		if (!lapic_accel_mode(n))
 			lapic_set_cr8(n,
 			    vrp->vrp_exit->vrs.vrs_crs[VCPU_REGS_CR8]);
 		vm_stats_count_exit(vrp);

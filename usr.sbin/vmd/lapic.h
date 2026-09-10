@@ -34,26 +34,17 @@ struct lapic_stats {
 	uint64_t acks;
 };
 
-/* AMD AVIC incomplete-IPI failure causes passed through by vmm(4). */
-enum lapic_avic_ipi_failure {
-	LAPIC_AVIC_IPI_INVALID_TYPE = 0,
-	LAPIC_AVIC_IPI_TARGET_NOT_RUNNING,
-	LAPIC_AVIC_IPI_INVALID_TARGET,
-	LAPIC_AVIC_IPI_INVALID_BACKING,
-	LAPIC_AVIC_IPI_INVALID_VECTOR
-};
-
 void lapic_init(uint32_t);
 void lapic_reset(uint32_t);
 int lapic_mmio(uint32_t, int, paddr_t, uint8_t, uint64_t *);
 int lapic_x2apic(uint32_t, int, uint32_t, uint64_t *);
 int lapic_vector_irq(uint32_t, int, uint8_t, int);
-int lapic_avic_write(uint32_t, uint16_t, uint32_t, uint32_t);
-void lapic_avic_ipi(uint32_t, uint32_t, uint32_t, uint8_t, uint8_t,
-    int);
-int lapic_avic_activate(uint32_t, uint8_t, uint8_t, uint32_t *);
-int lapic_avic_deactivate(uint32_t, uint8_t, uint32_t *);
-int lapic_hw_accel(int);
+int lapic_accel_write(uint32_t, uint16_t, uint32_t, uint32_t);
+void lapic_accel_ipi(uint32_t, uint32_t, uint32_t, uint8_t, uint8_t,
+    uint8_t);
+int lapic_accel_activate(uint32_t, uint8_t, uint8_t, uint32_t *);
+int lapic_accel_deactivate(uint32_t, uint8_t, uint32_t *);
+uint8_t lapic_accel_mode(int);
 uint8_t lapic_get_cr8(uint32_t);
 void lapic_set_cr8(uint32_t, uint8_t);
 uint8_t lapic_cr8_threshold(uint32_t);

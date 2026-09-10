@@ -91,8 +91,8 @@ static int	loadfile_uefi(gzFile, int, off_t,
 static int	uefi_flash_init(int);
 static int	uefi_flash_mmio(uint32_t, int, paddr_t, uint8_t, uint64_t *);
 static int	vcpu_exit_eptviolation(struct vm_run_params *);
-static int	vcpu_exit_avic(struct vm_run_params *);
-static int	vcpu_exit_x2apic(struct vm_run_params *);
+static int	vcpu_exit_lapic_accel(struct vm_run_params *);
+static int	vcpu_exit_lapic(struct vm_run_params *);
 static int	vcpu_exit_reset(struct vm_run_params *);
 static void	vcpu_exit_inout(struct vm_run_params *);
 static int	read_vmem(struct vm_run_params *, uint8_t, uint64_t, void *,
@@ -868,57 +868,60 @@ vcpu_exit_inout(struct vm_run_params *vrp)
 }
 
 static int
-vcpu_exit_avic(struct vm_run_params *vrp)
+vcpu_exit_lapic_accel(struct vm_run_params *vrp)
 {
-	struct vm_exit_avic *vea = &vrp->vrp_exit->vea;
+	struct vm_exit_lapic_accel *vla = &vrp->vrp_exit->vla;
 
-	if (vrp->vrp_exit_reason == SVM_AVIC_INCOMPLETE_IPI) {
-		lapic_avic_ipi(vrp->vrp_vcpu_id, vea->vea_icrhi,
-		    vea->vea_icrlo, vea->vea_ipi_failure, vea->vea_index,
-		    vea->vea_x2apic);
+	switch (vla->vla_op) {
+	case VMM_LAPIC_ACCEL_EXIT_IPI:
+		lapic_accel_ipi(vrp->vrp_vcpu_id, vla->vla_icrhi,
+		    vla->vla_icrlo, vla->vla_ipi_status, vla->vla_index,
+		    vla->vla_mode);
 		return (0);
-	}
-
-	if (vea->vea_fault_type == VEE_FAULT_MMIO_ASSIST)
+	case VMM_LAPIC_ACCEL_EXIT_MMIO:
 		return (vcpu_exit_eptviolation(vrp));
-	if (!vea->vea_write) {
-		log_warnx("%s: unexpected AVIC read trap at offset 0x%x",
-		    __func__, vea->vea_offset);
+	case VMM_LAPIC_ACCEL_EXIT_WRITE:
+		if (!vla->vla_write) {
+			log_warnx("%s: unexpected accelerated read trap at "
+			    "offset 0x%x", __func__, vla->vla_offset);
+			return (EINVAL);
+		}
+
+		/* vmm completed the LAPIC EOI; finish IOAPIC side effects. */
+		if (vla->vla_offset == LAPIC_EOI) {
+			i82093aa_eoi(vla->vla_vector);
+			return (0);
+		}
+
+		return (lapic_accel_write(vrp->vrp_vcpu_id, vla->vla_offset,
+		    vla->vla_value, vla->vla_icrhi));
+	default:
 		return (EINVAL);
 	}
-
-	/* vmm completed the LAPIC EOI; finish its IOAPIC side effects. */
-	if (vea->vea_offset == LAPIC_EOI) {
-		i82093aa_eoi(vea->vea_vector);
-		return (0);
-	}
-
-	return (lapic_avic_write(vrp->vrp_vcpu_id, vea->vea_offset,
-	    vea->vea_value, vea->vea_icrhi));
 }
 
 static int
-vcpu_exit_x2apic(struct vm_run_params *vrp)
+vcpu_exit_lapic(struct vm_run_params *vrp)
 {
-	struct vm_exit_x2apic *vex = &vrp->vrp_exit->vex;
+	struct vm_exit_lapic *vl = &vrp->vrp_exit->vl;
 	int dir;
 
-	switch (vex->vex_op) {
-	case VMM_X2APIC_ACTIVATE:
-		return (lapic_avic_activate(vrp->vrp_vcpu_id,
-		    vex->vex_mode, vex->vex_old_mode, vex->vex_lapic));
-	case VMM_X2APIC_DEACTIVATE:
-		return (lapic_avic_deactivate(vrp->vrp_vcpu_id,
-		    vex->vex_old_mode, vex->vex_lapic));
-	case VMM_X2APIC_ACCESS:
+	switch (vl->vl_op) {
+	case VMM_LAPIC_ACCEL_ACTIVATE:
+		return (lapic_accel_activate(vrp->vrp_vcpu_id,
+		    vl->vl_mode, vl->vl_old_mode, vl->vl_lapic));
+	case VMM_LAPIC_ACCEL_DEACTIVATE:
+		return (lapic_accel_deactivate(vrp->vrp_vcpu_id,
+		    vl->vl_old_mode, vl->vl_lapic));
+	case VMM_LAPIC_ACCESS:
 		break;
 	default:
 		return (EINVAL);
 	}
 
-	dir = vex->vex_write ? MMIO_DIR_WRITE : MMIO_DIR_READ;
-	return (lapic_x2apic(vrp->vrp_vcpu_id, dir, vex->vex_msr,
-	    &vex->vex_data));
+	dir = vl->vl_write ? MMIO_DIR_WRITE : MMIO_DIR_READ;
+	return (lapic_x2apic(vrp->vrp_vcpu_id, dir, vl->vl_msr,
+	    &vl->vl_data));
 }
 
 /*
@@ -968,14 +971,13 @@ vcpu_exit(struct vm_run_params *vrp)
 		if (ret)
 			return (ret);
 		break;
-	case SVM_AVIC_INCOMPLETE_IPI:
-	case SVM_AVIC_NOACCEL:
-		ret = vcpu_exit_avic(vrp);
+	case VM_EXIT_LAPIC_ACCEL:
+		ret = vcpu_exit_lapic_accel(vrp);
 		if (ret)
 			return (ret);
 		break;
-	case VM_EXIT_X2APIC:
-		ret = vcpu_exit_x2apic(vrp);
+	case VM_EXIT_LAPIC:
+		ret = vcpu_exit_lapic(vrp);
 		if (ret)
 			return (ret);
 		break;
@@ -1646,7 +1648,7 @@ write_vmem(struct vm_run_params *vrp, uint8_t segment, uint64_t gva, void *buf,
 int
 intr_pending(int vcpu_id)
 {
-	if (!lapic_hw_accel(vcpu_id) && lapic_is_pending(vcpu_id))
+	if (!lapic_accel_mode(vcpu_id) && lapic_is_pending(vcpu_id))
 		return 1;
 	if (!i8259_is_pending())
 		return 0;
@@ -1665,7 +1667,7 @@ intr_ack(int vcpu_id)
 	/* XXX select active interrupt controller */
 	int vec;
 
-	if (!lapic_hw_accel(vcpu_id)) {
+	if (!lapic_accel_mode(vcpu_id)) {
 		vec = lapic_ack(vcpu_id);
 		if (vec != 0xFFFF)
 			return vec;

@@ -338,7 +338,8 @@ struct vmd_vm {
 	uint32_t		 vm_vmid;	/* vmd(8) identifier */
 	uint32_t		 vm_vmmid;	/* vmm(4) identifier */
 	uint32_t		 vm_peerid;
-	uint8_t			 vm_avic;	/* VMM_AVIC_* capabilities */
+	uint8_t			 vm_lapic_backend;
+	uint8_t			 vm_lapic_caps;
 
 	/* AMD SEV features */
 	uint32_t		 vm_sev_handle;
