@@ -93,12 +93,26 @@
 
 #define VM_EXIT_TERMINATED			0xFFFE
 #define VM_EXIT_NONE				0xFFFF
-#define VM_EXIT_X2APIC				0xFFFD
+#define VM_EXIT_LAPIC				0xFFFD
 #define VM_EXIT_CR8				0xFFFC
+#define VM_EXIT_LAPIC_ACCEL			0xFFFB
 
-/* AMD hardware LAPIC acceleration modes. */
-#define VMM_AVIC_XAPIC				0x01
-#define VMM_AVIC_X2APIC				0x02
+/*
+ * Hardware LAPIC acceleration capabilities and active modes.  Capabilities
+ * are fixed when the VM is created; each vCPU changes mode through the
+ * VM_EXIT_LAPIC ownership-transfer protocol below.  While a mode is active,
+ * the kernel backend owns the accelerated LAPIC state and VMM_INTR_VECTOR
+ * injects through that backend.  Otherwise vmd owns all architectural LAPIC
+ * state and pending vectors.
+ */
+#define VMM_LAPIC_ACCEL_NONE			0x00
+#define VMM_LAPIC_ACCEL_XAPIC			0x01
+#define VMM_LAPIC_ACCEL_X2APIC			0x02
+
+/* Hardware backend implementing the LAPIC acceleration contract. */
+#define VMM_LAPIC_BACKEND_NONE			0
+#define VMM_LAPIC_BACKEND_AVIC			1
+#define VMM_LAPIC_BACKEND_APICV			2
 
 /*
  * VMX: Misc defines
@@ -370,41 +384,57 @@ struct vm_exit_eptviolation {
 };
 
 /*
- * AVIC exits either describe a completed register-write trap, or an access
- * fault which must use the normal userspace MMIO instruction emulator.  Keep
- * the instruction fields first and layout-compatible with
- * vm_exit_eptviolation so the latter path can share the existing decoder.
+ * A hardware LAPIC backend uses this exit when an operation requires the
+ * architectural userspace model.  Keep the instruction fields first and
+ * layout-compatible with vm_exit_eptviolation so an MMIO-assist operation can
+ * share the existing decoder.  Hardware-specific exit reasons are translated
+ * to these operations and statuses by the MD backend.
  */
-struct vm_exit_avic {
-	uint8_t		vea_fault_type;
-	uint8_t		vea_insn_info;
-	uint8_t		vea_insn_len;
-	uint8_t		vea_insn_bytes[15];
-	uint8_t		vea_write;
-	uint8_t		vea_ipi_failure;
-	uint16_t	vea_offset;
-	uint8_t		vea_vector;
-	uint8_t		vea_index;
-	uint8_t		vea_x2apic;
-	uint8_t		vea_pad;
-	uint32_t	vea_value;
-	uint32_t	vea_icrlo;
-	uint32_t	vea_icrhi;
+struct vm_exit_lapic_accel {
+	uint8_t		vla_fault_type;
+	uint8_t		vla_insn_info;
+	uint8_t		vla_insn_len;
+	uint8_t		vla_insn_bytes[15];
+	uint8_t		vla_op;
+#define VMM_LAPIC_ACCEL_EXIT_IPI	0
+#define VMM_LAPIC_ACCEL_EXIT_WRITE	1
+#define VMM_LAPIC_ACCEL_EXIT_MMIO	2
+	uint8_t		vla_write;
+	uint8_t		vla_ipi_status;
+#define VMM_LAPIC_IPI_EMULATE		0
+#define VMM_LAPIC_IPI_TARGET_NOT_RUNNING 1
+#define VMM_LAPIC_IPI_INVALID_TARGET	2
+#define VMM_LAPIC_IPI_INVALID_STATE	3
+#define VMM_LAPIC_IPI_INVALID_VECTOR	4
+	uint8_t		vla_mode;
+	uint16_t	vla_offset;
+	uint8_t		vla_vector;
+	uint8_t		vla_index;
+	uint32_t	vla_value;
+	uint32_t	vla_icrlo;
+	uint32_t	vla_icrhi;
 };
 
-/* Userspace-assisted x2APIC access or software/hardware state transfer. */
-struct vm_exit_x2apic {
-	uint32_t	vex_msr;
-	uint8_t		vex_write;
-	uint8_t		vex_op;
-#define VMM_X2APIC_ACCESS	0
-#define VMM_X2APIC_ACTIVATE	1
-#define VMM_X2APIC_DEACTIVATE	2
-	uint8_t		vex_mode;
-	uint8_t		vex_old_mode;
-	uint64_t	vex_data;
+/*
+ * Architectural LAPIC access or software/hardware ownership transition.
+ * Transitions are serialized by the affected vCPU's VMM_IOC_RUN sequence.
+ * For ACTIVATE, vmd exports its state in vl_lapic before re-entry.  For
+ * DEACTIVATE, the kernel exports its state and vmd imports it before re-entry.
+ * Concurrent device injection is serialized by the implementation's LAPIC
+ * state lock and must fall back to the software model if teardown wins.
+ */
+struct vm_exit_lapic {
+	uint32_t	vl_msr;
+	uint8_t		vl_write;
+	uint8_t		vl_op;
+#define VMM_LAPIC_ACCESS		0
+#define VMM_LAPIC_ACCEL_ACTIVATE	1
+#define VMM_LAPIC_ACCEL_DEACTIVATE	2
+	uint8_t		vl_mode;
+	uint8_t		vl_old_mode;
+	uint64_t	vl_data;
 #define VMM_LAPIC_NREGS		64
-	uint32_t	vex_lapic[VMM_LAPIC_NREGS];
+	uint32_t	vl_lapic[VMM_LAPIC_NREGS];
 };
 
 /*
@@ -522,8 +552,8 @@ struct vm_exit {
 	union {
 		struct vm_exit_inout		vei;	/* IN/OUT exit */
 		struct vm_exit_eptviolation	vee;	/* EPT VIOLATION exit*/
-		struct vm_exit_avic		vea;	/* AMD AVIC exit */
-		struct vm_exit_x2apic		vex;	/* x2APIC MSR exit */
+		struct vm_exit_lapic_accel	vla;	/* acceleration assist */
+		struct vm_exit_lapic		vl;	/* access/state transfer */
 	};
 
 	struct vcpu_reg_state		vrs;
@@ -537,7 +567,7 @@ struct vm_intr_params {
 	uint16_t		vip_intr;
 	uint8_t			vip_type;
 #define VMM_INTR_PENDING	0
-#define VMM_INTR_VECTOR		1
+#define VMM_INTR_VECTOR		1	/* active LAPIC accelerator */
 #define VMM_INTR_KICK		2
 	uint8_t			vip_vector;
 	uint8_t			vip_level;
@@ -580,7 +610,7 @@ struct vm_rwregs_params {
  *  perf/debug (CPUIDECX_PDCM)
  *  pcid (CPUIDECX_PCID)
  *  direct cache access (CPUIDECX_DCA)
- *  x2APIC (CPUIDECX_X2APIC; re-added when legacy AVIC is inactive)
+ *  x2APIC (CPUIDECX_X2APIC; re-added by the LAPIC acceleration policy)
  *  apic deadline (CPUIDECX_DEADLINE)
  *  psn (CPUID_PSN)
  *  self snoop (CPUID_SS)

@@ -24,6 +24,7 @@
 #include <time.h>
 
 #include <machine/i82489reg.h>
+#include "../../sys/arch/amd64/include/vmmvar.h"
 
 #include "lapic.h"
 #include "i82093aa.h"
@@ -81,7 +82,7 @@ struct lapic {
 	int		timer_periodic;
 
 	uint32_t	curvec;
-	uint8_t		hw_accel;
+	uint8_t		accel_mode;	/* VMM_LAPIC_ACCEL_* or NONE */
 	struct lapic_stats stats;
 };
 
@@ -211,8 +212,9 @@ lapic_reset_locked(struct lapic *lapic, uint32_t vcpu_id)
 	lapic->timer_running = 0;
 	lapic->timer_periodic = 0;
 	lapic->curvec = 0;
-	lapic->hw_accel = current_vm != NULL &&
-	    (current_vm->vm_avic & VMM_AVIC_XAPIC) != 0;
+	lapic->accel_mode = current_vm != NULL &&
+	    (current_vm->vm_lapic_caps & VMM_LAPIC_ACCEL_XAPIC) != 0 ?
+	    VMM_LAPIC_ACCEL_XAPIC : VMM_LAPIC_ACCEL_NONE;
 }
 
 void
@@ -288,18 +290,18 @@ lapic_extint_enabled(int vcpu_id)
 	return enabled;
 }
 
-int
-lapic_hw_accel(int vcpu_id)
+uint8_t
+lapic_accel_mode(int vcpu_id)
 {
-	int enabled;
+	uint8_t mode;
 
 	if (vcpu_id < 0 || vcpu_id >= lapic_ncpus)
 		return (0);
 
 	pthread_mutex_lock(&lapics[vcpu_id].mtx);
-	enabled = lapics[vcpu_id].hw_accel != 0;
+	mode = lapics[vcpu_id].accel_mode;
 	pthread_mutex_unlock(&lapics[vcpu_id].mtx);
-	return (enabled);
+	return (mode);
 }
 
 int
@@ -795,7 +797,7 @@ lapic_x2apic(uint32_t vcpu_id, int dir, uint32_t msr, uint64_t *data)
 		if (lapic_mmio(vcpu_id, dir,
 		    LAPIC_BASE + (reg << 4), sizeof(uint32_t), data) != 0)
 			return (EINVAL);
-		/* Return the masked/effective value for AVIC backing sync. */
+		/* Return the masked/effective value for accelerator sync. */
 		if (dir == MMIO_DIR_WRITE) {
 			*data = 0;
 			if (lapic_mmio(vcpu_id, MMIO_DIR_READ,
@@ -807,18 +809,18 @@ lapic_x2apic(uint32_t vcpu_id, int dir, uint32_t msr, uint64_t *data)
 }
 
 static void
-lapic_avic_export_locked(struct lapic *lapic, uint32_t vcpu_id,
+lapic_accel_export_locked(struct lapic *lapic, uint32_t vcpu_id,
     uint8_t mode, uint32_t *regs)
 {
 	int i;
 
 	memset(regs, 0, VMM_LAPIC_NREGS * sizeof(*regs));
-	regs[LAPIC_ID >> 4] = mode == VMM_AVIC_X2APIC ?
+	regs[LAPIC_ID >> 4] = mode == VMM_LAPIC_ACCEL_X2APIC ?
 	    vcpu_id : vcpu_id << LAPIC_ID_SHIFT;
 	regs[LAPIC_VERS >> 4] = lapic->ver;
 	regs[LAPIC_TPRI >> 4] = lapic->tpr;
 	regs[LAPIC_PPRI >> 4] = lapic_ppr(lapic);
-	regs[LAPIC_LDR >> 4] = mode == VMM_AVIC_X2APIC ?
+	regs[LAPIC_LDR >> 4] = mode == VMM_LAPIC_ACCEL_X2APIC ?
 	    ((vcpu_id >> 4) << 16) | (1U << (vcpu_id & 0xf)) : lapic->ldr;
 	regs[LAPIC_DFR >> 4] = lapic->dfr;
 	regs[LAPIC_SVR >> 4] = lapic->svr;
@@ -829,7 +831,7 @@ lapic_avic_export_locked(struct lapic *lapic, uint32_t vcpu_id,
 	}
 	regs[LAPIC_ESR >> 4] = lapic->esr;
 	regs[LAPIC_ICRLO >> 4] = lapic->icrlo;
-	regs[LAPIC_ICRHI >> 4] = mode == VMM_AVIC_X2APIC ?
+	regs[LAPIC_ICRHI >> 4] = mode == VMM_LAPIC_ACCEL_X2APIC ?
 	    lapic->x2_icr_dest : lapic->icrhi;
 	regs[LAPIC_LVTT >> 4] = lapic->lvt[LVT_TIMER];
 	regs[0x2f0 >> 4] = lapic->lvt[LVT_CMCI];
@@ -844,7 +846,7 @@ lapic_avic_export_locked(struct lapic *lapic, uint32_t vcpu_id,
 }
 
 static void
-lapic_avic_import_locked(struct lapic *lapic, uint32_t vcpu_id,
+lapic_accel_import_locked(struct lapic *lapic, uint32_t vcpu_id,
     uint8_t mode, const uint32_t *regs, int import_maps)
 {
 	int i;
@@ -852,13 +854,14 @@ lapic_avic_import_locked(struct lapic *lapic, uint32_t vcpu_id,
 	lapic->id = vcpu_id << LAPIC_ID_SHIFT;
 	lapic->ver = regs[LAPIC_VERS >> 4];
 	lapic->tpr = regs[LAPIC_TPRI >> 4] & LAPIC_TPRI_MASK;
-	lapic->ldr = mode == VMM_AVIC_X2APIC ? 0 : regs[LAPIC_LDR >> 4];
-	lapic->dfr = mode == VMM_AVIC_X2APIC ?
+	lapic->ldr = mode == VMM_LAPIC_ACCEL_X2APIC ?
+	    0 : regs[LAPIC_LDR >> 4];
+	lapic->dfr = mode == VMM_LAPIC_ACCEL_X2APIC ?
 	    0xffffffff : regs[LAPIC_DFR >> 4];
 	lapic->svr = regs[LAPIC_SVR >> 4];
 	lapic->esr = regs[LAPIC_ESR >> 4];
 	lapic->icrlo = regs[LAPIC_ICRLO >> 4];
-	if (mode == VMM_AVIC_X2APIC) {
+	if (mode == VMM_LAPIC_ACCEL_X2APIC) {
 		lapic->x2_icr_dest = regs[LAPIC_ICRHI >> 4];
 		lapic->icrhi = (lapic->x2_icr_dest & 0xff) <<
 		    LAPIC_ID_SHIFT;
@@ -889,31 +892,40 @@ lapic_avic_import_locked(struct lapic *lapic, uint32_t vcpu_id,
 	}
 }
 
+/*
+ * Transfer ownership from the software model to the kernel accelerator.
+ * The vCPU thread serializes mode changes with VMM_IOC_RUN and this lock
+ * serializes the snapshot with device injection into the software IRR.
+ */
 int
-lapic_avic_activate(uint32_t vcpu_id, uint8_t mode, uint8_t old_mode,
+lapic_accel_activate(uint32_t vcpu_id, uint8_t mode, uint8_t old_mode,
     uint32_t *regs)
 {
 	struct lapic *lapic;
 
 	if (vcpu_id >= (uint32_t)lapic_ncpus ||
-	    (mode != VMM_AVIC_XAPIC && mode != VMM_AVIC_X2APIC))
+	    (mode != VMM_LAPIC_ACCEL_XAPIC && mode != VMM_LAPIC_ACCEL_X2APIC))
 		return (EINVAL);
 
 	lapic = &lapics[vcpu_id];
 	pthread_mutex_lock(&lapic->mtx);
 	if (old_mode == 0)
-		lapic_avic_export_locked(lapic, vcpu_id, mode, regs);
+		lapic_accel_export_locked(lapic, vcpu_id, mode, regs);
 	else
-		lapic_avic_import_locked(lapic, vcpu_id, old_mode, regs, 0);
-	lapic->hw_accel = mode;
+		lapic_accel_import_locked(lapic, vcpu_id, old_mode, regs, 0);
+	lapic->accel_mode = mode;
 	pthread_mutex_unlock(&lapic->mtx);
-	log_debug("%s: vcpu %u entered %s acceleration", __func__, vcpu_id,
-	    mode == VMM_AVIC_X2APIC ? "x2AVIC" : "AVIC");
+	log_debug("%s: vcpu %u entered accelerated %s mode", __func__,
+	    vcpu_id, mode == VMM_LAPIC_ACCEL_X2APIC ? "x2APIC" : "xAPIC");
 	return (0);
 }
 
+/*
+ * Transfer ownership back to the software model.  vmm has already disabled
+ * direct injection and exported the final accelerated state in regs.
+ */
 int
-lapic_avic_deactivate(uint32_t vcpu_id, uint8_t old_mode, uint32_t *regs)
+lapic_accel_deactivate(uint32_t vcpu_id, uint8_t old_mode, uint32_t *regs)
 {
 	struct lapic *lapic;
 
@@ -922,11 +934,11 @@ lapic_avic_deactivate(uint32_t vcpu_id, uint8_t old_mode, uint32_t *regs)
 
 	lapic = &lapics[vcpu_id];
 	pthread_mutex_lock(&lapic->mtx);
-	lapic_avic_import_locked(lapic, vcpu_id, old_mode, regs, 1);
-	lapic->hw_accel = 0;
+	lapic_accel_import_locked(lapic, vcpu_id, old_mode, regs, 1);
+	lapic->accel_mode = VMM_LAPIC_ACCEL_NONE;
 	pthread_mutex_unlock(&lapic->mtx);
-	log_debug("%s: vcpu %u left %s acceleration", __func__, vcpu_id,
-	    old_mode == VMM_AVIC_X2APIC ? "x2AVIC" : "AVIC");
+	log_debug("%s: vcpu %u left accelerated %s mode", __func__, vcpu_id,
+	    old_mode == VMM_LAPIC_ACCEL_X2APIC ? "x2APIC" : "xAPIC");
 	return (0);
 }
 
@@ -1125,7 +1137,7 @@ lapic_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
     int level)
 {
 	struct lapic *lapic;
-	int error, hw_accel;
+	int accelerated, error;
 
 	(void)destmode;
 
@@ -1150,8 +1162,8 @@ lapic_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 	}
 
 	lapic_stats_add(&lapic->stats.vectors, 1);
-	hw_accel = lapic->hw_accel != 0;
-	if (!hw_accel) {
+	accelerated = lapic->accel_mode != VMM_LAPIC_ACCEL_NONE;
+	if (!accelerated) {
 		lapic_set_map(lapic->irr, vector);
 		if (level)
 			lapic_set_map(lapic->tmr, vector);
@@ -1160,11 +1172,12 @@ lapic_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 	}
 	pthread_mutex_unlock(&lapic->mtx);
 
-	if (hw_accel) {
+	if (accelerated) {
 		error = vcpu_intr_vector(current_vm->vm_vmmid, dest_vcpu,
 		    vector, level);
 		if (error != 0 && error != EINVAL && error != EOPNOTSUPP)
-			fatalx("%s: can't inject AVIC vector %u on vcpu %u: %s",
+			fatalx("%s: can't inject accelerated vector %u on "
+			    "vcpu %u: %s",
 			    __func__, vector, dest_vcpu, strerror(error));
 		if (error == 0) {
 			vcpu_unhalt(dest_vcpu);
@@ -1206,9 +1219,9 @@ lapic_vector_irq(uint32_t dest_vcpu, int destmode, uint8_t vector,
 	return (1);
 }
 
-/* Mirror a completed AVIC register-write trap into the userspace model. */
+/* Mirror a completed accelerated register write into the software model. */
 int
-lapic_avic_write(uint32_t vcpu_id, uint16_t offset, uint32_t value,
+lapic_accel_write(uint32_t vcpu_id, uint16_t offset, uint32_t value,
     uint32_t icrhi)
 {
 	uint64_t data;
@@ -1228,29 +1241,29 @@ lapic_avic_write(uint32_t vcpu_id, uint16_t offset, uint32_t value,
 }
 
 void
-lapic_avic_ipi(uint32_t source, uint32_t hi, uint32_t lo,
-    uint8_t failure, uint8_t index, int x2apic)
+lapic_accel_ipi(uint32_t source, uint32_t hi, uint32_t lo,
+    uint8_t status, uint8_t index, uint8_t mode)
 {
 	uint64_t icr, targets;
 	int error, i;
 
-	switch (failure) {
-	case LAPIC_AVIC_IPI_INVALID_TYPE:
+	switch (status) {
+	case VMM_LAPIC_IPI_EMULATE:
 		/* INIT/SIPI and other unaccelerated delivery modes. */
-		if (x2apic) {
+		if (mode == VMM_LAPIC_ACCEL_X2APIC) {
 			icr = ((uint64_t)hi << 32) | lo;
 			error = lapic_x2apic(source, MMIO_DIR_WRITE,
 			    MSR_X2APIC_ICR, &icr);
 		} else
-			error = lapic_avic_write(source, LAPIC_ICRLO,
+			error = lapic_accel_write(source, LAPIC_ICRLO,
 			    lo, hi);
 		if (error != 0)
 			log_warnx("%s: failed to emulate ICR write: %s",
 			    __func__, strerror(error));
 		break;
-	case LAPIC_AVIC_IPI_TARGET_NOT_RUNNING:
+	case VMM_LAPIC_IPI_TARGET_NOT_RUNNING:
 		/* Hardware queued the vector; wake every matching target. */
-		if (x2apic)
+		if (mode == VMM_LAPIC_ACCEL_X2APIC)
 			targets = lapic_x2apic_targets(source,
 			    ((uint64_t)hi << 32) | lo);
 		else
@@ -1262,19 +1275,21 @@ lapic_avic_ipi(uint32_t source, uint32_t hi, uint32_t lo,
 			}
 		}
 		break;
-	case LAPIC_AVIC_IPI_INVALID_TARGET:
-		log_debug("%s: invalid AVIC target index %u", __func__, index);
+	case VMM_LAPIC_IPI_INVALID_TARGET:
+		log_debug("%s: invalid accelerated target index %u", __func__,
+		    index);
 		break;
-	case LAPIC_AVIC_IPI_INVALID_BACKING:
-		log_warnx("%s: invalid AVIC backing page for target %u",
+	case VMM_LAPIC_IPI_INVALID_STATE:
+		log_warnx("%s: invalid accelerator state for target %u",
 		    __func__, index);
 		break;
-	case LAPIC_AVIC_IPI_INVALID_VECTOR:
-		log_debug("%s: invalid AVIC IPI vector 0x%x", __func__,
+	case VMM_LAPIC_IPI_INVALID_VECTOR:
+		log_debug("%s: invalid accelerated IPI vector 0x%x", __func__,
 		    lo & LAPIC_LVTT_VEC_MASK);
 		break;
 	default:
-		log_warnx("%s: unknown AVIC IPI failure %u", __func__, failure);
+		log_warnx("%s: unknown accelerated IPI status %u", __func__,
+		    status);
 		break;
 	}
 }
