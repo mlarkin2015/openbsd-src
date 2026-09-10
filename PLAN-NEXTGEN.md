@@ -192,7 +192,7 @@ Refactor in two behavior-preserving steps:
 This interface must make state ownership and locking explicit.  It must not
 move only a second, partial LAPIC implementation into the kernel.
 
-**Implemented 2026-09-09; live validation pending.**  The architectural model
+**Completed 2026-09-10.**  The architectural model
 is now `lapic.c`/`lapic.h`.  The vmm/vmd ABI reports a backend identifier plus
 xAPIC/x2APIC capability bits and uses generic exits for architectural access,
 state activation/deactivation, accelerated writes and IPIs, direct vector
@@ -202,10 +202,12 @@ The shared ABI documents which side owns LAPIC state and how transitions and
 concurrent device injection are serialized.
 
 The complete vmd regression suite, focused LAPIC regression and a full
-GENERIC.MP build pass.  Before marking this complete, repeat the AMD x2AVIC
-smoke test with BIOS and UEFI SMP guests, including boot, network/disk I/O,
-clean shutdown and reboot.  Legacy xAPIC AVIC remains part of the broader
-hardware matrix in section 3.6.
+GENERIC.MP build pass.  Live AMD x2AVIC validation covered four-vCPU OpenBSD
+amd64 with both BIOS and UEFI, four-vCPU OpenBSD/i386 with BIOS, and an SMP
+Windows UEFI guest.  The OpenBSD cases exercised boot, network and disk I/O,
+clean shutdown and reboot.  The BIOS tests also validated the SeaBIOS fw_cfg
+ACPI handoff and BIOS-specific SMBIOS 2.8 entry point needed by OpenBSD/i386.
+Legacy xAPIC AVIC remains part of the broader hardware matrix in section 3.6.
 
 ### 3.4 Split oversized functions and files along existing boundaries
 
