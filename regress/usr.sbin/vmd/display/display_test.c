@@ -186,7 +186,18 @@ test_surface(void)
 	CHECK(fstat(fd, &st) == 0);
 	CHECK(st.st_size == (off_t)display_surface_size());
 	CHECK(display_surface_map(fd, PROT_READ | PROT_WRITE, &surface) == 0);
-	display_surface_init(surface);
+	CHECK(display_surface_init(surface, DISPLAY_DEFAULT_WIDTH,
+	    DISPLAY_DEFAULT_HEIGHT) == 0);
+	CHECK(surface->width == DISPLAY_DEFAULT_WIDTH);
+	CHECK(surface->height == DISPLAY_DEFAULT_HEIGHT);
+	CHECK(display_resolution_validate(DISPLAY_MIN_WIDTH,
+	    DISPLAY_MIN_HEIGHT) == 0);
+	CHECK(display_resolution_validate(DISPLAY_MAX_WIDTH,
+	    DISPLAY_MAX_HEIGHT) == 0);
+	CHECK(display_resolution_validate(DISPLAY_MIN_WIDTH - 1,
+	    DISPLAY_DEFAULT_HEIGHT) == -1);
+	CHECK(display_resolution_validate(DISPLAY_DEFAULT_WIDTH,
+	    DISPLAY_MAX_HEIGHT + 1) == -1);
 	errno = 0;
 	CHECK(display_surface_snapshot(surface, copy, sizeof(copy), &frame) ==
 	    -1);

@@ -26,6 +26,18 @@
 #define RAMFB_MAX_HEIGHT	2160U
 #define RAMFB_BYTES_PER_PIXEL	4U
 
+#define VMD_DISPLAY_CONFIG_FILE		"opt/org.openbsd.vmd/display"
+#define VMD_DISPLAY_CONFIG_VERSION	1U
+
+struct vmd_display_config {
+	uint32_t version;
+	uint32_t width;
+	uint32_t height;
+} __packed;
+
+_Static_assert(sizeof(struct vmd_display_config) == 12,
+    "invalid vmd display configuration size");
+
 struct ramfb_config {
 	uint64_t address;
 	uint32_t fourcc;

@@ -25,8 +25,10 @@
 
 #define DISPLAY_SURFACE_MAGIC	0x564d4446U	/* VMDF */
 #define DISPLAY_SURFACE_VERSION	1
-#define DISPLAY_DEFAULT_WIDTH	800U
-#define DISPLAY_DEFAULT_HEIGHT	600U
+#define DISPLAY_DEFAULT_WIDTH	1024U
+#define DISPLAY_DEFAULT_HEIGHT	768U
+#define DISPLAY_MIN_WIDTH	640U
+#define DISPLAY_MIN_HEIGHT	480U
 #define DISPLAY_MAX_WIDTH	4096U
 #define DISPLAY_MAX_HEIGHT	2160U
 #define DISPLAY_BPP		4U
@@ -77,7 +79,8 @@ void	display_socket_close(const char *, int *, dev_t, ino_t, int);
 size_t	display_surface_size(void);
 int	display_surface_open(int *);
 int	display_surface_map(int, int, struct display_surface **);
-void	display_surface_init(struct display_surface *);
+int	display_resolution_validate(uint32_t, uint32_t);
+int	display_surface_init(struct display_surface *, uint32_t, uint32_t);
 int	display_surface_update(struct display_surface *, const void *, uint32_t,
 	    uint32_t, uint32_t, uint32_t);
 int	display_surface_snapshot(const struct display_surface *, void *, size_t,

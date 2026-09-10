@@ -73,19 +73,36 @@ display_surface_map(int fd, int prot, struct display_surface **surfacep)
 	return (0);
 }
 
-void
-display_surface_init(struct display_surface *surface)
+int
+display_resolution_validate(uint32_t width, uint32_t height)
 {
+	if (width < DISPLAY_MIN_WIDTH || width > DISPLAY_MAX_WIDTH ||
+	    height < DISPLAY_MIN_HEIGHT || height > DISPLAY_MAX_HEIGHT ||
+	    width > UINT32_MAX / DISPLAY_BPP) {
+		errno = EINVAL;
+		return (-1);
+	}
+	return (0);
+}
+
+int
+display_surface_init(struct display_surface *surface, uint32_t width,
+    uint32_t height)
+{
+	if (surface == NULL || display_resolution_validate(width, height) == -1)
+		return (-1);
+
 	surface->magic = DISPLAY_SURFACE_MAGIC;
 	surface->version = DISPLAY_SURFACE_VERSION;
 	surface->sequence = 0;
-	surface->width = DISPLAY_DEFAULT_WIDTH;
-	surface->height = DISPLAY_DEFAULT_HEIGHT;
-	surface->stride = DISPLAY_DEFAULT_WIDTH * DISPLAY_BPP;
+	surface->width = width;
+	surface->height = height;
+	surface->stride = width * DISPLAY_BPP;
 	surface->format = DISPLAY_FORMAT_XRGB8888;
 	surface->generation = 1;
 	memset(surface->pixels, 0,
 	    (size_t)surface->stride * surface->height);
+	return (0);
 }
 
 int

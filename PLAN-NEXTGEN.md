@@ -127,7 +127,54 @@ networking.  The UEFI test also exercised persistent efivars and the display
 worker; its display socket was mode 0600, owned by the configured VM owner, and
 removed when the VM stopped.
 
-### 3.2 Make LAPIC acceleration vendor-neutral at the vmd boundary
+### 3.2 Set a useful, configurable initial display geometry
+
+**Completed 2026-09-09.**  The prior OVMF `QemuRamfbDxe` exposed 640x480,
+800x600 and 1024x768 modes and unconditionally started at 800x600; vmd only
+consumed the configuration that firmware wrote to `etc/ramfb`.  The default is
+now 1024x768, with a validated per-VM override such as:
+
+```
+display {
+    resolution 1920x1080
+}
+```
+
+Add the requested width and height to the VM creation parameters and publish
+them to OVMF through a separate, versioned, read-only vmd fw_cfg item.  Do not
+overload `etc/ramfb`, which remains the firmware-to-vmd message containing the
+allocated framebuffer address, format, selected dimensions and stride.  Patch
+the packaged OVMF `QemuRamfbDxe` to consume the new item before allocating its
+reserved framebuffer, expose the requested GOP mode, and select it initially.
+An absent or unusable item must fall back to 1024x768.
+
+Accept dimensions from 640x480 through 4096x2160.  Initialize the shared
+display surface to the selected dimensions before the
+display worker accepts a viewer.  This prevents an early RFB client from
+negotiating one size and being disconnected when OVMF selects another.  Keep
+XRGB8888 and checked allocation arithmetic;
+absolute-pointer scaling already follows the active surface dimensions.
+
+Acceptance criteria:
+
+- omitting `resolution` produces a 1024x768 GOP and RFB surface;
+- a configured 1920x1080 guest reports and displays that mode from firmware
+  through OS boot, with correct absolute-pointer coordinates;
+- malformed, zero, overflowing and out-of-range dimensions are rejected at
+  configuration time and revalidated by OVMF; and
+- viewers connecting before and after GOP initialization see the same size
+  and remain connected.
+
+This is fixed initial geometry, not runtime resizing.  Later VirtIO-GPU mode
+events and RFB DesktopSize negotiation remain in section 5.2.
+
+The complete vmd regression suite and firmware port build passed.  Live RFB
+handshakes reported 1024x768 for an existing UEFI VM with no override and
+1920x1080 for a disposable VM using the example above, both before and after
+OVMF initialized the GOP framebuffer.  In both cases the display socket
+remained mode 0600 and owned by the configured VM owner.
+
+### 3.3 Make LAPIC acceleration vendor-neutral at the vmd boundary
 
 `i82489dx.c` now contains x2APIC plus functions named for AMD AVIC.  The
 problem is more than the historical Intel filename: a userland architectural
@@ -145,7 +192,7 @@ Refactor in two behavior-preserving steps:
 This interface must make state ownership and locking explicit.  It must not
 move only a second, partial LAPIC implementation into the kernel.
 
-### 3.3 Split oversized functions and files along existing boundaries
+### 3.4 Split oversized functions and files along existing boundaries
 
 Do not perform a cosmetic rewrite.  Begin with measured hotspots whose roles
 are already separable:
@@ -167,7 +214,7 @@ The first audit list includes `vcpu_reset_regs_vmx`, `vcpu_run_vmx`,
 alone is not a reason to split code; multiple state transitions or unrelated
 failure unwinds are.
 
-### 3.4 Clean up MSR and CPUID policy
+### 3.5 Clean up MSR and CPUID policy
 
 Replace chains such as `handle_mtrr() || handle_mce() || handle_mca()` with a
 table/range dispatcher that names the MSR class and returns an explicit result
@@ -179,7 +226,7 @@ Add a per-VM CPUID policy object before Hyper-V or nested virtualization adds
 more guest-visible leaves.  Preserve the current tested CPUID values during
 the refactor.
 
-### 3.5 Comments, diagnostics and test matrix
+### 3.6 Comments, diagnostics and test matrix
 
 - Audit changed vmm/vmd/vmctl functions for OpenBSD-style preambles, accurate
   arguments, return values, locking, preconditions and postconditions.
@@ -198,7 +245,7 @@ the refactor.
 ## 4. Priority 1: Intel interrupt acceleration
 
 Implement Intel APICv through the generic LAPIC acceleration contract from
-3.2.  Select it by the VMX capability MSRs, not by marketing generation.
+3.3.  Select it by the VMX capability MSRs, not by marketing generation.
 
 The coherent first level requires the relevant combination of TPR shadow,
 APIC-access or x2APIC virtualization, APIC-register virtualization, virtual
@@ -243,17 +290,12 @@ The upstream Windows virtio-win tree contains a `viogpu` display driver, so a
 standards-compatible 2D device can use the existing signed-driver ecosystem.
 Do not make 3D a condition of landing the 2D device.
 
-### 5.2 Configurable and runtime-resizable displays
+### 5.2 Runtime-resizable displays
 
-Implement this in two stages:
-
-1. Add validated fixed `width` and `height` display configuration, feed the
-   selected mode to OVMF/GOP and ramfb, and size the initial RFB ServerInit
-   surface accordingly.  Retain conservative defaults and the existing
-   maximum allocation limits.
-2. Add runtime resizing with VirtIO GPU display events and the RFB
-   DesktopSize/ExtendedDesktopSize negotiation.  Viewers that do not negotiate
-   resizing retain the prior surface or reconnect.
+The fixed initial geometry belongs to the N0 milestone in section 3.2.  Add
+runtime resizing later with VirtIO GPU display events and the RFB
+DesktopSize/ExtendedDesktopSize negotiation.  Viewers that do not negotiate
+resizing retain the prior surface or reconnect.
 
 This belongs to the display/scanout abstraction, not VGA.  A future VGA
 device can become another producer of the same scanout interface.
@@ -700,14 +742,14 @@ without a reproducing guest:
 
 ## 14. Recommended milestone order
 
-1. **N0 -- hardening and refactor scaffolding**: restore pledge/unveil, remove
-   stale debug paths, establish the smoke matrix, genericize LAPIC acceleration
-   state transfer, and clean up MSR dispatch.
+1. **N0 -- hardening and refactor scaffolding**: restore pledge/unveil, add
+   configurable fixed GOP/RFB geometry, remove stale debug paths, establish the
+   smoke matrix, genericize LAPIC acceleration state transfer, and clean up MSR
+   dispatch.
 2. **N1 -- Intel parity**: validate current SMP on Intel, implement APICv,
    then posted interrupts if supported and measurable.
-3. **N2 -- desktop platform**: VirtIO GPU 2D, configurable initial resolution,
-   runtime resize, then select HDA versus VirtIO sound with the shared sndio
-   worker.
+3. **N2 -- desktop platform**: VirtIO GPU 2D, runtime resize, then select HDA
+   versus VirtIO sound with the shared sndio worker.
 4. **N3 -- Windows 11 compliance**: external TPM 2.0 engine integration,
    crash-consistent efivars and Secure Boot templates; complete an unmodified
    Windows 11 installation.

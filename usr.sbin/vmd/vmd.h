@@ -269,6 +269,8 @@ struct vmop_create_params {
 	enum vm_firmware	 vmc_firmware;
 	char			 vmc_efivars[PATH_MAX];
 	int			 vmc_display;
+	uint32_t		 vmc_display_width;
+	uint32_t		 vmc_display_height;
 	char			 vmc_displaysock[SUN_PATH_LEN];
 	unsigned int		 vmc_bootdevice;
 #define VMBOOTDEV_AUTO		0
