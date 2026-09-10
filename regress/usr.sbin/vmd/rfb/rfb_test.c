@@ -150,6 +150,22 @@ handshake(int fd, uint16_t *width, uint16_t *height)
 }
 
 static void
+test_initial_geometry(struct display_surface *surface, uint16_t expected_width,
+    uint16_t expected_height)
+{
+	uint16_t width, height;
+	int client, control, status;
+	pid_t pid;
+
+	pid = start_server(surface, &client, &control);
+	handshake(client, &width, &height);
+	CHECK(width == expected_width && height == expected_height);
+	close(client);
+	close(control);
+	CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status));
+}
+
+static void
 test_protocol(struct display_surface *surface)
 {
 	struct display_input input;
@@ -254,7 +270,8 @@ main(void)
 
 	CHECK((surface = mmap(NULL, display_surface_size(),
 	    PROT_READ | PROT_WRITE, MAP_ANON | MAP_SHARED, -1, 0)) != MAP_FAILED);
-	display_surface_init(surface);
+	CHECK(display_surface_init(surface, 1920, 1080) == 0);
+	test_initial_geometry(surface, 1920, 1080);
 	for (i = 0; i < (int)sizeof(pixels); i++)
 		pixels[i] = i;
 	CHECK(display_surface_update(surface, pixels, 2, 2, 8,

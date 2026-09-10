@@ -127,7 +127,10 @@ display_start(struct vmd_vm *vm)
 	if (display_surface_map(vm->vm_display_mem, PROT_READ | PROT_WRITE,
 	    &display_surface) == -1)
 		return (-1);
-	display_surface_init(display_surface);
+	if (display_surface_init(display_surface,
+	    vm->vm_params.vmc_display_width,
+	    vm->vm_params.vmc_display_height) == -1)
+		goto fail_map;
 	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0,
 	    control) == -1)
 		goto fail_map;

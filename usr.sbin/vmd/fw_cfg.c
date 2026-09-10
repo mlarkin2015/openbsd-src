@@ -101,6 +101,7 @@ static void	fw_cfg_file_dir(void);
 void
 fw_cfg_init(struct vmop_create_params *vmc)
 {
+	struct vmd_display_config display_cfg;
 	unsigned int sd = 0;
 	size_t i, j, e820_len = 0;
 	uint64_t uefi_flash_base = GB(4) - VM_UEFI_FIRMWARE_SIZE;
@@ -182,8 +183,14 @@ fw_cfg_init(struct vmop_create_params *vmc)
 	free(smbios_tables);
 	free(smbios_anchor);
 
-	if (vmc->vmc_display)
+	if (vmc->vmc_display) {
+		display_cfg.version = htobe32(VMD_DISPLAY_CONFIG_VERSION);
+		display_cfg.width = htobe32(vmc->vmc_display_width);
+		display_cfg.height = htobe32(vmc->vmc_display_height);
+		fw_cfg_add_file(VMD_DISPLAY_CONFIG_FILE, &display_cfg,
+		    sizeof(display_cfg));
 		ramfb_init();
+	}
 }
 
 static void

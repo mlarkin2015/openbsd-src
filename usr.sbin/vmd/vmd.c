@@ -1236,6 +1236,11 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 		vmc->vmc_ncpus = 1;
 	if (vmc->vmc_memranges[0].vmr_size == 0)
 		vmc->vmc_memranges[0].vmr_size = VM_DEFAULT_MEMORY;
+	if (vmc->vmc_display && vmc->vmc_display_width == 0 &&
+	    vmc->vmc_display_height == 0) {
+		vmc->vmc_display_width = DISPLAY_DEFAULT_WIDTH;
+		vmc->vmc_display_height = DISPLAY_DEFAULT_HEIGHT;
+	}
 	if (vmc->vmc_ncpus > VMM_MAX_VCPUS_PER_VM) {
 		log_warnx("invalid number of CPUs");
 		goto fail;
@@ -1260,7 +1265,10 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 		log_warnx("display requires UEFI firmware");
 		goto fail;
 	} else if ((vmc->vmc_display != 0 && vmc->vmc_display != 1) ||
-	    (!vmc->vmc_display && vmc->vmc_displaysock[0] != '\0')) {
+	    (!vmc->vmc_display && (vmc->vmc_displaysock[0] != '\0' ||
+	    vmc->vmc_display_width != 0 || vmc->vmc_display_height != 0)) ||
+	    (vmc->vmc_display && display_resolution_validate(
+	    vmc->vmc_display_width, vmc->vmc_display_height) == -1)) {
 		log_warnx("invalid display configuration");
 		goto fail;
 	} else if (vmc->vmc_kernel == -1 && vmc->vmc_ndisks == 0
@@ -1526,6 +1534,8 @@ vm_instance(struct privsep *ps, struct vmd_vm **vm_parent,
 		}
 	} else if (vmc_parent->vmc_display) {
 		vmc->vmc_display = 1;
+		vmc->vmc_display_width = vmc_parent->vmc_display_width;
+		vmc->vmc_display_height = vmc_parent->vmc_display_height;
 		vmc->vmc_flags |= VMOP_CREATE_DISPLAY;
 		vmc->vmc_displaysock[0] = '\0';
 	}

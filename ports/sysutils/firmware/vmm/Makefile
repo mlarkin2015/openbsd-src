@@ -26,7 +26,7 @@ DIST_TUPLE=	github qemu sgabios \
 		github DMTF libspdm \
 		1be116c7b7713fa9003e1bd53b53a34758549eb9 \
 		edk2/SecurityPkg/DeviceSecurity/SpdmLib/libspdm
-REVISION=	6
+REVISION=	7
 
 HOMEPAGE=	https://www.seabios.org/
 
@@ -81,6 +81,7 @@ FIX_CRLF_FILES=	edk2/BaseTools/Conf/tools_def.template \
 		edk2/OvmfPkg/Library/PlatformInitLib/Platform.c \
 		edk2/OvmfPkg/Library/ResetSystemLib/BaseResetShutdown.c \
 		edk2/OvmfPkg/Library/ResetSystemLib/DxeResetShutdown.c \
+		edk2/OvmfPkg/QemuRamfbDxe/QemuRamfb.c \
 		edk2/OvmfPkg/OvmfPkgX64.dsc \
 		edk2/OvmfPkg/OvmfPkgX64.fdf
 

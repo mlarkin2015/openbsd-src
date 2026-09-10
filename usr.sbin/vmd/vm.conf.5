@@ -231,8 +231,13 @@ This option currently requires
 because the graphical scanout is provided by the OVMF framebuffer.
 The endpoint speaks the RFB protocol used by VNC clients over a local
 Unix-domain socket; it does not listen on TCP.
-The following option may be specified in curly braces:
+The following options may be specified in curly braces:
 .Bl -tag -width Ds
+.It Ic resolution Ar width Ns x Ns Ar height
+Set the fixed initial GOP and RFB framebuffer geometry.
+The width must be between 640 and 4096 pixels and the height between 480 and
+2160 pixels.
+If omitted, the default is 1024x768.
 .It Ic socket Ar path
 Use
 .Ar path

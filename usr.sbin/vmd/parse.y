@@ -91,6 +91,7 @@ char		*symget(const char *);
 ssize_t		 parse_size(char *, int64_t);
 int		 parse_disk(char *, enum vm_disk_fmt);
 enum vm_disk_fmt parse_format(const char *);
+static int	 parse_resolution(const char *, uint32_t *, uint32_t *);
 
 static struct vmop_create_params vmc;
 static struct vmd_switch	*vsw;
@@ -123,7 +124,7 @@ typedef struct {
 %token	ADD AGENTX ALLOW BOOT CDROM CONTEXT CPUS DEVICE DISABLE DISK DISPLAY DOWN EFIVARS
 %token	ENABLE FIRMWARE FORMAT GROUP
 %token	INET6 INSTANCE INTERFACE LLADDR LOCAL LOCKED MEMORY NET NIFS OWNER
-%token	PATH PREFIX RDOMAIN SIZE SOCKET SWITCH UP VM VMID STAGGERED START
+%token	PATH PREFIX RDOMAIN RESOLUTION SIZE SOCKET SWITCH UP VM VMID STAGGERED START
 %token  PARALLEL DELAY SEV SEVES
 %token	<v.number>	NUMBER
 %token	<v.string>	STRING
@@ -649,6 +650,24 @@ display_opts	: SOCKET string			{
 			    sizeof(vmc.vmc_displaysock));
 			free($2);
 		}
+		| RESOLUTION string		{
+			uint32_t width, height;
+
+			if (vmc.vmc_display_width != 0 ||
+			    vmc.vmc_display_height != 0) {
+				yyerror("display resolution specified more than once");
+				free($2);
+				YYERROR;
+			}
+			if (parse_resolution($2, &width, &height) == -1) {
+				yyerror("invalid display resolution: %s", $2);
+				free($2);
+				YYERROR;
+			}
+			vmc.vmc_display_width = width;
+			vmc.vmc_display_height = height;
+			free($2);
+		}
 		;
 
 instance	: ALLOW INSTANCE '{' optnl instance_l '}'
@@ -959,6 +978,7 @@ lookup(char *s)
 		{ "path",		PATH },
 		{ "prefix",		PREFIX },
 		{ "rdomain",		RDOMAIN },
+		{ "resolution",	RESOLUTION },
 		{ "sev",		SEV },
 		{ "seves",		SEVES },
 		{ "size",		SIZE },
@@ -1461,6 +1481,30 @@ parse_size(char *word, int64_t val)
 	}
 
 	return ((ssize_t)size);
+}
+
+static int
+parse_resolution(const char *word, uint32_t *width, uint32_t *height)
+{
+	const char	*errstr, *sep;
+	char		*wstr;
+	long long	 w, h;
+
+	if ((sep = strchr(word, 'x')) == NULL || sep == word || sep[1] == '\0' ||
+	    strchr(sep + 1, 'x') != NULL)
+		return (-1);
+	if ((wstr = strndup(word, sep - word)) == NULL)
+		fatal("%s: strndup", __func__);
+	w = strtonum(wstr, DISPLAY_MIN_WIDTH, DISPLAY_MAX_WIDTH, &errstr);
+	free(wstr);
+	if (errstr != NULL)
+		return (-1);
+	h = strtonum(sep + 1, DISPLAY_MIN_HEIGHT, DISPLAY_MAX_HEIGHT, &errstr);
+	if (errstr != NULL)
+		return (-1);
+	*width = (uint32_t)w;
+	*height = (uint32_t)h;
+	return (0);
 }
 
 int

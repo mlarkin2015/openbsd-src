@@ -43,6 +43,9 @@ _Static_assert(sizeof(struct ramfb_wire_config) == 28,
     "invalid QEMU ramfb configuration size");
 _Static_assert(RAMFB_FOURCC_XRGB8888 == DISPLAY_FORMAT_XRGB8888,
     "ramfb and display formats disagree");
+_Static_assert(RAMFB_MAX_WIDTH == DISPLAY_MAX_WIDTH &&
+    RAMFB_MAX_HEIGHT == DISPLAY_MAX_HEIGHT,
+    "ramfb and display bounds disagree");
 
 static pthread_mutex_t ramfb_mtx = PTHREAD_MUTEX_INITIALIZER;
 static struct ramfb_config ramfb_cfg;
