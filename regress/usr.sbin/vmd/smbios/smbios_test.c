@@ -184,6 +184,31 @@ test_tables(void)
 }
 
 static void
+test_bios_anchor(void)
+{
+	struct vmop_create_params vmc;
+	uint8_t *tables, *anchor;
+	size_t tables_len, anchor_len;
+
+	setup_vmc(&vmc);
+	vmc.vmc_firmware = VMFW_BIOS;
+	CHECK(smbios_build_tables(&vmc, &tables, &tables_len, &anchor,
+	    &anchor_len) == 0);
+	CHECK(anchor_len == 31);
+	CHECK(memcmp(anchor, "_SM_", 4) == 0);
+	CHECK(anchor[5] == anchor_len);
+	CHECK(anchor[6] == 2 && anchor[7] == 8);
+	CHECK(getle16(anchor + 8) != 0);
+	CHECK(memcmp(anchor + 16, "_DMI_", 5) == 0);
+	CHECK(getle16(anchor + 22) == tables_len);
+	CHECK(getle32(anchor + 24) == 0);
+	CHECK(getle16(anchor + 28) == 15);
+	CHECK(anchor[30] == 0x28);
+	free(tables);
+	free(anchor);
+}
+
+static void
 test_extended_memory(void)
 {
 	struct vmop_create_params vmc;
@@ -239,6 +264,7 @@ int
 main(void)
 {
 	test_tables();
+	test_bios_anchor();
 	test_extended_memory();
 	test_invalid();
 	return 0;

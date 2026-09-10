@@ -63,7 +63,24 @@ struct smbios_header {
 	uint16_t	handle;
 } __packed;
 
-/* SeaBIOS fills in the structure-table address and entry-point checksum. */
+/* SeaBIOS fills in the structure-table address and entry-point checksums. */
+struct smbios_21_entry_point {
+	uint8_t		anchor[4];
+	uint8_t		checksum;
+	uint8_t		length;
+	uint8_t		major;
+	uint8_t		minor;
+	uint16_t	max_structure_size;
+	uint8_t		revision;
+	uint8_t		formatted[5];
+	uint8_t		intermediate_anchor[5];
+	uint8_t		intermediate_checksum;
+	uint16_t	table_length;
+	uint32_t	table_address;
+	uint16_t	structures;
+	uint8_t		bcd_revision;
+} __packed;
+
 struct smbios_30_entry_point {
 	uint8_t		anchor[5];
 	uint8_t		checksum;
@@ -237,6 +254,8 @@ struct smbios_builder {
 	uint8_t		*data;
 	size_t		 len;
 	size_t		 capacity;
+	uint16_t	 structures;
+	uint16_t	 max_structure_size;
 };
 
 static int	smbios_append(struct smbios_builder *, const void *, size_t);
@@ -248,6 +267,8 @@ static void	smbios_uuid(const struct vmop_create_params *, uint8_t *);
 static void	smbios_mapped_address(uint64_t, uint64_t, uint32_t *,
 	    uint32_t *, uint64_t *, uint64_t *);
 
+_Static_assert(sizeof(struct smbios_21_entry_point) == 31,
+    "invalid SMBIOS 2 entry point size");
 _Static_assert(sizeof(struct smbios_30_entry_point) == 24,
     "invalid SMBIOS 3 entry point size");
 _Static_assert(sizeof(struct smbios_type0) == 0x18,
@@ -306,8 +327,9 @@ smbios_add_structure(struct smbios_builder *b, const void *formatted,
     size_t formatted_len, const char *const *strings, size_t nstrings)
 {
 	static const uint8_t nul[2];
-	size_t i, len;
+	size_t i, len, start, structure_len;
 
+	start = b->len;
 	if (smbios_append(b, formatted, formatted_len) == -1)
 		return -1;
 	for (i = 0; i < nstrings; i++) {
@@ -319,7 +341,17 @@ smbios_add_structure(struct smbios_builder *b, const void *formatted,
 		if (smbios_append(b, strings[i], len + 1) == -1)
 			return -1;
 	}
-	return smbios_append(b, nul, nstrings == 0 ? 2 : 1);
+	if (smbios_append(b, nul, nstrings == 0 ? 2 : 1) == -1)
+		return -1;
+	structure_len = b->len - start;
+	if (structure_len > UINT16_MAX || b->structures == UINT16_MAX) {
+		errno = EOVERFLOW;
+		return -1;
+	}
+	b->structures++;
+	if (structure_len > b->max_structure_size)
+		b->max_structure_size = (uint16_t)structure_len;
+	return 0;
 }
 
 static void
@@ -395,7 +427,7 @@ smbios_build_tables(const struct vmop_create_params *vmc, uint8_t **tables,
     size_t *tables_len, uint8_t **anchor, size_t *anchor_len)
 {
 	struct smbios_builder b = { 0 };
-	struct smbios_30_entry_point *ep = NULL;
+	void *ep = NULL;
 	struct smbios_type0 t0 = { 0 };
 	struct smbios_type1 t1 = { 0 };
 	struct smbios_type2 t2 = { 0 };
@@ -660,23 +692,46 @@ smbios_build_tables(const struct vmop_create_params *vmc, uint8_t **tables,
 	if (smbios_add_structure(&b, &end, sizeof(end), NULL, 0) == -1)
 		goto fail;
 
-	if (b.len > UINT32_MAX) {
+	if (b.len > UINT32_MAX ||
+	    (vmc->vmc_firmware == VMFW_BIOS && b.len > UINT16_MAX)) {
 		errno = EOVERFLOW;
 		goto fail;
 	}
-	if ((ep = calloc(1, sizeof(*ep))) == NULL)
-		goto fail;
-	memcpy(ep->anchor, "_SM3_", sizeof(ep->anchor));
-	ep->length = sizeof(*ep);
-	ep->major = 3;
-	ep->minor = 0;
-	ep->revision = 1;
-	ep->table_max_size = htole32((uint32_t)b.len);
+	if (vmc->vmc_firmware == VMFW_BIOS) {
+		struct smbios_21_entry_point *ep21;
+
+		if ((ep21 = calloc(1, sizeof(*ep21))) == NULL)
+			goto fail;
+		ep = ep21;
+		memcpy(ep21->anchor, "_SM_", sizeof(ep21->anchor));
+		ep21->length = sizeof(*ep21);
+		ep21->major = 2;
+		ep21->minor = 8;
+		ep21->max_structure_size = htole16(b.max_structure_size);
+		memcpy(ep21->intermediate_anchor, "_DMI_",
+		    sizeof(ep21->intermediate_anchor));
+		ep21->table_length = htole16((uint16_t)b.len);
+		ep21->structures = htole16(b.structures);
+		ep21->bcd_revision = 0x28;
+		*anchor_len = sizeof(*ep21);
+	} else {
+		struct smbios_30_entry_point *ep30;
+
+		if ((ep30 = calloc(1, sizeof(*ep30))) == NULL)
+			goto fail;
+		ep = ep30;
+		memcpy(ep30->anchor, "_SM3_", sizeof(ep30->anchor));
+		ep30->length = sizeof(*ep30);
+		ep30->major = 3;
+		ep30->minor = 0;
+		ep30->revision = 1;
+		ep30->table_max_size = htole32((uint32_t)b.len);
+		*anchor_len = sizeof(*ep30);
+	}
 
 	*tables = b.data;
 	*tables_len = b.len;
-	*anchor = (uint8_t *)ep;
-	*anchor_len = sizeof(*ep);
+	*anchor = ep;
 	return 0;
 
 fail:
