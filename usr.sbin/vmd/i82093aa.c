@@ -20,7 +20,7 @@
 #include <machine/i82093reg.h>
 
 #include "i82093aa.h"
-#include "i82489dx.h"
+#include "lapic.h"
 #include "mmio.h"
 #include "vmd.h"
 #include "x86_mmio.h"
@@ -259,9 +259,9 @@ i82093aa_deliver(uint8_t dest, int dest_mode, int delivery_mode,
 	if (vector < 16)
 		return 0;
 
-	targets = i82489dx_targets(dest, dest_mode);
+	targets = lapic_targets(dest, dest_mode);
 	if (delivery_mode == IOAPIC_REDLO_DEL_LOPRI) {
-		target = i82489dx_lowest_priority(targets, ioapic.arb_next);
+		target = lapic_lowest_priority(targets, ioapic.arb_next);
 		if (target == -1)
 			return 0;
 		targets = 1ULL << target;
@@ -271,9 +271,9 @@ i82093aa_deliver(uint8_t dest, int dest_mode, int delivery_mode,
 	}
 
 	for (i = 0; i < ioapic.ncpus; i++) {
-		if ((targets & (1ULL << i)) == 0 || !i82489dx_enabled(i))
+		if ((targets & (1ULL << i)) == 0 || !lapic_enabled(i))
 			continue;
-		i82489dx_vector_irq(i, dest_mode, vector, level);
+		lapic_vector_irq(i, dest_mode, vector, level);
 		delivered = 1;
 	}
 

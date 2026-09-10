@@ -12,7 +12,7 @@
 #include <string.h>
 
 #include "i82093aa.h"
-#include "i82489dx.h"
+#include "lapic.h"
 #include "mmio.h"
 #include "vmd.h"
 
@@ -37,7 +37,7 @@ write_reg(uint32_t vcpu, uint16_t reg, uint32_t value)
 {
 	uint64_t data = value;
 
-	assert(i82489dx_mmio(vcpu, MMIO_DIR_WRITE, LAPIC_BASE + reg, 4,
+	assert(lapic_mmio(vcpu, MMIO_DIR_WRITE, LAPIC_BASE + reg, 4,
 	    &data) == 0);
 }
 
@@ -46,7 +46,7 @@ read_reg(uint32_t vcpu, uint16_t reg)
 {
 	uint64_t data = 0;
 
-	assert(i82489dx_mmio(vcpu, MMIO_DIR_READ, LAPIC_BASE + reg, 4,
+	assert(lapic_mmio(vcpu, MMIO_DIR_READ, LAPIC_BASE + reg, 4,
 	    &data) == 0);
 	return ((uint32_t)data);
 }
@@ -54,7 +54,7 @@ read_reg(uint32_t vcpu, uint16_t reg)
 static void
 write_x2apic(uint32_t vcpu, uint32_t reg, uint64_t value)
 {
-	assert(i82489dx_x2apic(vcpu, MMIO_DIR_WRITE,
+	assert(lapic_x2apic(vcpu, MMIO_DIR_WRITE,
 	    MSR_X2APIC_BASE + reg, &value) == 0);
 }
 
@@ -63,7 +63,7 @@ read_x2apic(uint32_t vcpu, uint32_t reg)
 {
 	uint64_t value = 0;
 
-	assert(i82489dx_x2apic(vcpu, MMIO_DIR_READ,
+	assert(lapic_x2apic(vcpu, MMIO_DIR_READ,
 	    MSR_X2APIC_BASE + reg, &value) == 0);
 	return (value);
 }
@@ -96,14 +96,14 @@ eoi(uint32_t vcpu)
 int
 main(void)
 {
-	struct i82489dx_stats stats;
+	struct lapic_stats stats;
 	uint32_t lapic_state[VMM_LAPIC_NREGS];
 	unsigned int i;
 
 	test_vm.vm_vmmid = 7;
 	test_vm.vm_params.vmc_ncpus = 4;
 	for (i = 0; i < test_vm.vm_params.vmc_ncpus; i++)
-		i82489dx_init(i);
+		lapic_init(i);
 	i82093aa_init(test_vm.vm_params.vmc_ncpus);
 
 	/* Physical destination and ICR readback. */
@@ -124,11 +124,11 @@ main(void)
 
 	/* Vectors 0x10-0x1f are valid; only exception vectors are reserved. */
 	write_reg(0, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
-	i82489dx_vector_irq(0, 0, 0x1f, 0);
+	lapic_vector_irq(0, 0, 0x1f, 0);
 	assert(read_reg(0, LAPIC_IRR) == (1U << 31));
-	assert(i82489dx_ack(0) == 0x1f);
+	assert(lapic_ack(0) == 0x1f);
 	eoi(0);
-	i82489dx_vector_irq(0, 0, 0x0f, 0);
+	lapic_vector_irq(0, 0, 0x0f, 0);
 	assert(read_reg(0, LAPIC_IRR) == 0);
 
 	/* INIT all-excluding-self, followed by the architectural deassert. */
@@ -157,11 +157,11 @@ main(void)
 	/* INIT resets software-enable and other mutable LAPIC state. */
 	write_reg(2, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
 	assert(read_reg(2, LAPIC_SVR) == (LAPIC_SVR_ENABLE | 0xff));
-	i82489dx_reset(2);
+	lapic_reset(2);
 	assert(read_reg(2, LAPIC_SVR) == 0);
 
 	/* Diagnostic counters cover the same MMIO and fixed-IPI operations. */
-	i82489dx_stats_snapshot(&stats);
+	lapic_stats_snapshot(&stats);
 	assert(stats.mmio_reads == 6);
 	assert(stats.mmio_writes == 11);
 	assert(stats.icr_writes == 6);
@@ -169,7 +169,7 @@ main(void)
 
 	/* Linux/i386 MSI-X uses flat logical destination bit 0 for the BSP. */
 	write_reg(0, LAPIC_LDR, 1U << LAPIC_ID_SHIFT);
-	assert(i82489dx_targets(0x01, 1) == 0x01);
+	assert(lapic_targets(0x01, 1) == 0x01);
 	write_reg(0, LAPIC_LDR, 0);
 
 	/* Flat-mode logical fixed delivery selects the matching LDR bit. */
@@ -183,21 +183,21 @@ main(void)
 
 	/* AVIC's direct-vector path enters vmm(4) and wakes the target. */
 	write_reg(2, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
-	assert(i82489dx_avic_activate(2, VMM_AVIC_XAPIC, 0,
+	assert(lapic_avic_activate(2, VMM_AVIC_XAPIC, 0,
 	    lapic_state) == 0);
 	assert(lapic_state[LAPIC_ID >> 4] ==
 	    (2U << LAPIC_ID_SHIFT));
 	i = unhalt_count;
-	i82489dx_vector_irq(2, 0, 0x51, 0);
+	lapic_vector_irq(2, 0, 0x51, 0);
 	assert(avic_vector_count == 1);
 	assert(unhalt_count == i + 1);
 	assert(signal_count == i + 1);
-	assert(i82489dx_avic_deactivate(2, VMM_AVIC_XAPIC,
+	assert(lapic_avic_deactivate(2, VMM_AVIC_XAPIC,
 	    lapic_state) == 0);
 
 	/* Invalid-type AVIC IPIs fall back to the normal ICR emulation. */
-	i82489dx_avic_ipi(0, 1U << LAPIC_ID_SHIFT,
-	    LAPIC_DLMODE_FIXED | 0x52, I82489DX_AVIC_IPI_INVALID_TYPE, 1,
+	lapic_avic_ipi(0, 1U << LAPIC_ID_SHIFT,
+	    LAPIC_DLMODE_FIXED | 0x52, LAPIC_AVIC_IPI_INVALID_TYPE, 1,
 	    0);
 	assert(vector_count == 4);
 	assert(vector_targets[3] == 1);
@@ -205,9 +205,9 @@ main(void)
 
 	/* Hardware has queued a stopped-target IPI; userspace only wakes it. */
 	i = unhalt_count;
-	i82489dx_avic_ipi(0, 3U << LAPIC_ID_SHIFT,
+	lapic_avic_ipi(0, 3U << LAPIC_ID_SHIFT,
 	    LAPIC_DLMODE_FIXED | 0x53,
-	    I82489DX_AVIC_IPI_TARGET_NOT_RUNNING, 3, 0);
+	    LAPIC_AVIC_IPI_TARGET_NOT_RUNNING, 3, 0);
 	assert(unhalt_count == i + 1);
 	assert(signal_count == i + 1);
 
@@ -240,16 +240,16 @@ main(void)
 
 	/* x2AVIC state uses unshifted IDs and full-width ICR destinations. */
 	write_reg(3, LAPIC_SVR, LAPIC_SVR_ENABLE | 0xff);
-	assert(i82489dx_avic_activate(3, VMM_AVIC_X2APIC, 0,
+	assert(lapic_avic_activate(3, VMM_AVIC_X2APIC, 0,
 	    lapic_state) == 0);
 	assert(lapic_state[LAPIC_ID >> 4] == 3);
 	assert(lapic_state[LAPIC_LDR >> 4] == (1U << 3));
-	i82489dx_avic_ipi(3, 2, LAPIC_DLMODE_FIXED | 0x57,
-	    I82489DX_AVIC_IPI_INVALID_TYPE, 2, 1);
+	lapic_avic_ipi(3, 2, LAPIC_DLMODE_FIXED | 0x57,
+	    LAPIC_AVIC_IPI_INVALID_TYPE, 2, 1);
 	assert(vector_count == 8);
 	assert(vector_targets[7] == 2);
 	assert(last_vector == 0x57);
-	assert(i82489dx_avic_deactivate(3, VMM_AVIC_X2APIC,
+	assert(lapic_avic_deactivate(3, VMM_AVIC_X2APIC,
 	    lapic_state) == 0);
 
 	/* IOAPIC fixed logical delivery multicasts in flat mode. */
@@ -261,8 +261,8 @@ main(void)
 	write_reg(2, LAPIC_LDR, 4U << LAPIC_ID_SHIFT);
 	program_ioapic(16, 0x06, IOAPIC_REDLO_DSTMOD | 0x60);
 	i82093aa_assert_pin(16);
-	assert(i82489dx_ack(1) == 0x60);
-	assert(i82489dx_ack(2) == 0x60);
+	assert(lapic_ack(1) == 0x60);
+	assert(lapic_ack(2) == 0x60);
 	eoi(1);
 	eoi(2);
 	i82093aa_deassert_pin(16);
@@ -271,13 +271,13 @@ main(void)
 	program_ioapic(17, 0x06, IOAPIC_REDLO_DSTMOD |
 	    (IOAPIC_REDLO_DEL_LOPRI << IOAPIC_REDLO_DEL_SHIFT) | 0x61);
 	i82093aa_assert_pin(17);
-	assert(i82489dx_ack(1) == 0x61);
-	assert(i82489dx_ack(2) == 0xffff);
+	assert(lapic_ack(1) == 0x61);
+	assert(lapic_ack(2) == 0xffff);
 	eoi(1);
 	i82093aa_deassert_pin(17);
 	i82093aa_assert_pin(17);
-	assert(i82489dx_ack(1) == 0xffff);
-	assert(i82489dx_ack(2) == 0x61);
+	assert(lapic_ack(1) == 0xffff);
+	assert(lapic_ack(2) == 0x61);
 	eoi(2);
 	i82093aa_deassert_pin(17);
 
@@ -285,8 +285,8 @@ main(void)
 	write_reg(1, LAPIC_TPRI, 0x40);
 	write_reg(2, LAPIC_TPRI, 0x20);
 	i82093aa_assert_pin(17);
-	assert(i82489dx_ack(1) == 0xffff);
-	assert(i82489dx_ack(2) == 0x61);
+	assert(lapic_ack(1) == 0xffff);
+	assert(lapic_ack(2) == 0x61);
 	eoi(2);
 	i82093aa_deassert_pin(17);
 	write_reg(1, LAPIC_TPRI, 0);
@@ -294,18 +294,18 @@ main(void)
 
 	/* CR8 exposes only the task-priority class. */
 	write_reg(1, LAPIC_TPRI, 0x2b);
-	assert(i82489dx_get_cr8(1) == 2);
-	i82489dx_set_cr8(1, 4);
+	assert(lapic_get_cr8(1) == 2);
+	lapic_set_cr8(1, 4);
 	assert(read_reg(1, LAPIC_TPRI) == 0x40);
 
 	/* A masked IRR vector supplies the exact CR8 unmask threshold. */
 	i = intr_count;
-	i82489dx_vector_irq(1, 0, 0x35, 0);
+	lapic_vector_irq(1, 0, 0x35, 0);
 	assert(intr_count == i + 1);
-	assert(i82489dx_cr8_threshold(1) == 3);
-	i82489dx_set_cr8(1, 2);
-	assert(i82489dx_cr8_threshold(1) == 0);
-	assert(i82489dx_ack(1) == 0x35);
+	assert(lapic_cr8_threshold(1) == 3);
+	lapic_set_cr8(1, 2);
+	assert(lapic_cr8_threshold(1) == 0);
+	assert(lapic_ack(1) == 0x35);
 	eoi(1);
 	write_reg(1, LAPIC_TPRI, 0);
 
@@ -316,8 +316,8 @@ main(void)
 	write_reg(2, LAPIC_LDR, 0x12U << LAPIC_ID_SHIFT);
 	program_ioapic(18, 0x12, IOAPIC_REDLO_DSTMOD | 0x62);
 	i82093aa_assert_pin(18);
-	assert(i82489dx_ack(1) == 0xffff);
-	assert(i82489dx_ack(2) == 0x62);
+	assert(lapic_ack(1) == 0xffff);
+	assert(lapic_ack(2) == 0x62);
 	eoi(2);
 	i82093aa_deassert_pin(18);
 

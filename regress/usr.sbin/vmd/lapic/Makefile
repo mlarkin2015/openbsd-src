@@ -4,7 +4,7 @@ VMD_DIR=	usr.sbin/vmd
 .PATH:		${.CURDIR}/../../../../${VMD_DIR}
 
 PROG=		lapic_test
-SRCS=		lapic_test.c i82489dx.c i82093aa.c
+SRCS=		lapic_test.c lapic.c i82093aa.c
 CFLAGS+=	-I${.CURDIR}/../../../../${VMD_DIR}
 LDADD+=		-lpthread
 DPADD+=		${LIBPTHREAD}

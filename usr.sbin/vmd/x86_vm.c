@@ -42,7 +42,7 @@
 #include "i8253.h"
 #include "i8259.h"
 #include "i82093aa.h"
-#include "i82489dx.h"
+#include "lapic.h"
 #include "loadfile.h"
 #include "mc146818.h"
 #include "ns8250.h"
@@ -669,7 +669,7 @@ init_emulated_hw(struct vmd_vm *vm, int child_cdrom,
 
 	i82093aa_init(vmc->vmc_ncpus);
 	for (i = 0; i < vmc->vmc_ncpus; i++)
-		i82489dx_init(i);
+		lapic_init(i);
 	hpet_init(vm->vm_vmmid);
 
 	acpi_pm1_init();
@@ -873,7 +873,7 @@ vcpu_exit_avic(struct vm_run_params *vrp)
 	struct vm_exit_avic *vea = &vrp->vrp_exit->vea;
 
 	if (vrp->vrp_exit_reason == SVM_AVIC_INCOMPLETE_IPI) {
-		i82489dx_avic_ipi(vrp->vrp_vcpu_id, vea->vea_icrhi,
+		lapic_avic_ipi(vrp->vrp_vcpu_id, vea->vea_icrhi,
 		    vea->vea_icrlo, vea->vea_ipi_failure, vea->vea_index,
 		    vea->vea_x2apic);
 		return (0);
@@ -893,7 +893,7 @@ vcpu_exit_avic(struct vm_run_params *vrp)
 		return (0);
 	}
 
-	return (i82489dx_avic_write(vrp->vrp_vcpu_id, vea->vea_offset,
+	return (lapic_avic_write(vrp->vrp_vcpu_id, vea->vea_offset,
 	    vea->vea_value, vea->vea_icrhi));
 }
 
@@ -905,10 +905,10 @@ vcpu_exit_x2apic(struct vm_run_params *vrp)
 
 	switch (vex->vex_op) {
 	case VMM_X2APIC_ACTIVATE:
-		return (i82489dx_avic_activate(vrp->vrp_vcpu_id,
+		return (lapic_avic_activate(vrp->vrp_vcpu_id,
 		    vex->vex_mode, vex->vex_old_mode, vex->vex_lapic));
 	case VMM_X2APIC_DEACTIVATE:
-		return (i82489dx_avic_deactivate(vrp->vrp_vcpu_id,
+		return (lapic_avic_deactivate(vrp->vrp_vcpu_id,
 		    vex->vex_old_mode, vex->vex_lapic));
 	case VMM_X2APIC_ACCESS:
 		break;
@@ -917,7 +917,7 @@ vcpu_exit_x2apic(struct vm_run_params *vrp)
 	}
 
 	dir = vex->vex_write ? MMIO_DIR_WRITE : MMIO_DIR_READ;
-	return (i82489dx_x2apic(vrp->vrp_vcpu_id, dir, vex->vex_msr,
+	return (lapic_x2apic(vrp->vrp_vcpu_id, dir, vex->vex_msr,
 	    &vex->vex_data));
 }
 
@@ -1419,7 +1419,7 @@ vcpu_assert_vector(uint32_t vmm_id, uint32_t vcpu_id, uint8_t vector)
 		return;
 	}
 
-	if (i82489dx_vector_irq(vcpu_id, 0, vector, 0))
+	if (lapic_vector_irq(vcpu_id, 0, vector, 0))
 		return;
 
 	if (intr_pending(vcpu_id)) {
@@ -1646,17 +1646,17 @@ write_vmem(struct vm_run_params *vrp, uint8_t segment, uint64_t gva, void *buf,
 int
 intr_pending(int vcpu_id)
 {
-	if (!i82489dx_hw_accel(vcpu_id) && i82489dx_is_pending(vcpu_id))
+	if (!lapic_hw_accel(vcpu_id) && lapic_is_pending(vcpu_id))
 		return 1;
 	if (!i8259_is_pending())
 		return 0;
 
 	/* A disabled LAPIC leaves the processor wired directly to the PIC. */
-	if (!i82489dx_enabled(vcpu_id))
+	if (!lapic_enabled(vcpu_id))
 		return 1;
 
 	/* With the LAPIC enabled, the PIC reaches the CPU only via LINT0. */
-	return i82489dx_extint_enabled(vcpu_id);
+	return lapic_extint_enabled(vcpu_id);
 }
 
 int
@@ -1665,14 +1665,14 @@ intr_ack(int vcpu_id)
 	/* XXX select active interrupt controller */
 	int vec;
 
-	if (!i82489dx_hw_accel(vcpu_id)) {
-		vec = i82489dx_ack(vcpu_id);
+	if (!lapic_hw_accel(vcpu_id)) {
+		vec = lapic_ack(vcpu_id);
 		if (vec != 0xFFFF)
 			return vec;
 	}
 
-	if (i82489dx_enabled(vcpu_id) &&
-	    !i82489dx_extint_enabled(vcpu_id))
+	if (lapic_enabled(vcpu_id) &&
+	    !lapic_extint_enabled(vcpu_id))
 		return 0xFFFF;
 
 	vec = i8259_ack();
