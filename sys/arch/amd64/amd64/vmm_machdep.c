@@ -111,9 +111,6 @@ int svm_handle_xsetbv(struct vcpu *);
 int vmm_handle_cpuid(struct vcpu *);
 int vmx_handle_rdmsr(struct vcpu *);
 int vmx_handle_wrmsr(struct vcpu *);
-static int vmm_handle_mtrr_msr(struct vcpu *, uint32_t, int, uint64_t *);
-static int vmm_handle_mce_msr(struct vcpu *, uint32_t, int, uint64_t *);
-static int vmm_handle_mca_msr(struct vcpu *, uint32_t, int, uint64_t *);
 static void vmm_reset_emulated_msrs(struct vcpu *);
 int vmx_handle_cr0_write(struct vcpu *, uint64_t);
 int vmx_handle_cr4_write(struct vcpu *, uint64_t);
@@ -7132,6 +7129,44 @@ fault:
 #define VMM_MCG_CAP_CTL_P	(1ULL << 8)
 #define VMM_MCA_BANK_COUNT	1
 
+enum vmm_msr_class {
+	VMM_MSR_CLASS_MTRR,
+	VMM_MSR_CLASS_PAT,
+	VMM_MSR_CLASS_MCE,
+	VMM_MSR_CLASS_MCA
+};
+
+enum vmm_msr_result {
+	VMM_MSR_UNHANDLED,
+	VMM_MSR_HANDLED,
+	VMM_MSR_GP,
+	VMM_MSR_HOST_ERROR
+};
+
+struct vmm_msr_range {
+	uint32_t		 vmr_first;
+	uint32_t		 vmr_last;
+	enum vmm_msr_class	 vmr_class;
+};
+
+static const struct vmm_msr_range vmm_msr_ranges[] = {
+	{ MSR_MTRRcap, MSR_MTRRcap, VMM_MSR_CLASS_MTRR },
+	{ MSR_MTRRvarBase, MSR_MTRRvarBase + VMM_MTRR_VAR_COUNT * 2 - 1,
+	    VMM_MSR_CLASS_MTRR },
+	{ MSR_MTRRfix64K_00000, MSR_MTRRfix64K_00000,
+	    VMM_MSR_CLASS_MTRR },
+	{ MSR_MTRRfix16K_80000, MSR_MTRRfix16K_80000 + 1,
+	    VMM_MSR_CLASS_MTRR },
+	{ MSR_MTRRfix4K_C0000, MSR_MTRRfix4K_C0000 + 7,
+	    VMM_MSR_CLASS_MTRR },
+	{ MSR_MTRRdefType, MSR_MTRRdefType, VMM_MSR_CLASS_MTRR },
+	{ MSR_CR_PAT, MSR_CR_PAT, VMM_MSR_CLASS_PAT },
+	{ MSR_MCG_CAP, MSR_MCG_CAP, VMM_MSR_CLASS_MCE },
+	{ MSR_MCG_CTL, MSR_MCG_CTL, VMM_MSR_CLASS_MCE },
+	{ MSR_MCG_STATUS, MSR_MCG_STATUS, VMM_MSR_CLASS_MCE },
+	{ MSR_MC0_CTL, MSR_MC0_MISC, VMM_MSR_CLASS_MCA }
+};
+
 static int
 vmm_mtrr_fixed_index(uint32_t msr)
 {
@@ -7146,7 +7181,7 @@ vmm_mtrr_fixed_index(uint32_t msr)
 	return (-1);
 }
 
-static int
+static enum vmm_msr_result
 vmm_handle_mtrr_msr(struct vcpu *vcpu, uint32_t msr, int write,
     uint64_t *val)
 {
@@ -7165,14 +7200,14 @@ vmm_handle_mtrr_msr(struct vcpu *vcpu, uint32_t msr, int write,
 		switch (msr) {
 		case MSR_MTRRcap:
 			if (write)
-				return (0);
+				return (VMM_MSR_GP);
 			*val = VMM_MTRR_CAP;
-			return (1);
+			return (VMM_MSR_HANDLED);
 		case MSR_MTRRdefType:
 			shadow = &vcpu->vc_mtrr_def_type;
 			break;
 		default:
-			return (0);
+			return (VMM_MSR_UNHANDLED);
 		}
 	}
 
@@ -7180,14 +7215,30 @@ vmm_handle_mtrr_msr(struct vcpu *vcpu, uint32_t msr, int write,
 		*shadow = *val;
 	else
 		*val = *shadow;
-	return (1);
+	return (VMM_MSR_HANDLED);
+}
+
+/* The guest PAT is shadowed and never changes host memory types directly. */
+static enum vmm_msr_result
+vmm_handle_pat_msr(struct vcpu *vcpu, uint32_t msr, int write, uint64_t *val)
+{
+	if (msr != MSR_CR_PAT)
+		return (VMM_MSR_UNHANDLED);
+	if (write) {
+		if (!vmm_pat_is_valid(*val))
+			return (VMM_MSR_GP);
+		vcpu->vc_shadow_pat = *val;
+	} else
+		*val = vcpu->vc_shadow_pat;
+
+	return (VMM_MSR_HANDLED);
 }
 
 /*
  * The MCE interface controls delivery and records global machine-check state.
  * Physical machine-check state must not be visible to a guest.
  */
-static int
+static enum vmm_msr_result
 vmm_handle_mce_msr(struct vcpu *vcpu, uint32_t msr, int write,
     uint64_t *val)
 {
@@ -7197,9 +7248,9 @@ vmm_handle_mce_msr(struct vcpu *vcpu, uint32_t msr, int write,
 	switch (msr) {
 	case MSR_MCG_CAP:
 		if (write)
-			return (0);
+			return (VMM_MSR_GP);
 		*val = VMM_MCG_CAP_CTL_P | VMM_MCA_BANK_COUNT;
-		return (1);
+		return (VMM_MSR_HANDLED);
 	case MSR_MCG_CTL:
 		shadow = &vcpu->vc_mcg_ctl;
 		break;
@@ -7207,21 +7258,21 @@ vmm_handle_mce_msr(struct vcpu *vcpu, uint32_t msr, int write,
 		shadow = &vcpu->vc_mcg_status;
 		break;
 	default:
-		return (0);
+		return (VMM_MSR_UNHANDLED);
 	}
 
 	if (write)
 		*shadow = *val;
 	else
 		*val = *shadow;
-	return (1);
+	return (VMM_MSR_HANDLED);
 }
 
 /*
  * Advertise one permanently error-free MCA bank.  The guest can configure
  * and clear the virtual bank without observing or modifying host state.
  */
-static int
+static enum vmm_msr_result
 vmm_handle_mca_msr(struct vcpu *vcpu, uint32_t msr, int write,
     uint64_t *val)
 {
@@ -7241,14 +7292,54 @@ vmm_handle_mca_msr(struct vcpu *vcpu, uint32_t msr, int write,
 		shadow = &vcpu->vc_mci_misc;
 		break;
 	default:
-		return (0);
+		return (VMM_MSR_UNHANDLED);
 	}
 
 	if (write)
 		*shadow = *val;
 	else
 		*val = *shadow;
-	return (1);
+	return (VMM_MSR_HANDLED);
+}
+
+/*
+ * Select one emulated architectural MSR facility.  Backend-specific MSRs and
+ * MSRs which can return to userland remain in the VMX/SVM exit handlers.
+ */
+static enum vmm_msr_result
+vmm_handle_emulated_msr(struct vcpu *vcpu, uint32_t msr, int write,
+    uint64_t *val)
+{
+	const struct vmm_msr_range *range;
+	enum vmm_msr_result result;
+	size_t i;
+
+	for (i = 0; i < nitems(vmm_msr_ranges); i++) {
+		range = &vmm_msr_ranges[i];
+		if (msr < range->vmr_first || msr > range->vmr_last)
+			continue;
+
+		result = VMM_MSR_HOST_ERROR;
+		switch (range->vmr_class) {
+		case VMM_MSR_CLASS_MTRR:
+			result = vmm_handle_mtrr_msr(vcpu, msr, write, val);
+			break;
+		case VMM_MSR_CLASS_PAT:
+			result = vmm_handle_pat_msr(vcpu, msr, write, val);
+			break;
+		case VMM_MSR_CLASS_MCE:
+			result = vmm_handle_mce_msr(vcpu, msr, write, val);
+			break;
+		case VMM_MSR_CLASS_MCA:
+			result = vmm_handle_mca_msr(vcpu, msr, write, val);
+			break;
+		}
+		if (result == VMM_MSR_UNHANDLED)
+			return (VMM_MSR_HOST_ERROR);
+		return (result);
+	}
+
+	return (VMM_MSR_UNHANDLED);
 }
 
 static void
@@ -7289,6 +7380,7 @@ vmm_reset_emulated_msrs(struct vcpu *vcpu)
 int
 vmx_handle_rdmsr(struct vcpu *vcpu)
 {
+	enum vmm_msr_result mres;
 	uint64_t insn_length, val;
 	uint64_t *rax, *rdx;
 	uint64_t *rcx;
@@ -7310,22 +7402,24 @@ vmx_handle_rdmsr(struct vcpu *vcpu)
 		*rax = 0;
 		*rdx = 0;
 		break;
-	case MSR_CR_PAT:
-		*rax = (vcpu->vc_shadow_pat & 0xFFFFFFFFULL);
-		*rdx = (vcpu->vc_shadow_pat >> 32);
-		break;
 	case MSR_APICBASE:
 		*rax = vcpu->vc_apicbase;
 		*rdx = 0;
 		break;
 	default:
-		if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 0, &val) ||
-		    vmm_handle_mce_msr(vcpu, (uint32_t)*rcx, 0, &val) ||
-		    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 0, &val)) {
+		mres = vmm_handle_emulated_msr(vcpu, (uint32_t)*rcx, 0,
+		    &val);
+		if (mres == VMM_MSR_HANDLED) {
 			*rax = val & 0xffffffffULL;
 			*rdx = val >> 32;
 			break;
 		}
+		if (mres == VMM_MSR_GP) {
+			vmm_inject_gp(vcpu);
+			return (0);
+		}
+		if (mres == VMM_MSR_HOST_ERROR)
+			return (EINVAL);
 		if (*rcx >= MSR_X2APIC_BASE && *rcx <= MSR_X2APIC_END) {
 			ret = vmm_x2apic_msr(vcpu, *rcx, 0, 0);
 			if (ret != EAGAIN)
@@ -7504,6 +7598,7 @@ vmx_handle_misc_enable_msr(struct vcpu *vcpu)
 int
 vmx_handle_wrmsr(struct vcpu *vcpu)
 {
+	enum vmm_msr_result mres;
 	uint64_t insn_length, val;
 	uint64_t *rax, *rdx, *rcx;
 	int ret = 0;
@@ -7523,13 +7618,6 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 		ret = vmm_write_apicbase(vcpu, val);
 		if (ret < 0)
 			return (0);
-		break;
-	case MSR_CR_PAT:
-		if (!vmm_pat_is_valid(val)) {
-			vmm_inject_gp(vcpu);
-			return (0);
-		}
-		vcpu->vc_shadow_pat = val;
 		break;
 	case MSR_MISC_ENABLE:
 		vmx_handle_misc_enable_msr(vcpu);
@@ -7552,10 +7640,16 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 		    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
 		break;
 	default:
-		if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 1, &val) ||
-		    vmm_handle_mce_msr(vcpu, (uint32_t)*rcx, 1, &val) ||
-		    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 1, &val))
+		mres = vmm_handle_emulated_msr(vcpu, (uint32_t)*rcx, 1,
+		    &val);
+		if (mres == VMM_MSR_HANDLED)
 			break;
+		if (mres == VMM_MSR_GP) {
+			vmm_inject_gp(vcpu);
+			return (0);
+		}
+		if (mres == VMM_MSR_HOST_ERROR)
+			return (EINVAL);
 		if (*rcx >= MSR_X2APIC_BASE && *rcx <= MSR_X2APIC_END) {
 			ret = vmm_x2apic_msr(vcpu, *rcx, 1, val);
 			if (ret != EAGAIN)
@@ -7592,6 +7686,7 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 int
 svm_handle_msr(struct vcpu *vcpu)
 {
+	enum vmm_msr_result mres;
 	uint64_t insn_length, val;
 	uint64_t *rax, *rcx, *rdx;
 	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
@@ -7609,13 +7704,6 @@ svm_handle_msr(struct vcpu *vcpu)
 		val = (*rdx << 32) | (*rax & 0xFFFFFFFFULL);
 
 		switch (*rcx) {
-		case MSR_CR_PAT:
-			if (!vmm_pat_is_valid(val)) {
-				vmm_inject_gp(vcpu);
-				return (0);
-			}
-			vcpu->vc_shadow_pat = val;
-			break;
 		case MSR_APICBASE:
 			ret = vmm_write_apicbase(vcpu, val);
 			if (ret < 0)
@@ -7633,11 +7721,16 @@ svm_handle_msr(struct vcpu *vcpu)
 			    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
 			break;
 		default:
-			if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 1,
-			    &val) || vmm_handle_mce_msr(vcpu,
-			    (uint32_t)*rcx, 1, &val) ||
-			    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 1, &val))
+			mres = vmm_handle_emulated_msr(vcpu, (uint32_t)*rcx, 1,
+			    &val);
+			if (mres == VMM_MSR_HANDLED)
 				break;
+			if (mres == VMM_MSR_GP) {
+				vmm_inject_gp(vcpu);
+				return (0);
+			}
+			if (mres == VMM_MSR_HOST_ERROR)
+				return (EINVAL);
 			if (*rcx >= MSR_X2APIC_BASE &&
 			    *rcx <= MSR_X2APIC_END) {
 				ret = vmm_x2apic_msr(vcpu, *rcx, 1, val);
@@ -7662,10 +7755,6 @@ svm_handle_msr(struct vcpu *vcpu)
 			*rax = 0;
 			*rdx = 0;
 			break;
-		case MSR_CR_PAT:
-			*rax = (vcpu->vc_shadow_pat & 0xFFFFFFFFULL);
-			*rdx = (vcpu->vc_shadow_pat >> 32);
-			break;
 		case MSR_DE_CFG:
 			/* LFENCE serializing bit is set by host */
 			*rax = DE_CFG_SERIALIZE_LFENCE;
@@ -7676,14 +7765,19 @@ svm_handle_msr(struct vcpu *vcpu)
 			*rdx = 0;
 			break;
 		default:
-			if (vmm_handle_mtrr_msr(vcpu, (uint32_t)*rcx, 0,
-			    &val) || vmm_handle_mce_msr(vcpu,
-			    (uint32_t)*rcx, 0, &val) ||
-			    vmm_handle_mca_msr(vcpu, (uint32_t)*rcx, 0, &val)) {
+			mres = vmm_handle_emulated_msr(vcpu, (uint32_t)*rcx, 0,
+			    &val);
+			if (mres == VMM_MSR_HANDLED) {
 				*rax = val & 0xffffffffULL;
 				*rdx = val >> 32;
 				break;
 			}
+			if (mres == VMM_MSR_GP) {
+				vmm_inject_gp(vcpu);
+				return (0);
+			}
+			if (mres == VMM_MSR_HOST_ERROR)
+				return (EINVAL);
 			if (*rcx >= MSR_X2APIC_BASE &&
 			    *rcx <= MSR_X2APIC_END) {
 				ret = vmm_x2apic_msr(vcpu, *rcx, 0, 0);
