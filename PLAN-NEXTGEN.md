@@ -209,35 +209,91 @@ clean shutdown and reboot.  The BIOS tests also validated the SeaBIOS fw_cfg
 ACPI handoff and BIOS-specific SMBIOS 2.8 entry point needed by OpenBSD/i386.
 Legacy xAPIC AVIC remains part of the broader hardware matrix in section 3.6.
 
-### 3.4 Split oversized functions and files along existing boundaries
+### 3.4 Audit and simplify complex functions
 
-Do not perform a cosmetic rewrite.  Begin with measured hotspots whose roles
-are already separable:
+A large machine-dependent source file is not inherently a problem.  Keep
+closely related VMX and SVM mechanisms together when that makes the execution
+path easier to follow.  Moving code to smaller files is optional and is only
+justified by a stable ownership or interface boundary, independent testing, or
+clear reuse.  File size and function length alone are not cleanup criteria.
 
-- split the 10,000-line amd64 `vmm_machdep.c` into common x86, VMX, SVM,
-  MSR/CPUID and interrupt-acceleration units without changing the ioctl ABI;
-- split VM-entry control construction, register reset and diagnostic dumps
-  from the VMX/SVM run loops;
-- separate VirtIO PCI transport/configuration from queue and worker protocol
-  code in `virtio.c`;
-- separate descriptor validation/accounting from device-specific SCSI and
-  network command execution; and
-- break large lifecycle dispatch functions in `vmd.c`, `vm.c` and `vmm.c`
-  into parse/validate/transition/cleanup operations.
+Audit functions for concrete complexity instead: multiple state transitions,
+unrelated responsibilities, duplicated policy, unclear locking or ownership,
+and failure paths that cannot be reviewed locally.  Extract small helpers in
+the existing file first.  Each cleanup patch should preserve the ioctl ABI and
+guest-visible behavior and should address one named responsibility.
 
-The first audit list includes `vcpu_reset_regs_vmx`, `vcpu_run_vmx`,
-`vcpu_run_svm`, `vmm_handle_cpuid`, `vionet_tx`, `virtio_io_cfg_field`,
-`virtio_init`, `run_vm`, `vcpu_run_loop` and `lapic_mmio`.  Function length
-alone is not a reason to split code; multiple state transitions or unrelated
-failure unwinds are.
+The first measured kernel candidates are:
+
+- `vcpu_reset_regs_vmx`, which currently combines capability discovery,
+  execution-control selection, CR0/CR4 validation, PDPTE restoration, VMCS
+  MSR-list construction, MSR-bitmap policy and initial register loading;
+- `vcpu_run_vmx` and `vcpu_run_svm`, where userspace-result reconciliation,
+  event injection, per-pCPU host-state refresh, guest entry/exit and pending-
+  interrupt decisions should each have explicit invariants; and
+- `vmm_handle_cpuid`, whose leaf policy belongs with the policy work in 3.5.
+
+Long diagnostic routines such as `vmx_dump_vmcs` and
+`vmx_vcpu_dump_regs` are low priority: their size is mostly repetitive output,
+not control-flow complexity.  In userland, inspect `virtio_io_cfg_field`,
+`virtio_init`, `run_vm`, `vcpu_run_loop`, `vmm_dispatch_parent`, `vionet_tx`
+and `lapic_mmio` by the same criteria.  Keep a function intact when its state
+machine reads more clearly as one unit.
+
+For each candidate, first document inputs, locks, state owned on entry and
+exit, and all return meanings.  Then remove duplication or extract only the
+natural phases.  Build and run focused regressions after every patch; require
+targeted guest smoke tests only when the touched path can change runtime state.
+
+The initial review produced the following disposition:
+
+- Keep the outer `vcpu_run_vmx` and `vcpu_run_svm` loops intact.  Guest entry,
+  exit and the decision to return to vmd form one state machine.  Local helpers
+  are justified only for independently specified operations such as event
+  encoding, per-pCPU host-state refresh or repeated interrupt-window
+  programming.  Do not attempt a generic parameterized VMX/SVM run loop.
+- `vcpu_reset_regs_vmx` has genuine internal seams between execution-control
+  selection, CR validation and MSR-list/bitmap setup, but defer that work until
+  an Intel host can exercise it.  Keep any helpers in the MD source unless a
+  later APICv interface creates a stronger boundary.
+- Keep the leaf switch in `vmm_handle_cpuid`; it is a readable representation
+  of CPUID policy.  Section 3.5 should separate hardware-exit register plumbing
+  from that policy and take a stable per-VM feature snapshot, rather than make
+  one helper per leaf merely to shorten the switch.
+- Leave `virtio_io_cfg_field`, `vionet_tx`, `lapic_mmio`, `vcpu_run_loop` and
+  `vmm_dispatch_parent` intact for now.  Each is primarily one register,
+  descriptor or lifecycle dispatch operation.  Revisit only when a concrete
+  new operation no longer fits that contract.
+- `virtio_init` has a useful future seam: modern VirtIO PCI transport setup is
+  repeated for each device, while device-specific construction is interleaved
+  with it.  Extract that common setup when the next VirtIO device is added,
+  when the required interface is known; do not create a speculative framework
+  first.
+- `run_vm` is coherent under the present process-exits-on-completion model.
+  Revisit its thread and error unwinds when checkpoint or snapshot work needs
+  quiesce and resume without exiting the VM process.
+
+This review also found and completed a separate VirtIO hardening task.  Modern
+queue setup now requires a nonzero power-of-two size no larger than the value
+offered by the device.  A shared direct-chain validator rejects out-of-range,
+cyclic and unnegotiated indirect descriptors before the network, block, SCSI
+or entropy device dereferences a guest-supplied head.  Focused malformed-ring
+regressions cover those cases.  The entropy device also now consumes the
+available ring from `last_avail`, processes all pending buffers and supports
+finite direct chains.  This was correctness and attack-surface work, not
+function-size cleanup; do not introduce a more elaborate shared walker unless
+a later device demonstrates a reusable semantic boundary.
 
 ### 3.5 Clean up MSR and CPUID policy
 
-Replace chains such as `handle_mtrr() || handle_mce() || handle_mca()` with a
-table/range dispatcher that names the MSR class and returns an explicit result
-(`handled`, `inject #GP`, or host error).  VMX and SVM should share emulated
-MSR behavior while retaining MD interception setup.  Keep distinct handlers
-and state for MTRR, PAT, MCE/MCA and paravirtual MSRs.
+The architectural MSR cleanup is complete for the existing facilities.  A
+shared table/range dispatcher now classifies MTRR, PAT, global MCE and MCA-bank
+MSRs and returns an explicit result: unhandled, handled, inject `#GP`, or host
+error.  VMX and SVM share that policy while retaining their MD interception
+and register plumbing.  The facilities retain distinct handlers and state;
+APIC/x2APIC and paravirtual MSRs remain separate because their exits and side
+effects have different contracts.  Extend the table by facility instead of
+adding another chain to every RDMSR/WRMSR backend path.
 
 Add a per-VM CPUID policy object before Hyper-V or nested virtualization adds
 more guest-visible leaves.  Preserve the current tested CPUID values during
@@ -607,8 +663,8 @@ VMRUN/VMCB state, permitted control masks, nested EPT/NPT, ASID/VPID and TLB
 invalidation, event injection, nested exits and the interaction with virtual
 APIC acceleration.
 
-Prerequisites are the MD split, CPUID policy, explicit interrupt-state owner,
-and save/restoreable vCPU state.  Then:
+Prerequisites are the MD function/state-boundary cleanup, CPUID policy,
+explicit interrupt-state ownership and save/restoreable vCPU state.  Then:
 
 1. expose neither VMX nor SVM unless the complete chosen baseline is present;
 2. implement one backend at a time on the hardware available for continuous
