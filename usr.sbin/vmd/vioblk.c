@@ -292,6 +292,10 @@ vioblk_notifyq(struct virtio_dev *dev, uint16_t vq_idx)
 			    __func__);
 			goto reset;
 		}
+		if (!virtio_desc_chain_valid(vq_info, table, cmd_desc_idx)) {
+			log_warnx("%s: invalid descriptor chain", __func__);
+			goto reset;
+		}
 		desc = &table[cmd_desc_idx];
 		used_len = 1;	/* The status byte is always device-written. */
 

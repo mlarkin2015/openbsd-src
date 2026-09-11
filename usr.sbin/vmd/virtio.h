@@ -449,6 +449,8 @@ void virtio_start(struct vmd_vm *);
 void virtio_shutdown(struct vmd_vm *);
 const char *virtio_reg_name(uint8_t);
 uint32_t vring_size(uint32_t);
+int virtio_desc_chain_valid(const struct virtio_vq_info *,
+    const struct vring_desc *, uint16_t);
 int vm_device_pipe(struct virtio_dev *, void (*)(int, short, void *),
     struct event_base *);
 int virtio_pci_io(int, uint16_t, uint32_t *, uint8_t *, void *, uint8_t);

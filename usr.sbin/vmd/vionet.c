@@ -555,7 +555,11 @@ vionet_rx(struct virtio_dev *dev, int fd)
 
 	while (idx != avail->idx) {
 		hdr_idx = avail->ring[idx & vq_info->mask];
-		desc = &table[hdr_idx & vq_info->mask];
+		if (!virtio_desc_chain_valid(vq_info, table, hdr_idx)) {
+			log_warnx("%s: invalid descriptor chain", __func__);
+			goto reset;
+		}
+		desc = &table[hdr_idx];
 		if (!DESC_WRITABLE(desc)) {
 			log_warnx("%s: invalid descriptor state", __func__);
 			goto reset;
@@ -975,7 +979,11 @@ vionet_ctrl(struct virtio_dev *dev)
 
 	while (idx != avail->idx) {
 		hdr_idx = avail->ring[idx & vq_info->mask];
-		desc = &table[hdr_idx & vq_info->mask];
+		if (!virtio_desc_chain_valid(vq_info, table, hdr_idx)) {
+			log_warnx("%s: invalid descriptor chain", __func__);
+			return (-1);
+		}
+		desc = &table[hdr_idx];
 		if (DESC_WRITABLE(desc) || desc->len < 2 ||
 		    (desc->flags & VRING_DESC_F_NEXT) == 0)
 			return (-1);
@@ -1161,7 +1169,11 @@ vionet_tx(struct vionet_tx_worker *worker)
 		dhcpsz = 0;
 		dhcppkt = NULL;
 		hdr_idx = avail->ring[idx & vq_info->mask];
-		desc = &table[hdr_idx & vq_info->mask];
+		if (!virtio_desc_chain_valid(vq_info, table, hdr_idx)) {
+			log_warnx("%s: invalid descriptor chain", __func__);
+			goto reset;
+		}
+		desc = &table[hdr_idx];
 		if (DESC_WRITABLE(desc)) {
 			log_warnx("%s: invalid descriptor state", __func__);
 			goto reset;

@@ -133,7 +133,7 @@ test_partial_reads(struct virtio_dev *dev)
 	CHECK(virtio_io_cfg(dev, VEI_DIR_IN, VIO1_PCI_NUM_QUEUES + 1,
 	    0, 1) == 0);
 
-	dev->vq[2].qs = 0x100;
+	dev->vq[2].qs = 0x40;
 	dev->vq[2].q_gpa = desc;
 	dev->vq[2].q_avail_gpa = avail;
 	dev->vq[2].q_used_gpa = used;
@@ -142,7 +142,7 @@ test_partial_reads(struct virtio_dev *dev)
 	dev->pci_cfg.queue_select = 2;
 	virtio_update_qs(dev);
 	CHECK(cfg_read_bytes(dev, VIO1_PCI_QUEUE_SELECT, 2) == 2);
-	CHECK(cfg_read_bytes(dev, VIO1_PCI_QUEUE_SIZE, 2) == 0x100);
+	CHECK(cfg_read_bytes(dev, VIO1_PCI_QUEUE_SIZE, 2) == 0x40);
 	CHECK(cfg_read_bytes(dev, VIO1_PCI_QUEUE_DESC, 8) == desc);
 	CHECK(cfg_read_bytes(dev, VIO1_PCI_QUEUE_AVAIL, 8) == avail);
 	CHECK(cfg_read_bytes(dev, VIO1_PCI_QUEUE_USED, 8) == used);
@@ -186,16 +186,16 @@ test_partial_writes(struct virtio_dev *dev)
 	dev->pci_cfg.queue_select = 0;
 	cfg_write_bytes(dev, VIO1_PCI_QUEUE_SELECT, 2, 2);
 	CHECK(dev->pci_cfg.queue_select == 2);
-	cfg_write_bytes(dev, VIO1_PCI_QUEUE_SIZE, 0x100, 2);
+	cfg_write_bytes(dev, VIO1_PCI_QUEUE_SIZE, 0x40, 2);
 	cfg_write_bytes(dev, VIO1_PCI_QUEUE_DESC, desc, 8);
 	cfg_write_bytes(dev, VIO1_PCI_QUEUE_AVAIL, avail, 8);
 	cfg_write_bytes(dev, VIO1_PCI_QUEUE_USED, used, 8);
 	cfg_write_bytes(dev, VIO1_PCI_QUEUE_ENABLE, 1, 2);
-	CHECK(dev->pci_cfg.queue_size == 0x100);
+	CHECK(dev->pci_cfg.queue_size == 0x40);
 	CHECK(dev->pci_cfg.queue_desc == desc);
 	CHECK(dev->pci_cfg.queue_avail == avail);
 	CHECK(dev->pci_cfg.queue_used == used);
-	CHECK(dev->vq[2].qs == 0x100);
+	CHECK(dev->vq[2].qs == 0x40);
 	CHECK(dev->vq[2].q_gpa == desc);
 	CHECK(dev->vq[2].q_avail_gpa == avail);
 	CHECK(dev->vq[2].q_used_gpa == used);
@@ -209,6 +209,53 @@ test_partial_writes(struct virtio_dev *dev)
 	CHECK(virtio_io_cfg(dev, VEI_DIR_OUT, VIO1_PCI_QUEUE_DESC,
 	    0, 3) == 0);
 	CHECK(warning_count == warnings + 2);
+}
+
+static void
+test_queue_sizes(struct virtio_dev *dev)
+{
+	const uint16_t invalid[] = { 0, 3, 96, 256 };
+	size_t i;
+	unsigned int warnings;
+
+	dev->pci_cfg.queue_select = 1;
+	virtio_update_qs(dev);
+	(void)virtio_io_cfg(dev, VEI_DIR_OUT, VIO1_PCI_QUEUE_SIZE, 64, 2);
+	CHECK(dev->pci_cfg.queue_size == 64);
+
+	warnings = warning_count;
+	for (i = 0; i < nitems(invalid); i++) {
+		(void)virtio_io_cfg(dev, VEI_DIR_OUT, VIO1_PCI_QUEUE_SIZE,
+		    invalid[i], 2);
+		CHECK(dev->pci_cfg.queue_size == 64);
+	}
+	CHECK(warning_count == warnings + nitems(invalid));
+}
+
+static void
+test_descriptor_chains(void)
+{
+	struct virtio_vq_info vq;
+	struct vring_desc desc[4];
+
+	memset(&vq, 0, sizeof(vq));
+	memset(desc, 0, sizeof(desc));
+	vq.qs = nitems(desc);
+	vq.mask = vq.qs - 1;
+
+	CHECK(virtio_desc_chain_valid(&vq, desc, 0));
+	desc[0].flags = VRING_DESC_F_NEXT;
+	desc[0].next = 3;
+	CHECK(virtio_desc_chain_valid(&vq, desc, 0));
+	CHECK(!virtio_desc_chain_valid(&vq, desc, 4));
+	desc[0].next = 4;
+	CHECK(!virtio_desc_chain_valid(&vq, desc, 0));
+	desc[0].next = 1;
+	desc[1].flags = VRING_DESC_F_NEXT;
+	desc[1].next = 0;
+	CHECK(!virtio_desc_chain_valid(&vq, desc, 0));
+	desc[0].flags = VRING_DESC_F_INDIRECT;
+	CHECK(!virtio_desc_chain_valid(&vq, desc, 0));
 }
 
 static void
@@ -289,6 +336,9 @@ main(void)
 	test_partial_reads(&dev);
 	init_dev(&dev);
 	test_partial_writes(&dev);
+	init_dev(&dev);
+	test_queue_sizes(&dev);
+	test_descriptor_chains();
 	test_msix_byte_writes(&dev);
 	test_status_reset(&dev);
 	return (0);
