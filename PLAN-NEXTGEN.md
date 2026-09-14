@@ -295,6 +295,12 @@ APIC/x2APIC and paravirtual MSRs remain separate because their exits and side
 effects have different contracts.  Extend the table by facility instead of
 adding another chain to every RDMSR/WRMSR backend path.
 
+Live validation on 2026-09-14 covered four-vCPU OpenBSD/amd64 and Windows 10
+guests, normal `viornd0` attachment, and vioscsi boots from both the NetBSD
+network installer and full NetBSD 11 installation media.  This exercises all
+four VirtIO paths changed by the hardening work and the shared architectural
+MSR policy under a multiprocessor Windows workload.
+
 Add a per-VM CPUID policy object before Hyper-V or nested virtualization adds
 more guest-visible leaves.  Preserve the current tested CPUID values during
 the refactor.
@@ -835,9 +841,10 @@ without a reproducing guest:
 7. **N6 -- research tracks**: PCI assignment, nested virtualization, 3D
    rendering and non-amd64 hosts, each behind its own capability and test gate.
 
-The best immediate next task is N0.  It reduces risk in every later item and
-turns AMD AVIC and future Intel APICv into two implementations of one contract
-instead of accumulating another vendor-specific path in the userland LAPIC.
+The remaining immediate N0 task is the per-VM CPUID policy object in section
+3.5, preserving the currently tested guest-visible leaves.  After that, begin
+N1 Intel parity when suitable hardware is available; otherwise N2 VirtIO GPU
+2D is the next independently testable implementation milestone.
 
 ## 15. Explicit non-goals for the next phase
 
