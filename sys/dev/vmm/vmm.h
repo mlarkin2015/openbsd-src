@@ -196,6 +196,11 @@ struct vm {
 	uint32_t		 vm_vcpu_ct;		/* [v] */
 	struct rwlock		 vm_vcpu_lock;
 
+#ifdef __amd64__
+	/* Immutable guest CPUID policy captured at VM creation. */
+	struct vmm_cpuid_policy vm_cpuid_policy;	/* [I] */
+#endif
+
 	/* AMD AVIC tables, shared by all vCPUs in this VM. */
 	vaddr_t		 vm_avic_logical_va;
 	paddr_t		 vm_avic_logical_pa;

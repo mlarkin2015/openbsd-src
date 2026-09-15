@@ -684,6 +684,49 @@ struct vm_rwregs_params {
 
 #ifdef _KERNEL
 
+/*
+ * Fixed guest-visible CPUID state captured when a VM is created.  CPUID exits
+ * may run on different physical CPUs over the VM's lifetime, so policy must
+ * not be derived from curcpu() at each exit.  Per-vCPU identity and mutable
+ * guest state remain outside this object.
+ */
+#define VMM_CPUID_CACHE_LEVELS	32
+#define VMM_CPUID_XSTATE_LEVELS	64
+
+struct vmm_cpuid_regs {
+	uint32_t	vcr_eax;
+	uint32_t	vcr_ebx;
+	uint32_t	vcr_ecx;
+	uint32_t	vcr_edx;
+};
+
+struct vmm_cpuid_policy {
+	uint32_t	vcp_host_level;
+	uint32_t	vcp_host_extlevel;
+	uint64_t	vcp_xsave_mask;
+	uint64_t	vcp_tsc_frequency;
+	uint8_t		vcp_pku_enabled;
+	uint8_t		vcp_tsc_invariant;
+
+	struct vmm_cpuid_regs vcp_leaf0;
+	struct vmm_cpuid_regs vcp_leaf1;
+	struct vmm_cpuid_regs vcp_leaf2;
+	struct vmm_cpuid_regs vcp_leaf4[VMM_CPUID_CACHE_LEVELS];
+	struct vmm_cpuid_regs vcp_leaf7;
+	struct vmm_cpuid_regs vcp_leafd[VMM_CPUID_XSTATE_LEVELS];
+	struct vmm_cpuid_regs vcp_leaf15;
+	struct vmm_cpuid_regs vcp_leaf16;
+	struct vmm_cpuid_regs vcp_extleaf0;
+	struct vmm_cpuid_regs vcp_extleaf1;
+	struct vmm_cpuid_regs vcp_extbrand[3];
+	struct vmm_cpuid_regs vcp_extleaf5;
+	struct vmm_cpuid_regs vcp_extleaf6;
+	struct vmm_cpuid_regs vcp_extleaf7;
+	struct vmm_cpuid_regs vcp_extleaf8;
+	struct vmm_cpuid_regs vcp_extleaf1d[VMM_CPUID_CACHE_LEVELS];
+	struct vmm_cpuid_regs vcp_extleaf1f;
+};
+
 #define VMX_FAIL_LAUNCH_UNKNOWN 	1
 #define VMX_FAIL_LAUNCH_INVALID_VMCS	2
 #define VMX_FAIL_LAUNCH_VALID_VMCS	3

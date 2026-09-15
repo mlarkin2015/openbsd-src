@@ -21,9 +21,9 @@
 #include <sys/mman.h>
 
 #include <machine/specialreg.h>
-#include <machine/vmmvar.h>
 
-#include <dev/vmm/vmm.h>
+#include "../../../../../sys/arch/amd64/include/vmmvar.h"
+#include "../../../../../sys/dev/vmm/vmm.h"
 
 #include <err.h>
 #include <errno.h>
@@ -46,9 +46,22 @@
 
 const char 		*VM_NAME = "regress";
 
-const uint8_t PUSHW_DX[] = { 0x66, 0x52 };		 // pushw %dx
+const uint8_t PUSHL_EDX[] = { 0x66, 0x52 };		 // pushl %edx
+const uint8_t POPL_EDX[] = { 0x66, 0x5A };		 // popl %edx
+const uint8_t XORL_EAX[] = { 0x66, 0x31, 0xC0 };	 // xorl %eax,%eax
+const uint8_t CPUID[] = { 0x0F, 0xA2 };		 // cpuid
+const uint8_t MOVL_EDX_ESI[] = { 0x66, 0x89, 0xD6 }; // movl %edx,%esi
 const uint8_t INS[] = { 0x6C };				 // ins es:[di],dx
 const uint8_t IN_PCJR[] = { 0xE4, 0xF0 };		 // in 0xF0
+
+static void
+host_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax, uint32_t *ebx,
+    uint32_t *ecx, uint32_t *edx)
+{
+	__asm volatile("cpuid"
+	    : "=a" (*eax), "=b" (*ebx), "=c" (*ecx), "=d" (*edx)
+	    : "0" (leaf), "2" (subleaf));
+}
 
 /* Originally from vmd(8)'s vm.c */
 const struct vcpu_reg_state vcpu_init_flat16 = {
@@ -94,6 +107,7 @@ main(int argc, char **argv)
 	struct vm_sharemem_params	 vsp;
 
 	struct vm_mem_range		*vmr;
+	uint32_t			 host_eax, host_ebx, host_ecx, host_edx;
 	int				 fd, ret = 1;
 	size_t				 i;
 	off_t				 off, reset = 0xFFFFFFF0, stack = 0x800;
@@ -165,14 +179,32 @@ main(int argc, char **argv)
 			memcpy(p, IN_PCJR, sizeof(IN_PCJR));
 		} else {
 			/*
-			 * Write our code to the reset vector:
-			 *   PUSHW %dx        ; inits the stack
+			 * Write our code to the reset vector.  CPUID clobbers
+			 * %edx, so preserve the I/O port across it and save the
+			 * vendor's final word in %esi for validation.
+			 *
+			 *   PUSHL %edx
+			 *   XORL %eax,%eax
+			 *   CPUID
+			 *   MOVL %edx,%esi
+			 *   POPL %edx
+			 *   PUSHL %edx       ; initializes the stack
 			 *   INS dx, es:[di]  ; read from port in dx
 			 */
 			off = reset - vmr->vmr_gpa;
 			p = (uint8_t*)p + off;
-			memcpy(p, PUSHW_DX, sizeof(PUSHW_DX));
-			p = (uint8_t*)p + sizeof(PUSHW_DX);
+			memcpy(p, PUSHL_EDX, sizeof(PUSHL_EDX));
+			p = (uint8_t*)p + sizeof(PUSHL_EDX);
+			memcpy(p, XORL_EAX, sizeof(XORL_EAX));
+			p = (uint8_t*)p + sizeof(XORL_EAX);
+			memcpy(p, CPUID, sizeof(CPUID));
+			p = (uint8_t*)p + sizeof(CPUID);
+			memcpy(p, MOVL_EDX_ESI, sizeof(MOVL_EDX_ESI));
+			p = (uint8_t*)p + sizeof(MOVL_EDX_ESI);
+			memcpy(p, POPL_EDX, sizeof(POPL_EDX));
+			p = (uint8_t*)p + sizeof(POPL_EDX);
+			memcpy(p, PUSHL_EDX, sizeof(PUSHL_EDX));
+			p = (uint8_t*)p + sizeof(PUSHL_EDX);
 			memcpy(p, INS, sizeof(INS));
 		}
 	}
@@ -322,6 +354,16 @@ main(int argc, char **argv)
 	} else
 		printf("got expected string instruction\n");
 
+	host_cpuid(0, 0, &host_eax, &host_ebx, &host_ecx, &host_edx);
+	if ((uint32_t)exit->vrs.vrs_gprs[VCPU_REGS_RAX] < host_eax ||
+	    (uint32_t)exit->vrs.vrs_gprs[VCPU_REGS_RBX] != host_ebx ||
+	    (uint32_t)exit->vrs.vrs_gprs[VCPU_REGS_RCX] != host_ecx ||
+	    (uint32_t)exit->vrs.vrs_gprs[VCPU_REGS_RSI] != host_edx) {
+		warnx("unexpected guest CPUID leaf 0");
+		goto out;
+	}
+	printf("got expected CPUID vendor\n");
+
 	/* Advance RIP? */
 	printf("insn_len = %u\n", exit->vei.vei_insn_len);
 	exit->vrs.vrs_gprs[VCPU_REGS_RIP] += exit->vei.vei_insn_len;
@@ -368,7 +410,7 @@ main(int argc, char **argv)
 
 out:
 	printf("--- RESET VECTOR @ gpa 0x%llx ---\n", reset);
-	for (i=0; i<10; i++) {
+	for (i=0; i<16; i++) {
 		if (i > 0)
 			printf(" ");
 		printf("%02x", *(uint8_t*)

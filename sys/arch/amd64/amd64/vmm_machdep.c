@@ -26,6 +26,7 @@
 #include <sys/queue.h>
 #include <sys/refcnt.h>
 #include <sys/rwlock.h>
+#include <sys/sched.h>
 #include <sys/pledge.h>
 #include <sys/memrange.h>
 #include <sys/tracepoint.h>
@@ -109,6 +110,7 @@ int vmm_handle_xsetbv(struct vcpu *, uint64_t *);
 int vmx_handle_xsetbv(struct vcpu *);
 int svm_handle_xsetbv(struct vcpu *);
 int vmm_handle_cpuid(struct vcpu *);
+static void vmm_cpuid_policy_init(struct vm *);
 int vmx_handle_rdmsr(struct vcpu *);
 int vmx_handle_wrmsr(struct vcpu *);
 static void vmm_reset_emulated_msrs(struct vcpu *);
@@ -1038,6 +1040,7 @@ vm_impl_init(struct vm *vm, struct proc *p)
 		printf("%s: invalid vmm mode %d\n", __func__, vmm_softc->mode);
 		return (EINVAL);
 	}
+	vmm_cpuid_policy_init(vm);
 
 	return (0);
 }
@@ -7801,18 +7804,236 @@ svm_handle_msr(struct vcpu *vcpu)
 	return (ret);
 }
 
+static void
+vmm_cpuid_snapshot_leaf(uint32_t leaf, uint32_t subleaf,
+    struct vmm_cpuid_regs *regs)
+{
+	CPUID_LEAF(leaf, subleaf, regs->vcr_eax, regs->vcr_ebx,
+	    regs->vcr_ecx, regs->vcr_edx);
+}
+
+/*
+ * Build the immutable host-dependent portion of a VM's CPUID policy.  Keep
+ * guest state (APIC ID, topology and OSXSAVE) out of this snapshot: those
+ * values are derived by vmm_handle_cpuid() from the vCPU and VM state.
+ */
+static void
+vmm_cpuid_policy_init(struct vm *vm)
+{
+	struct vmm_cpuid_policy *policy = &vm->vm_cpuid_policy;
+	struct cpu_info *ci, *present = &cpu_info_primary;
+	CPU_INFO_ITERATOR cii;
+	uint32_t ext_ecx = ~0U, ext_edx = ~0U, extlevel = ~0U;
+	uint32_t i, level, seff_ebx = ~0U, seff_ecx = ~0U;
+	uint32_t seff_edx = ~0U, amdspec_ebx = ~0U;
+	int first = 1;
+
+	bzero(policy, sizeof(*policy));
+	CPU_INFO_FOREACH(cii, ci) {
+		if (first) {
+			extlevel = ci->ci_pnfeatset;
+			seff_ebx = ci->ci_feature_sefflags_ebx;
+			seff_ecx = ci->ci_feature_sefflags_ecx;
+			seff_edx = ci->ci_feature_sefflags_edx;
+			ext_ecx = ci->ci_efeature_ecx;
+			ext_edx = ci->ci_feature_eflags;
+			amdspec_ebx = ci->ci_feature_amdspec_ebx;
+			first = 0;
+			continue;
+		}
+		extlevel = min(extlevel, ci->ci_pnfeatset);
+		seff_ebx &= ci->ci_feature_sefflags_ebx;
+		seff_ecx &= ci->ci_feature_sefflags_ecx;
+		seff_edx &= ci->ci_feature_sefflags_edx;
+		ext_ecx &= ci->ci_efeature_ecx;
+		ext_edx &= ci->ci_feature_eflags;
+		amdspec_ebx &= ci->ci_feature_amdspec_ebx;
+	}
+	KASSERT(!first);
+
+	policy->vcp_host_level = cpuid_level;
+	policy->vcp_host_extlevel = extlevel;
+	policy->vcp_xsave_mask = xsave_mask;
+	policy->vcp_tsc_frequency = tsc_frequency;
+	policy->vcp_pku_enabled = vmm_softc->sc_md.pkru_enabled &&
+	    (seff_ecx & SEFF0ECX_PKU);
+	policy->vcp_tsc_invariant = tsc_is_invariant != 0;
+
+	/* Use the primary CPU for non-capability presentation data. */
+	sched_peg_curproc(present);
+	level = policy->vcp_host_level;
+	if (level < 0x15 && policy->vcp_tsc_invariant)
+		level = 0x15;
+	policy->vcp_leaf0.vcr_eax = level;
+	policy->vcp_leaf0.vcr_ebx = *((uint32_t *)&cpu_vendor[0]);
+	policy->vcp_leaf0.vcr_edx = *((uint32_t *)&cpu_vendor[4]);
+	policy->vcp_leaf0.vcr_ecx = *((uint32_t *)&cpu_vendor[8]);
+
+	policy->vcp_leaf1.vcr_eax = cpu_id;
+	policy->vcp_leaf1.vcr_ebx = cpu_ebxfeature & 0x0000ffff;
+	policy->vcp_leaf1.vcr_ecx =
+	    (cpu_ecxfeature | CPUIDECX_HV) & VMM_CPUIDECX_MASK;
+	policy->vcp_leaf1.vcr_edx =
+	    cpu_feature & VMM_CPUIDEDX_MASK;
+
+	policy->vcp_leaf7.vcr_ebx =
+	    seff_ebx & VMM_SEFF0EBX_MASK;
+	policy->vcp_leaf7.vcr_ecx =
+	    seff_ecx & VMM_SEFF0ECX_MASK;
+	policy->vcp_leaf7.vcr_edx =
+	    seff_edx & VMM_SEFF0EDX_MASK;
+	if (policy->vcp_pku_enabled)
+		policy->vcp_leaf7.vcr_ecx |= SEFF0ECX_PKU;
+	else
+		policy->vcp_leaf7.vcr_ecx &= ~SEFF0ECX_PKU;
+	if ((seff_edx & SEFF0EDX_IBT) && (rcr4() & CR4_CET))
+		policy->vcp_leaf7.vcr_edx |= SEFF0EDX_IBT;
+	else
+		policy->vcp_leaf7.vcr_edx &= ~SEFF0EDX_IBT;
+
+	policy->vcp_extleaf0.vcr_eax =
+	    min(policy->vcp_host_extlevel, 0x8000001f);
+	policy->vcp_extleaf1.vcr_eax = present->ci_efeature_eax;
+	policy->vcp_extleaf1.vcr_ecx =
+	    ext_ecx & VMM_ECPUIDECX_MASK;
+	policy->vcp_extleaf1.vcr_edx =
+	    ext_edx & VMM_FEAT_EFLAGS_MASK;
+	for (i = 0; i < nitems(policy->vcp_extbrand); i++) {
+		policy->vcp_extbrand[i].vcr_eax = present->ci_brand[i * 4];
+		policy->vcp_extbrand[i].vcr_ebx = present->ci_brand[i * 4 + 1];
+		policy->vcp_extbrand[i].vcr_ecx = present->ci_brand[i * 4 + 2];
+		policy->vcp_extbrand[i].vcr_edx = present->ci_brand[i * 4 + 3];
+	}
+
+	if (policy->vcp_host_level >= 0x02)
+		vmm_cpuid_snapshot_leaf(0x02, 0, &policy->vcp_leaf2);
+	if (policy->vcp_host_level >= 0x04) {
+		for (i = 0; i < nitems(policy->vcp_leaf4); i++)
+			vmm_cpuid_snapshot_leaf(0x04, i,
+			    &policy->vcp_leaf4[i]);
+	}
+	if (policy->vcp_host_level >= 0x0d) {
+		for (i = 0; i < nitems(policy->vcp_leafd); i++)
+			vmm_cpuid_snapshot_leaf(0x0d, i,
+			    &policy->vcp_leafd[i]);
+	}
+	if (policy->vcp_host_level >= 0x15)
+		vmm_cpuid_snapshot_leaf(0x15, 0, &policy->vcp_leaf15);
+	if (policy->vcp_host_level >= 0x16)
+		vmm_cpuid_snapshot_leaf(0x16, 0, &policy->vcp_leaf16);
+
+	if (policy->vcp_host_extlevel >= 0x80000005)
+		vmm_cpuid_snapshot_leaf(0x80000005, 0,
+		    &policy->vcp_extleaf5);
+	if (policy->vcp_host_extlevel >= 0x80000006)
+		vmm_cpuid_snapshot_leaf(0x80000006, 0,
+		    &policy->vcp_extleaf6);
+	if (policy->vcp_host_extlevel >= 0x80000007)
+		vmm_cpuid_snapshot_leaf(0x80000007, 0,
+		    &policy->vcp_extleaf7);
+	if (!policy->vcp_tsc_invariant)
+		policy->vcp_extleaf7.vcr_edx &= ~CPUIDEDX_ITSC;
+	if (policy->vcp_host_extlevel >= 0x80000008)
+		vmm_cpuid_snapshot_leaf(0x80000008, 0,
+		    &policy->vcp_extleaf8);
+	policy->vcp_extleaf8.vcr_ebx =
+	    amdspec_ebx & VMM_AMDSPEC_EBX_MASK;
+	if (policy->vcp_host_extlevel >= 0x8000001d) {
+		for (i = 0; i < nitems(policy->vcp_extleaf1d); i++)
+			vmm_cpuid_snapshot_leaf(0x8000001d, i,
+			    &policy->vcp_extleaf1d[i]);
+	}
+	if (policy->vcp_host_extlevel >= 0x8000001f)
+		vmm_cpuid_snapshot_leaf(0x8000001f, 0,
+		    &policy->vcp_extleaf1f);
+
+	sched_unpeg_curproc();
+}
+
+static void
+vmm_cpuid_policy_lookup(const struct vmm_cpuid_policy *policy, uint32_t leaf,
+    uint32_t subleaf, struct vmm_cpuid_regs *regs)
+{
+	bzero(regs, sizeof(*regs));
+
+	switch (leaf) {
+	case 0x02:
+		*regs = policy->vcp_leaf2;
+		break;
+	case 0x04:
+		if (subleaf < nitems(policy->vcp_leaf4))
+			*regs = policy->vcp_leaf4[subleaf];
+		break;
+	case 0x0d:
+		if (subleaf < nitems(policy->vcp_leafd))
+			*regs = policy->vcp_leafd[subleaf];
+		break;
+	case 0x15:
+		*regs = policy->vcp_leaf15;
+		break;
+	case 0x16:
+		*regs = policy->vcp_leaf16;
+		break;
+	case 0x80000005:
+		*regs = policy->vcp_extleaf5;
+		break;
+	case 0x80000006:
+		*regs = policy->vcp_extleaf6;
+		break;
+	case 0x80000007:
+		*regs = policy->vcp_extleaf7;
+		break;
+	case 0x80000008:
+		*regs = policy->vcp_extleaf8;
+		break;
+	case 0x8000001d:
+		if (subleaf < nitems(policy->vcp_extleaf1d))
+			*regs = policy->vcp_extleaf1d[subleaf];
+		break;
+	case 0x8000001f:
+		*regs = policy->vcp_extleaf1f;
+		break;
+	}
+}
+
+static uint32_t
+vmm_cpuid_xsave_size(const struct vmm_cpuid_policy *policy, uint64_t xcr0)
+{
+	const struct vmm_cpuid_regs *regs;
+	uint32_t i, size;
+
+	/* The legacy region and XSAVE header have fixed offsets and sizes. */
+	size = sizeof(struct fxsave64) + sizeof(struct xstate_hdr);
+	for (i = 2; i < 63; i++) {
+		if ((xcr0 & (1ULL << i)) == 0 ||
+		    (1ULL << i) == XFEATURE_PKRU)
+			continue;
+		regs = &policy->vcp_leafd[i];
+		if (regs->vcr_eax != 0)
+			size = max(size, regs->vcr_ebx + regs->vcr_eax);
+	}
+
+	/* PKRU is appended to vmm's fixed-size host save area. */
+	if (policy->vcp_pku_enabled && (xcr0 & XFEATURE_PKRU))
+		size = max(size,
+		    (uint32_t)(sizeof(struct savefpu) + sizeof(uint64_t)));
+
+	return (size);
+}
+
 /* Handle cpuid(0xd) and its subleafs */
 static void
-vmm_handle_cpuid_0xd(struct vcpu *vcpu, uint32_t subleaf, uint64_t *rax,
+vmm_handle_cpuid_0xd(struct vcpu *vcpu,
+    const struct vmm_cpuid_policy *policy, uint32_t subleaf, uint64_t *rax,
     uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
 {
 	uint64_t xcr0 = vcpu->vc_gueststate.vg_xcr0;
 
 	if (subleaf == 0) {
 		/*
-		 * CPUID(0xd.0) depends on the value in XCR0 and MSR_XSS.  If
-		 * the guest XCR0 isn't the same as the host then set it, redo
-		 * the CPUID, and restore it.
+		 * CPUID(0xd.0).ebx depends on the guest XCR0.  Derive it from
+		 * the policy's standard-format component offsets rather than
+		 * changing host XCR0 and executing CPUID on the current pCPU.
 		 */
 		/*
 		 * "ecx enumerates the size required ... for an area
@@ -7825,14 +8046,9 @@ vmm_handle_cpuid_0xd(struct vcpu *vcpu, uint32_t subleaf, uint64_t *rax,
 		 * the VMM ecx is our ebx
 		 */
 		ecx = ebx;
-		if (xcr0 != (xsave_mask & XFEATURE_XCR0_MASK)) {
-			uint32_t dummy;
-			xsetbv(0, xcr0);
-			CPUID_LEAF(0xd, subleaf, eax, ebx, dummy, edx);
-			xsetbv(0, xsave_mask & XFEATURE_XCR0_MASK);
-		}
-		eax = xsave_mask & XFEATURE_XCR0_MASK;
-		edx = (xsave_mask & XFEATURE_XCR0_MASK) >> 32;
+		ebx = vmm_cpuid_xsave_size(policy, xcr0);
+		eax = policy->vcp_xsave_mask & XFEATURE_XCR0_MASK;
+		edx = (policy->vcp_xsave_mask & XFEATURE_XCR0_MASK) >> 32;
 
 		/*
 		 * Emulate support for the pkru xsave region if the
@@ -7840,7 +8056,7 @@ vmm_handle_cpuid_0xd(struct vcpu *vcpu, uint32_t subleaf, uint64_t *rax,
 		 * it in xcr0 and use xsave/xrstor on context switches
 		 * to save or restore pkru.
 		 */
-		if (vmm_softc->sc_md.pkru_enabled) {
+		if (policy->vcp_pku_enabled) {
 			eax |= XFEATURE_PKRU;
 			ecx = sizeof(struct savefpu) + sizeof(uint64_t);
 			if (xcr0 & XFEATURE_PKRU)
@@ -7852,14 +8068,15 @@ vmm_handle_cpuid_0xd(struct vcpu *vcpu, uint32_t subleaf, uint64_t *rax,
 		ebx = 0;	/* no xsavec or xsaves for now */
 		ecx = edx = 0;	/* no xsaves for now */
 	} else if ((1ULL << subleaf) == XFEATURE_PKRU) {
-		if (vmm_softc->sc_md.pkru_enabled) {
+		if (policy->vcp_pku_enabled) {
 			eax = sizeof(uint64_t);		/* size of PKRU area */
 			ebx = sizeof(struct savefpu);	/* offset of area */
 		} else
 			eax = ebx = 0;
 		ecx = edx = 0;
 	} else if (subleaf >= 63 ||
-	    ((1ULL << subleaf) & xsave_mask & XFEATURE_XCR0_MASK) == 0) {
+	    ((1ULL << subleaf) & policy->vcp_xsave_mask &
+	    XFEATURE_XCR0_MASK) == 0) {
 		/* disclaim subleaves of features we don't expose */
 		eax = ebx = ecx = edx = 0;
 	} else {
@@ -7930,6 +8147,9 @@ vmm_cpuid_cache_eax(uint32_t eax, uint32_t ncpus)
 int
 vmm_handle_cpuid(struct vcpu *vcpu)
 {
+	const struct vmm_cpuid_policy *policy =
+	    &vcpu->vc_parent->vm_cpuid_policy;
+	struct vmm_cpuid_regs regs;
 	uint64_t insn_length, cr4;
 	uint64_t *rax, *rbx, *rcx, *rdx;
 	struct vmcb *vmcb;
@@ -7938,10 +8158,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 	struct vmx_msr_store *msr_store;
 	int vmm_cpuid_level;
 
-	/* what's the cpuid level we support/advertise? */
-	vmm_cpuid_level = cpuid_level;
-	if (vmm_cpuid_level < 0x15 && tsc_is_invariant)
-		vmm_cpuid_level = 0x15;
+	/* The policy is immutable; only the guest's limit bit can reduce it. */
+	vmm_cpuid_level = policy->vcp_leaf0.vcr_eax;
 
 	if (vmm_softc->mode == VMM_MODE_EPT) {
 		if (vmread(VMCS_INSTRUCTION_LENGTH, &insn_length)) {
@@ -7998,7 +8216,7 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 	 * info, clamp also to vmm_cpuid_level.
 	 */
 	if ((leaf > vmm_cpuid_level && leaf < 0x40000000) ||
-	    (leaf > curcpu()->ci_pnfeatset)) {
+	    (leaf > policy->vcp_host_extlevel)) {
 		DPRINTF("%s: invalid cpuid input leaf 0x%x, guest rip="
 		    "0x%llx - resetting to 0x%x\n", __func__, leaf,
 		    vcpu->vc_gueststate.vg_rip - insn_length,
@@ -8006,28 +8224,29 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		leaf = vmm_cpuid_level;
 	}
 
-	/* we fake up values in the range (cpuid_level, vmm_cpuid_level] */
-	if (leaf <= cpuid_level || leaf > 0x80000000)
-		CPUID_LEAF(leaf, subleaf, eax, ebx, ecx, edx);
-	else
-		eax = ebx = ecx = edx = 0;
+	/* Values above the host level but within our advertised level are fake. */
+	vmm_cpuid_policy_lookup(policy, leaf, subleaf, &regs);
+	eax = regs.vcr_eax;
+	ebx = regs.vcr_ebx;
+	ecx = regs.vcr_ecx;
+	edx = regs.vcr_edx;
 
 	switch (leaf) {
 	case 0x00:	/* Max level and vendor ID */
 		*rax = vmm_cpuid_level;
-		*rbx = *((uint32_t *)&cpu_vendor);
-		*rdx = *((uint32_t *)&cpu_vendor + 1);
-		*rcx = *((uint32_t *)&cpu_vendor + 2);
+		*rbx = policy->vcp_leaf0.vcr_ebx;
+		*rdx = policy->vcp_leaf0.vcr_edx;
+		*rcx = policy->vcp_leaf0.vcr_ecx;
 		break;
 	case 0x01:	/* Version, brand, feature info */
-		*rax = cpu_id;
+		*rax = policy->vcp_leaf1.vcr_eax;
 		/* mask off host's APIC ID, reset to vcpu id */
-		*rbx = cpu_ebxfeature & 0x0000FFFF;
+		*rbx = policy->vcp_leaf1.vcr_ebx;
 		ncpus = vcpu->vc_parent->vm_vcpu_ct;
 		topology_capacity = vmm_topology_capacity(ncpus);
 		*rbx |= (topology_capacity & 0xff) << 16;
 		*rbx |= (vcpu->vc_id & 0xFF) << 24;
-		*rcx = (cpu_ecxfeature | CPUIDECX_HV) & VMM_CPUIDECX_MASK;
+		*rcx = policy->vcp_leaf1.vcr_ecx;
 		if ((!vcpu->vc_parent->vm_lapic_caps ||
 		    (vcpu->vc_parent->vm_lapic_caps & VMM_LAPIC_ACCEL_X2APIC)) &&
 		    !vcpu->vc_seves)
@@ -8039,7 +8258,7 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		else
 			*rcx &= ~CPUIDECX_OSXSAVE;
 
-		*rdx = curcpu()->ci_feature_flags & VMM_CPUIDEDX_MASK;
+		*rdx = policy->vcp_leaf1.vcr_edx;
 		if (ncpus > 1)
 			*rdx |= CPUID_HTT;
 		break;
@@ -8082,25 +8301,10 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		break;
 	case 0x07:	/* SEFF */
 		if (subleaf == 0) {
-			*rax = 0;	/* Highest subleaf supported */
-			*rbx = curcpu()->ci_feature_sefflags_ebx & VMM_SEFF0EBX_MASK;
-			*rcx = curcpu()->ci_feature_sefflags_ecx & VMM_SEFF0ECX_MASK;
-			*rdx = curcpu()->ci_feature_sefflags_edx & VMM_SEFF0EDX_MASK;
-			/*
-			 * Only expose PKU support if we've detected it in use
-			 * on the host.
-			 */
-			if (vmm_softc->sc_md.pkru_enabled)
-				*rcx |= SEFF0ECX_PKU;
-			else
-				*rcx &= ~SEFF0ECX_PKU;
-
-			/* Expose IBT bit if we've enabled CET on the host. */
-			if (rcr4() & CR4_CET)
-				*rdx |= SEFF0EDX_IBT;
-			else
-				*rdx &= ~SEFF0EDX_IBT;
-
+			*rax = policy->vcp_leaf7.vcr_eax;
+			*rbx = policy->vcp_leaf7.vcr_ebx;
+			*rcx = policy->vcp_leaf7.vcr_ecx;
+			*rdx = policy->vcp_leaf7.vcr_edx;
 		} else {
 			/* Unsupported subleaf */
 			DPRINTF("%s: function 0x07 (SEFF) unsupported subleaf "
@@ -8151,7 +8355,8 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		}
 		break;
 	case 0x0d:	/* Processor ext. state information */
-		vmm_handle_cpuid_0xd(vcpu, subleaf, rax, eax, ebx, ecx, edx);
+		vmm_handle_cpuid_0xd(vcpu, policy, subleaf, rax, eax, ebx,
+		    ecx, edx);
 		break;
 	case 0x0f:	/* QoS info (not supported) */
 		DPRINTF("%s: function 0x0f (QoS info) not supported\n",
@@ -8170,16 +8375,16 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rdx = 0;
 		break;
 	case 0x15:
-		if (cpuid_level >= 0x15) {
+		if (policy->vcp_host_level >= 0x15) {
 			*rax = eax;
 			*rbx = ebx;
 			*rcx = ecx;
 			*rdx = edx;
 		} else {
-			KASSERT(tsc_is_invariant);
+			KASSERT(policy->vcp_tsc_invariant);
 			*rax = 1;
 			*rbx = 100;
-			*rcx = tsc_frequency / 100;
+			*rcx = policy->vcp_tsc_frequency / 100;
 			*rdx = 0;
 		}
 		break;
@@ -8196,7 +8401,7 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		*rdx = *((uint32_t *)&vmm_hv_signature[8]);
 		break;
 	case 0x40000001:	/* KVM hypervisor features */
-		if (tsc_frequency > 0)
+		if (policy->vcp_tsc_frequency > 0)
 			*rax = (1 << KVM_FEATURE_CLOCKSOURCE2) |
 			    (1 << KVM_FEATURE_CLOCKSOURCE_STABLE_BIT);
 		else
@@ -8213,7 +8418,7 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		break;
 	case 0x40000101:	/* KVM hypervisor features */
 		*rax = 1 << KVM_FEATURE_NOP_IO_DELAY;
-		if (tsc_frequency > 0)
+		if (policy->vcp_tsc_frequency > 0)
 			*rax |= (1 << KVM_FEATURE_CLOCKSOURCE2) |
 			    (1 << KVM_FEATURE_CLOCKSOURCE_STABLE_BIT);
 		*rbx = 0;
@@ -8222,34 +8427,34 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		break;
 	case 0x80000000:	/* Extended function level */
 		/* We don't emulate past 0x8000001f currently. */
-		*rax = min(curcpu()->ci_pnfeatset, 0x8000001f);
+		*rax = policy->vcp_extleaf0.vcr_eax;
 		*rbx = 0;
 		*rcx = 0;
 		*rdx = 0;
 		break;
 	case 0x80000001:	/* Extended function info */
-		*rax = curcpu()->ci_efeature_eax;
+		*rax = policy->vcp_extleaf1.vcr_eax;
 		*rbx = 0;	/* Reserved */
-		*rcx = curcpu()->ci_efeature_ecx & VMM_ECPUIDECX_MASK;
-		*rdx = curcpu()->ci_feature_eflags & VMM_FEAT_EFLAGS_MASK;
+		*rcx = policy->vcp_extleaf1.vcr_ecx;
+		*rdx = policy->vcp_extleaf1.vcr_edx;
 		break;
 	case 0x80000002:	/* Brand string */
-		*rax = curcpu()->ci_brand[0];
-		*rbx = curcpu()->ci_brand[1];
-		*rcx = curcpu()->ci_brand[2];
-		*rdx = curcpu()->ci_brand[3];
+		*rax = policy->vcp_extbrand[0].vcr_eax;
+		*rbx = policy->vcp_extbrand[0].vcr_ebx;
+		*rcx = policy->vcp_extbrand[0].vcr_ecx;
+		*rdx = policy->vcp_extbrand[0].vcr_edx;
 		break;
 	case 0x80000003:	/* Brand string */
-		*rax = curcpu()->ci_brand[4];
-		*rbx = curcpu()->ci_brand[5];
-		*rcx = curcpu()->ci_brand[6];
-		*rdx = curcpu()->ci_brand[7];
+		*rax = policy->vcp_extbrand[1].vcr_eax;
+		*rbx = policy->vcp_extbrand[1].vcr_ebx;
+		*rcx = policy->vcp_extbrand[1].vcr_ecx;
+		*rdx = policy->vcp_extbrand[1].vcr_edx;
 		break;
 	case 0x80000004:	/* Brand string */
-		*rax = curcpu()->ci_brand[8];
-		*rbx = curcpu()->ci_brand[9];
-		*rcx = curcpu()->ci_brand[10];
-		*rdx = curcpu()->ci_brand[11];
+		*rax = policy->vcp_extbrand[2].vcr_eax;
+		*rbx = policy->vcp_extbrand[2].vcr_ebx;
+		*rcx = policy->vcp_extbrand[2].vcr_ecx;
+		*rdx = policy->vcp_extbrand[2].vcr_edx;
 		break;
 	case 0x80000005:	/* Reserved (Intel), cacheinfo (AMD) */
 		*rax = eax;

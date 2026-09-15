@@ -301,9 +301,22 @@ network installer and full NetBSD 11 installation media.  This exercises all
 four VirtIO paths changed by the hardening work and the shared architectural
 MSR policy under a multiprocessor Windows workload.
 
-Add a per-VM CPUID policy object before Hyper-V or nested virtualization adds
-more guest-visible leaves.  Preserve the current tested CPUID values during
-the refactor.
+A per-VM CPUID policy now captures the fixed guest-visible leaves at VM
+creation.  Capability fields use the host-wide safe intersection, while
+presentation fields come from the primary CPU; APIC identity, topology and
+OSXSAVE remain derived from VM/vCPU state.  CPUID exits therefore no longer
+change their answer when a vCPU runs on a different host CPU.  The existing
+vmm regression executes CPUID in the guest and validates the default vendor
+policy before its I/O-exit checks.
+
+Live validation on 2026-09-15 covered OpenBSD and Windows guests plus the
+in-kernel CPUID/I/O/exception regression sequence.
+
+Before checkpoint/restore, give this object a versioned external encoding and
+a destination compatibility check.  A destination must support every saved
+execution capability, or reject restore before creating the VM; cache and
+brand presentation can continue to reproduce the saved virtual model rather
+than the destination's strings.
 
 ### 3.6 Comments, diagnostics and test matrix
 
@@ -607,7 +620,7 @@ missing or replaced ancestors, and host failure during each publication step.
 
 Define a versioned state stream containing:
 
-- VM identity, memory layout and negotiated feature/capability masks;
+- VM identity, memory layout and the complete per-VM CPUID policy;
 - all vCPU registers, pending exceptions and virtual interrupt state;
 - LAPIC/IOAPIC/PIC, timers, RTC, PCI configuration and MSI/MSI-X state;
 - every VirtIO queue index, in-flight request policy and worker state;
